@@ -1,3 +1,101 @@
+# Razor-Crest — Personal CrossPoint Fork
+
+> [!IMPORTANT]
+> This repository is a **personal fork of CrossPoint Reader**. It tracks the upstream `develop` branch, but it also carries firmware behavior and plugin-system work that is **not currently part of the baseline CrossPoint `develop` branch**. It is not an official CrossPoint release and should not be treated as an upstream-supported build.
+>
+> Razor-Crest deliberately keeps the broad firmware family as `crosspoint` for plugin compatibility, while advertising the exact firmware ID `Razor-Crest` so plugins and catalogs can distinguish this fork when needed.
+
+## Current Razor-Crest-only additions
+
+The list below describes the current **net differences from upstream `develop`**. Intermediate experiments that were later removed or superseded are intentionally not listed.
+
+### Razor-Crest identity and branding
+
+- Adds a formal firmware identity contract with:
+  - firmware family: `crosspoint`
+  - exact firmware ID: `Razor-Crest`
+  - plugin API level: `1`
+  - advertised plugin capabilities: `catalog.lists`, `catalog.notices`, `catalog.bundle_install`, `catalog.version_tracking`, `catalog.compatibility`, `catalog.images`, and `catalog.cache`
+- Exposes firmware family, exact firmware ID, plugin API level, and capability list through `/api/status`.
+- Makes the same identity values available to plugin/catalog templates through `{firmware_family}`, `{firmware_id}`, `{firmware_version}`, `{plugin_api}`, and `{plugin_capabilities}`.
+- Replaces the stock CrossPoint branding artwork with the Razor-Crest logo in firmware/web assets.
+- Uses a larger 200×200 Razor-Crest logo on the boot and default sleep screens and labels those screens with the exact firmware ID instead of the stock CrossPoint name.
+
+### Global Plugin System control
+
+- Adds **Settings → System → Advanced → Plugin System** as a global enable/disable switch for SD-card plugins.
+- New installations default the Plugin System to **Disabled**.
+- Firmware upgrades automatically preserve an existing plugin setup by enabling the Plugin System when plugin folders are already present on disk and the setting did not previously exist.
+- When enabled, **Plugins** is shown on the Home screen even if no plugin is installed yet.
+- Disabling the Plugin System leaves plugin files untouched but stops normal plugin discovery and execution.
+- Plugin-backed web endpoints are gated while the Plugin System is disabled, including relay/fetch/crypto, plugin filesystem access, book-key handling, the headless plugin runner, and plugin jobs.
+- Internal plugin-system settings are persisted but intentionally hidden from the generic Web Settings API.
+- Adds raw on-disk plugin probes for migration/bootstrap/recovery while keeping normal discovery subject to the Plugin System state and installation quarantine.
+
+### Optional Plugin Hub bootstrap
+
+- Adds a synthetic **Plugin Hub — Download, discover, and update plugins** entry under **Home → Plugins** when the Plugin System is enabled but a usable Plugin Hub is not installed.
+- The synthetic Hub entry supports **Install**, **Hide**, and **Cancel**.
+- **Hide** affects only the synthetic installer row and persists across reboots and Plugin System disable/enable cycles.
+- Adds **Restore Plugin Hub installer** under **Settings → System → Advanced** when the installer was hidden.
+- The built-in installer downloads the Plugin Hub manifest/device/plugin/README files over Wi-Fi using staged replacement rather than exposing a half-installed plugin.
+- Cancelling out of Wi-Fi selection cleanly aborts the Hub install flow and returns to the plugin picker.
+- A manually sideloaded Plugin Hub is recognized from any supported plugin root when it has a valid `device.json` and is not quarantined by an in-progress install marker.
+
+### Plugin installation, update, and removal hardening
+
+- Continues to support all three plugin roots: `/.crosspoint/plugins`, `/plugins`, and `/.plugins`.
+- Adds `.installing` transaction markers so partially installed plugins are quarantined from normal discovery and file resolution until installation completes.
+- Generic bundle updates reuse an already installed same-named plugin directory from any supported root instead of creating a duplicate in the preferred root, preserving that plugin's local settings and tokens.
+- Multi-file bundle downloads are staged to `.new` files and swapped into place only after the complete bundle has downloaded successfully.
+- Rejects unsafe bundle subdirectories and entries, including traversal, absolute paths, ambiguous backslash paths, and writes outside protected plugin paths.
+- Adds plugin uninstall from the plugin picker by holding **Confirm** for one second, followed by an explicit confirmation before recursively deleting that plugin directory.
+- Extends confirmation dialogs so callers can provide custom Confirm/Cancel labels.
+- Shared plugin HTTP/download helpers now refuse network requests when Wi-Fi is not actually connected instead of attempting a request against a disabled/disconnected interface.
+
+### Generic plugin catalog platform extensions
+
+These capabilities are implemented as **plugin-agnostic firmware features**. Plugin Hub uses several of them, but any plugin/catalog can use the same contracts.
+
+- **Dynamic named catalogs** — supports static `browse.lists` plus remote `browse.lists_url` indexes, allowing catalog groups to be generated or split without rebuilding firmware or the plugin.
+- **Per-list notices** — a named list can show an optional notice with custom title, message, Confirm, and Cancel labels before entering that catalog.
+- **Bundle installation** — catalog items can install a complete multi-file plugin or supported bundle from a base URL plus a declared file list.
+- **Version tracking** — catalog versions are compared with installed plugin manifests so rows can show Installed/Update state.
+- **Compatibility filtering** — catalog entries can be restricted by firmware family, exact firmware ID, minimum plugin API, and required capabilities; incompatible entries are omitted while entries without compatibility metadata remain backward-compatible.
+- **Additional template values** — catalog templates can consume firmware identity/capability values and item thumbnail URLs in addition to the existing token/config/item fields.
+- **Native plugin tabs** — manifests can expose a bounded native tab shell for Browse, Settings, and legacy Cache views.
+- **Native plugin settings** — declarative `choice` and `toggle` settings can edit a plugin's existing JSON config file and immediately drive presentation through `{cfg.KEY}` values.
+- **Grid/list presentation controls** — manifests can independently configure grid/list page sizes, 1–4 grid columns, 1–4 visible grid rows, list thumbnails, selection style, and rounded preview corners.
+- **Native footer pagination** — enhanced catalog UIs use Previous/Next footer actions instead of consuming catalog rows for paging.
+- **Image-backed catalogs** — items can declare thumbnail/image requests using BMP, JPEG, or PNG sources. JPEG/PNG previews are converted to display-ready BMP data on SD and failed previews fall back to the normal placeholder.
+- **Full-screen image preview before save** — direct image downloads can opt into a Close/Save preview flow before the final file is published to its destination. Grayscale previews show a Processing state until the final action footer is safe to reveal.
+- **Image format-aware publishing** — downloaded image content is signature-checked and can be converted to BMP when the destination requires BMP rather than trusting the remote filename alone.
+- **Bitmap upscaling support** — the renderer can optionally upscale bitmap content to a requested target instead of only downscaling, supporting larger native image previews.
+
+### Progressive plugin catalog cache
+
+- Adds an optional per-plugin SD cache for JSON catalog pages and converted preview images.
+- Fresh cached pages can open directly from SD without turning on Wi-Fi.
+- Cache fill is progressive: only pages the user actually reaches are fetched and stored; browsing past the cached frontier fetches the next missing page and appends it to the cache.
+- Catalog-page freshness is configurable, including Always, 3 days, 7 days, and 14 days.
+- Cached images are keyed independently from page freshness, so unchanged image URLs can be reused across catalog refreshes.
+- If a network refresh fails, an existing stale page can be used as a fallback.
+- Per-plugin cache storage is bounded to configurable limits between 8 MB and 128 MB, with image entries evicted before catalog pages while protecting the currently displayed page/images.
+- Adds cache statistics and controls for last refresh, cached pages, cached images, storage usage, Refresh now, and Clear cache.
+- Cache controls can appear as an expandable section inside a plugin's native Settings tab; the legacy dedicated Cache tab remains supported.
+- Supports an optional downloadable cache-seed ZIP for pre-populating plugin image/catalog cache data.
+- Search results are intentionally not cached.
+
+### Supporting documentation and development differences
+
+- Expands the SD-plugin documentation for the Plugin System, Hub bootstrap, firmware identity/capabilities, dynamic lists/notices, compatibility filtering, native tabs/settings, image layouts, progressive caching, bundle update behavior, and related manifest schema.
+- Expands the User Guide with the new Advanced/Plugin System and Plugin Hub workflow.
+- Expands the webserver endpoint documentation with the firmware identity/plugin capability fields returned by `/api/status`.
+- Adds/updates plugin manifest classification tests for the extended plugin discovery behavior.
+- Adds a repository-local build policy in `AGENTS.md` requiring this workstation's canonical `C:\XP-FW` build environment for firmware builds instead of ad-hoc/direct PlatformIO builds.
+
+---
+
 # CrossPoint Reader
 
 [![Fund contributors](https://img.shields.io/badge/%F0%9F%91%91_Fund_contributors-royalty.dev-BB953A?style=for-the-badge&labelColor=1a1a1a)](https://app.royalty.dev/crosspoint-reader/crosspoint-reader)
