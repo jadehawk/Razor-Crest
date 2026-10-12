@@ -5,7 +5,7 @@
 #endif
 
 #ifndef CROSSPOINT_FIRMWARE_ID
-#define CROSSPOINT_FIRMWARE_ID "crosspoint"
+#define CROSSPOINT_FIRMWARE_ID "Razor-Crest"
 #endif
 
 #ifndef CROSSPOINT_PLUGIN_API_VERSION
@@ -13,8 +13,9 @@
 #endif
 
 #ifndef CROSSPOINT_PLUGIN_CAPABILITIES
-#define CROSSPOINT_PLUGIN_CAPABILITIES \
-  "catalog.lists,catalog.notices,catalog.bundle_install,catalog.version_tracking,catalog.compatibility"
+#define CROSSPOINT_PLUGIN_CAPABILITIES                                                                           \
+  "catalog.lists,catalog.notices,catalog.bundle_install,catalog.version_tracking,catalog.compatibility,catalog." \
+  "images,catalog.cache"
 #endif
 
 namespace firmwareidentity {

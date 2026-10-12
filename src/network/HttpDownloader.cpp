@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <Logging.h>
 #include <ResumableFetch.h>
+#include <WiFi.h>
 
 #include <functional>
 #include <string>
@@ -31,6 +32,10 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::st
                                            const std::vector<HttpDownloader::Header>& headers,
                                            const freeink::FetchSink& sink, const bool* cancelFlag = nullptr,
                                            size_t* bytesOut = nullptr, const bool downgradeRedirectsToHttp = false) {
+  if (WiFi.getMode() == WIFI_MODE_NULL || WiFi.status() != WL_CONNECTED) {
+    LOG_ERR("HTTP", "Network request blocked: WiFi is not connected");
+    return HttpDownloader::HTTP_ERROR;
+  }
   WifiPowerSaveGuard psGuard;
   freeink::FetchOptions options;
   options.redirectToHttp = downgradeRedirectsToHttp;

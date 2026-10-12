@@ -35,10 +35,45 @@ RenderConfig fitImage(const ImageDimensions& dimensions, const GfxRenderer& rend
   config.useExactDimensions = true;
   return config;
 }
+
+void drawProcessingFooter(GfxRenderer& renderer) {
+  const auto originalOrientation = renderer.getOrientation();
+  renderer.setOrientation(GfxRenderer::Orientation::Portrait);
+
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int footerHeight = metrics.buttonHintsHeight;
+  const int footerY = renderer.getScreenHeight() - footerHeight;
+  const bool grayscalePlane = renderer.getRenderMode() != GfxRenderer::BW && !renderer.grayPlanesAreAbsolute();
+
+  // In legacy grayscale planes, a set bit preserves the monochrome base. The
+  // visible status strip itself is drawn only into the B/W (or absolute)
+  // framebuffer so it stays solid white over any wallpaper artwork.
+  renderer.fillRect(0, footerY, renderer.getScreenWidth(), footerHeight, grayscalePlane);
+  if (!grayscalePlane) {
+    const int textY = footerY + std::max(0, (footerHeight - renderer.getTextHeight(UI_10_FONT_ID)) / 2);
+    renderer.drawCenteredText(UI_10_FONT_ID, textY, tr(STR_PROCESSING), true);
+  }
+
+  renderer.setOrientation(originalOrientation);
+}
+
+void clearActionFooter(GfxRenderer& renderer) {
+  const auto originalOrientation = renderer.getOrientation();
+  renderer.setOrientation(GfxRenderer::Orientation::Portrait);
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  renderer.fillRect(0, renderer.getScreenHeight() - metrics.buttonHintsHeight, renderer.getScreenWidth(),
+                    metrics.buttonHintsHeight, false);
+  renderer.setOrientation(originalOrientation);
+}
 }  // namespace
 
-BmpViewerActivity::BmpViewerActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string path)
-    : Activity("BmpViewer", renderer, mappedInput), filePath(std::move(path)) {}
+BmpViewerActivity::BmpViewerActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string path,
+                                     const bool actionMode, std::string backLabel, std::string confirmLabel)
+    : Activity("BmpViewer", renderer, mappedInput),
+      filePath(std::move(path)),
+      actionMode(actionMode),
+      actionBackLabel(std::move(backLabel)),
+      actionConfirmLabel(std::move(confirmLabel)) {}
 
 void BmpViewerActivity::loadSiblingImages() {
   siblingImages.clear();
@@ -98,6 +133,15 @@ bool BmpViewerActivity::canSetSleepCover() const {
           FsHelpers::hasPngExtension(filePath));
 }
 
+MappedInputManager::Labels BmpViewerActivity::imageLabels(const bool hasPrevious, const bool hasNext,
+                                                          const bool allowConfirm) const {
+  if (actionMode) {
+    return mappedInput.mapLabels(actionBackLabel.c_str(), allowConfirm ? actionConfirmLabel.c_str() : "", "", "");
+  }
+  return mappedInput.mapLabels(tr(STR_BACK), allowConfirm && canSetSleepCover() ? tr(STR_SET_SLEEP_COVER) : "",
+                               hasPrevious ? "<" : "", hasNext ? ">" : "");
+}
+
 bool BmpViewerActivity::renderImage() {
   const bool jpeg = FsHelpers::hasJpgExtension(filePath);
   JpegToFramebufferConverter jpegDecoder;
@@ -112,20 +156,27 @@ bool BmpViewerActivity::renderImage() {
   const bool hasPrevious = siblingImages.size() > 1 && currentImageIndex > 0;
   const bool hasNext = siblingImages.size() > 1 && currentImageIndex != -1 &&
                        currentImageIndex < static_cast<int>(siblingImages.size()) - 1;
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), canSetSleepCover() ? tr(STR_SET_SLEEP_COVER) : "",
-                                            hasPrevious ? "<" : "", hasNext ? ">" : "");
-  const auto drawImage = [&]() {
+  const auto readyLabels = imageLabels(hasPrevious, hasNext, true);
+  const auto drawImage = [&](const bool processing) {
     if (!decoder.decodeToFramebuffer(filePath, renderer, config)) return false;
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    if (processing) {
+      drawProcessingFooter(renderer);
+    } else {
+      GUI.drawButtonHints(renderer, readyLabels.btn1, readyLabels.btn2, readyLabels.btn3, readyLabels.btn4);
+    }
     return true;
   };
 
-  if (!drawImage()) return false;
   if (!jpeg) {
+    if (!drawImage(false)) return false;
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     return true;
   }
 
+  // Keep all actions off the visible B/W base while the grayscale planes are
+  // generated. Once grayscale is complete, reveal the full Close/Save footer
+  // together with a fast differential refresh.
+  if (!drawImage(actionMode)) return false;
   const bool absolute = renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported();
   if (absolute && !renderer.displayGrayscaleBase(HalDisplay::GrayscaleMode::Absolute)) return false;
   if (!absolute) renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
@@ -134,7 +185,7 @@ bool BmpViewerActivity::renderImage() {
   for (const auto mode : {GfxRenderer::GRAYSCALE_LSB, GfxRenderer::GRAYSCALE_MSB}) {
     renderer.clearScreen(absolute ? 0xFF : 0x00);
     renderer.setRenderMode(mode);
-    if (!drawImage()) {
+    if (!drawImage(actionMode)) {
       ready = false;
       break;
     }
@@ -148,15 +199,31 @@ bool BmpViewerActivity::renderImage() {
 
   renderer.setRenderMode(GfxRenderer::BW);
   renderer.clearScreen();
-  if (!drawImage()) ready = false;
+  if (!decoder.decodeToFramebuffer(filePath, renderer, config)) ready = false;
+  if (actionMode) {
+    // Match the footer that is still physically visible before rebasing the
+    // controller's differential baseline. Clearing it before cleanup would
+    // falsely tell the controller that Processing was already erased.
+    drawProcessingFooter(renderer);
+  } else {
+    GUI.drawButtonHints(renderer, readyLabels.btn1, readyLabels.btn2, readyLabels.btn3, readyLabels.btn4);
+  }
   renderer.cleanupGrayscaleWithFrameBuffer();
+  if (ready && actionMode) {
+    // Transition from the synced Processing baseline to a clean white footer
+    // plus the final actions, forcing the panel to erase every Processing pixel.
+    clearActionFooter(renderer);
+    GUI.drawButtonHints(renderer, readyLabels.btn1, readyLabels.btn2, readyLabels.btn3, readyLabels.btn4);
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  }
   return ready;
 }
 
 void BmpViewerActivity::onEnter() {
   Activity::onEnter();
+  actionReady = !actionMode;
 
-  if (siblingImages.empty() && !filePath.empty()) {
+  if (!actionMode && siblingImages.empty() && !filePath.empty()) {
     loadSiblingImages();
   }
 
@@ -169,9 +236,11 @@ void BmpViewerActivity::onEnter() {
     if (!renderImage()) {
       renderer.clearScreen();
       renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_FILE_OPEN_FAILED));
-      const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
+      const auto labels = imageLabels(false, false, false);
       GUI.drawButtonHints(renderer, labels.btn1, "", "", "");
       renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    } else {
+      actionReady = true;
     }
     return;
   }
@@ -211,9 +280,16 @@ void BmpViewerActivity::onEnter() {
       bool hasNext = (siblingImages.size() > 1 && currentImageIndex != -1 &&
                       currentImageIndex < static_cast<int>(siblingImages.size()) - 1);
 
-      const auto labels = mappedInput.mapLabels(tr(STR_BACK), canSetSleepCover() ? tr(STR_SET_SLEEP_COVER) : "",
-                                                (hasPrevious ? "<" : ""), (hasNext ? ">" : ""));
-
+      const bool grayscale = bitmap.hasGreyscale();
+      const bool processing = actionMode && grayscale;
+      const auto readyLabels = imageLabels(hasPrevious, hasNext, true);
+      const auto drawFooter = [&]() {
+        if (processing) {
+          drawProcessingFooter(renderer);
+        } else {
+          GUI.drawButtonHints(renderer, readyLabels.btn1, readyLabels.btn2, readyLabels.btn3, readyLabels.btn4);
+        }
+      };
       GUI.fillPopupProgress(renderer, popupRect, 50);
 
       renderer.clearScreen();
@@ -225,8 +301,8 @@ void BmpViewerActivity::onEnter() {
       }
 
       // Draw UI hints on the base layer
-      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-      if (bitmap.hasGreyscale()) {
+      drawFooter();
+      if (grayscale) {
         const bool absolute = renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported();
         if (absolute && !renderer.displayGrayscaleBase(HalDisplay::GrayscaleMode::Absolute)) return;
         if (!absolute) renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
@@ -243,7 +319,7 @@ void BmpViewerActivity::onEnter() {
             planesReady = false;
             break;
           }
-          GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+          drawFooter();
           if (mode == GfxRenderer::GRAYSCALE_LSB) {
             renderer.copyGrayscaleLsbBuffers();
           } else {
@@ -261,18 +337,34 @@ void BmpViewerActivity::onEnter() {
           renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_FILE_OPEN_FAILED));
           planesReady = false;
         }
-        GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+        if (actionMode) {
+          // Preserve the actually visible Processing footer as the controller
+          // baseline before transitioning it to the final action footer.
+          drawProcessingFooter(renderer);
+        } else {
+          drawFooter();
+        }
         renderer.cleanupGrayscaleWithFrameBuffer();
-        if (!planesReady) renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+        if (planesReady) {
+          if (actionMode) {
+            clearActionFooter(renderer);
+            GUI.drawButtonHints(renderer, readyLabels.btn1, readyLabels.btn2, readyLabels.btn3, readyLabels.btn4);
+            renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+          }
+          actionReady = true;
+        } else {
+          renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+        }
       } else {
         renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+        actionReady = true;
       }
 
     } else {
       // Handle file parsing error
       renderer.clearScreen();
       renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_INVALID_BMP_FILE));
-      const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
+      const auto labels = imageLabels(false, false, false);
       GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
       renderer.displayBuffer(HalDisplay::HALF_REFRESH);
     }
@@ -282,7 +374,7 @@ void BmpViewerActivity::onEnter() {
     // Handle file open error
     renderer.clearScreen();
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_FILE_OPEN_FAILED));
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
+    const auto labels = imageLabels(false, false, false);
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
     renderer.displayBuffer(HalDisplay::HALF_REFRESH);
   }
@@ -437,6 +529,22 @@ void BmpViewerActivity::doSetSleepCover() {
 void BmpViewerActivity::loop() {
   // Keep CPU awake/polling so 1st click works
   Activity::loop();
+
+  if (actionMode) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+      ActivityResult result;
+      result.isCancelled = true;
+      setResult(std::move(result));
+      finish();
+      return;
+    }
+    if (actionReady && mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      setResult(ActivityResult{});
+      finish();
+      return;
+    }
+    return;
+  }
 
   auto openSibling = [this](const int delta) {
     if (currentImageIndex < 0) {

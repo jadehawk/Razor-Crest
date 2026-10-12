@@ -69,3 +69,36 @@ technical terms when clearest. Code comments must be short and useful after merg
 For every logical change that can affect shipped firmware or its build—including C/C++, build configuration, partitions, code-generation sources, translations, and release scripts—the main agent must complete [firmware-handoff](.agents/skills/firmware-handoff/SKILL.md) before declaring the work ready or making an approved local commit. That skill owns the required checks, four independent reviews, bounded follow-up, and explicit human acceptance of behavior, architecture, and maintenance ownership.
 
 Read-only inquiries, audits, and reviewers do not run implementation handoff. Pure tests, diagnostics, documentation, and host-only Python scripts use a lighter review unless they alter firmware output or its build. Hardware testing remains the human's responsibility and is required before a PR is opened.
+
+---
+
+## Mandatory local firmware build environment
+
+`C:\XP-FW` is the canonical, dedicated CrossPoint firmware build environment on this workstation. Treat it as infrastructure: do not modify, reinstall, upgrade, repin, or replace its Python, PlatformIO, packages, compiler cache, scripts, or other toolchain components during normal firmware work. Update this environment only when the upstream CrossPoint GitHub Actions firmware build workflow changes and the local environment is intentionally being synchronized to that workflow.
+
+For every requested X3, X4, X4Pro, or Seeed reTerminal Sticky firmware build, use `C:\XP-FW\build-fw.cmd` / `C:\XP-FW\build-fw.ps1`. Do not invoke PlatformIO directly, use ambient Git Bash/MSYS Python, create another build tree, or install/use another PlatformIO toolchain.
+
+The builder mirrors the GitHub Actions release toolchain, keeps its isolated toolchain under `C:\XP-FW\.venv` and `C:\XP-FW\.platformio`, and mirrors source into the short path `C:\XP-FW\work\src` before building.
+
+Device mapping is fixed: X3 and X4 share `gh_release`; X4Pro uses `x4pro-gh_release`; Seed/Seeed/Sticky uses `sticky-gh_release`.
+
+Use these command forms:
+
+```powershell
+C:\XP-FW\build-fw.cmd X3
+C:\XP-FW\build-fw.cmd X4
+C:\XP-FW\build-fw.cmd X3 X4
+C:\XP-FW\build-fw.cmd X4Pro
+C:\XP-FW\build-fw.cmd Seed
+C:\XP-FW\build-fw.cmd X3 X4 X4Pro Seed
+```
+
+By default, use the active authoritative ThinkForge workspace/worktree as the builder `-SourcePath` when testing branch-specific or uncommitted changes. The builder reproduces tracked staged/unstaged changes and normal untracked source files in its short-path mirror without modifying the authoritative source tree.
+
+The normal build must clean each requested target before compiling while retaining the installed compiler/package cache. Do not use `-NoClean` unless an incremental target build is explicitly requested.
+
+Output belongs under `C:\XP-FW\out\<timestamp>-<sha>\` with the latest successful build copied to `C:\XP-FW\out\latest\`. Do not scatter test firmware into ad-hoc build folders.
+
+For first-time or repair setup, run `C:\XP-FW\setup.cmd`. No global Windows `PATH` changes are required. See `C:\XP-FW\README.md` for the canonical workstation build instructions.
+
+This procedure applies regardless of which CrossPoint worktree or feature branch contains the source being built. If `C:\XP-FW` cannot be used, stop and report the exact blocker before deviating.

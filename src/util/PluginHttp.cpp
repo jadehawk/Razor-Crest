@@ -3,6 +3,7 @@
 #include <HalStorage.h>
 #include <Logging.h>
 #include <SecureHttpClient.h>
+#include <WiFi.h>
 
 #include <algorithm>
 #include <cctype>
@@ -15,6 +16,8 @@
 
 namespace {
 constexpr size_t MAX_TOKEN_FILE_SIZE = 2 * 1024;
+
+bool networkReady() { return WiFi.getMode() != WIFI_MODE_NULL && WiFi.status() == WL_CONNECTED; }
 
 // Resolves the caller's reused TLS session (or `tmp`) into a configured,
 // connected client, or nullptr if begin() failed.
@@ -70,6 +73,7 @@ JsonVariantConst resolvePath(JsonVariantConst node, const std::string& dotted) {
 std::string variantToString(JsonVariantConst v) {
   if (v.isNull()) return "";
   if (v.is<const char*>()) return v.as<const char*>();
+  if (v.is<bool>()) return v.as<bool>() ? "true" : "false";
   char buf[24];
   if (v.is<long long>() || v.is<int>()) {
     snprintf(buf, sizeof(buf), "%lld", v.as<long long>());
@@ -185,9 +189,46 @@ void loadConfigFile(const std::string& file, Headers& out) {
   }
 }
 
+bool saveConfigValue(const std::string& file, const std::string& key, const std::string& value,
+                     const bool booleanValue) {
+  if (file.empty() || key.empty() || !allowedFile(file)) return false;
+  JsonDocument doc;
+  if (Storage.exists(file.c_str())) {
+    std::string raw;
+    if (!Storage.readFileToString("PHTP", file, MAX_TOKEN_FILE_SIZE, raw) ||
+        deserializeJson(doc, raw) != DeserializationError::Ok || !doc.is<JsonObject>()) {
+      return false;
+    }
+  } else {
+    doc.to<JsonObject>();
+  }
+  if (booleanValue)
+    doc[key] = value == "true" || value == "1";
+  else
+    doc[key] = value;
+  std::string out;
+  serializeJson(doc, out);
+  if (out.size() > MAX_TOKEN_FILE_SIZE) return false;
+  HalFile f;
+  if (!Storage.openFileForWrite("PHTP", file, f)) return false;
+  const size_t written = f.write(out.data(), out.size());
+  f.flush();
+  if (f.isOpen()) f.close();
+  if (written != out.size()) {
+    LOG_ERR("PHTP", "short config write (%u of %u)", static_cast<unsigned>(written), static_cast<unsigned>(out.size()));
+    Storage.remove(file.c_str());
+    return false;
+  }
+  return true;
+}
+
 int request(freeink::SecureHttpClient* session, const std::string& url, const std::string& method,
             const std::string& body, const Headers& headers, String& out, const size_t maxResponse,
             Headers* responseHeaders, const std::function<bool()>& shouldAbort) {
+  if (!networkReady()) {
+    LOG_ERR("PHTP", "Network request blocked: WiFi is not connected");
+    return -1;
+  }
   WifiPowerSaveGuard psGuard;
   freeink::SecureHttpClient tmp;
   freeink::SecureHttpClient* httpPtr = openClient(session, tmp, url, headers);
@@ -227,6 +268,10 @@ int request(freeink::SecureHttpClient* session, const std::string& url, const st
 
 int requestToFile(freeink::SecureHttpClient* session, const std::string& url, const std::string& method,
                   const std::string& body, const Headers& headers, const char* destPath, const size_t maxResponse) {
+  if (!networkReady()) {
+    LOG_ERR("PHTP", "Network request blocked: WiFi is not connected");
+    return -1;
+  }
   WifiPowerSaveGuard psGuard;
   freeink::SecureHttpClient tmp;
   freeink::SecureHttpClient* httpPtr = openClient(session, tmp, url, headers);

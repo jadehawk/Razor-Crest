@@ -215,8 +215,8 @@ download filename/username/password; and sidecar path/body.
 | `{plugin_api}` | numeric plugin API level | template fields |
 | `{plugin_capabilities}` | comma-separated advertised capability names | template fields |
 | `{page}` | current 1-based page | browse |
-| `{limit}` | `page_size + 1` (the extra row detects "more pages") | browse |
-| `{id}` `{title}` `{author}` `{url}` | fields of the selected item | download, sidecar |
+| `{limit}` | active layout item count + 1 (the extra item detects "more pages") | browse |
+| `{id}` `{title}` `{author}` `{url}` `{thumbnail}` | fields of the selected item | image, download, sidecar |
 | `{md5}` | MD5 hex of the destination file path | sidecar |
 | `{dest}` | sanitized on-SD path of the downloaded file | sidecar |
 | `{device_code}` | from the auth request response | auth poll |
@@ -224,8 +224,8 @@ download filename/username/password; and sidecar path/body.
 Two browse formats:
 - **`"json"`** (default) — a paged JSON list, using `items`/`fields` below.
 - **`"xml"`** — walks a repeating XML element with optional folder navigation
-  (Confirm opens a folder, Back goes up). No paging; the JSON `items`/
-  `page_size` are ignored. The firmware knows no specific protocol: a WebDAV
+  (Confirm opens a folder, Back goes up). No paging; the JSON `items` and
+  grid/list presentation fields are ignored. The firmware knows no specific protocol: a WebDAV
   `PROPFIND` multistatus, an OPDS/Atom feed, or any XML list is all manifest
   config. XML field selectors are `"elem"` (child element text), `"elem@attr"`
   (child element attribute), or `"@attr"` (attribute on the item element).
@@ -247,6 +247,42 @@ For JSON catalogs, `browse.compatibility` maps optional catalog-entry fields to 
     "file": "config.json"                   // e.g. a user-entered server URL + credentials
   },
 
+  "ui": {                                   // optional native plugin shell; json catalogs only
+    "default_tab": "library",
+    "tabs": [                               // at most 4
+      { "id": "library", "title": "Library",  "type": "browse" },
+      { "id": "cache", "title": "Cache",       "type": "cache" },
+      { "id": "settings", "title": "Settings", "type": "settings" }
+    ]
+  },
+  "cache": {                                // optional progressive JSON catalog/image cache
+    "enabled": true,
+    "refresh": "{cfg.cache_refresh}",          // always, 3d, 7d, 14d; default 7d
+    "limit_mb": "{cfg.cache_limit_mb}",        // bounded by firmware to 8..128 MB; default 32
+    "seed": { "url": "https://.../thumbnail-cache.zip" } // optional user-triggered cache seed
+  },
+
+  "settings": [                             // optional native editor for config.file; at most 12
+    { "key": "layout", "title": "Layout", "type": "choice", "default": "grid",
+      "options": [                          // at most 6 per choice
+        { "title": "Grid", "value": "grid" },
+        { "title": "List", "value": "list" }
+      ] },
+    { "key": "list_thumbnails", "title": "Show thumbnails in list view",
+      "type": "toggle", "default": true },
+    { "key": "cache_refresh", "title": "Refresh cache", "type": "choice", "default": "7d",
+      "options": [
+        { "title": "Always", "value": "always" }, { "title": "3 days", "value": "3d" },
+        { "title": "7 days", "value": "7d" }, { "title": "14 days", "value": "14d" }
+      ] },
+    { "key": "cache_limit_mb", "title": "Cache storage", "type": "choice", "default": "32",
+      "options": [
+        { "title": "8 MB", "value": "8" }, { "title": "16 MB", "value": "16" },
+        { "title": "32 MB", "value": "32" }, { "title": "64 MB", "value": "64" },
+        { "title": "128 MB", "value": "128" }
+      ] }
+  ],
+
   "browse": {                               // required
     "format": "json",                       // or "xml"
     "url": "https://.../search",             // required only for an openable catalog
@@ -261,6 +297,7 @@ For JSON catalogs, `browse.compatibility` maps optional catalog-entry fields to 
       "author": "authors.0.name",
       "id": "id",
       "url": "download_url",                // when the item carries a direct file URL
+      "thumbnail": "thumbnail",             // optional preview URL; exposes {thumbnail}
       "version": "version"                  // catalog-of-plugins only: badges each row
                                             // Installed / Update by comparing this to the
                                             // installed plugin's manifest.json (found by id).
@@ -273,7 +310,22 @@ For JSON catalogs, `browse.compatibility` maps optional catalog-entry fields to 
       "plugin_api_min": "compatibility.plugin_api_min",
       "requires": "compatibility.requires"
     },
-    "page_size": 8,                         // 1..16; response should honor {limit}
+    "grid_page_size": 6,                     // grid item count: 1..16
+    "list_page_size": 10,                    // list item count: 1..16
+    "view": "list",                         // "list" (default) or "grid"; json only
+    "grid_columns": 4,                      // grid only: 1..4; default 4
+    "grid_rows": 2,                         // visible grid rows: 1..4; default 2
+    "list_thumbnail": false,                // list only: request thumbnail cards
+    "selection_style": "theme",             // theme, light, dark, or outline
+    // Presentation values above may also be strings such as "{cfg.layout}"
+    // or "{cfg.grid_rows}", binding the renderer to native plugin settings.
+    "image": {                              // optional per-item preview request (json only)
+      "url": "{thumbnail}",                // or any template using id/title/author/url/thumbnail
+      "method": "GET",                      // default GET; body/headers work like browse
+      "headers": { "Authorization": "Bearer {token}" },
+      "format": "jpeg",                     // jpeg (default), png, or already-sized bmp
+      "radius": 0                             // optional rounded preview corners, 0..16
+    },
 
     "lists": [                              // optional named sub-catalogs (json only):
       { "title": "All Books" },             // a picker screen precedes browsing;
@@ -286,6 +338,7 @@ For JSON catalogs, `browse.compatibility` maps optional catalog-entry fields to 
           "cancel": "Go Back"                  // defaults to translated Cancel
         } }
     ],                                      // omitted keys fall back to browse's
+    "lists_url": "https://.../catalog-lists.json", // optional remote list index; replaces static lists when used
 
     // --- xml format (ignore the json fields above; fields become selectors) ---
     "item": "response",                     // local-name of the repeating element
@@ -308,6 +361,7 @@ For JSON catalogs, `browse.compatibility` maps optional catalog-entry fields to 
                                             // a "dest_dir" in the config file overrides it,
                                             // so the plugin's web card can offer the setting
     "filename": "{title}.epub",             // rendered filename is sanitized to 100 bytes;
+    "preview_on_select": "{cfg.allow_image_preview}", // config toggle; true = full-screen Close/Save, false = direct save
                                             // a conventional extension is preserved
     "sidecar": {                            // optional per-book metadata file
       "path": "{dest}.meta.json",             // the book metadata sidecar convention (see plugin-events.md)
@@ -356,11 +410,29 @@ For JSON catalogs, `browse.compatibility` maps optional catalog-entry fields to 
   plugin.
 - **Stale tokens**: a 401/403 from browse returns to the sign-in screen rather
   than an error.
-- **Pagination** (json): the browse request should return up to `{limit}`
-  items; the firmware displays `page_size` and uses the extra row to know
-  another page exists. Navigation matches the OPDS browser: a "Previous
-  page" row precedes the items past page 1 and a "Next page" row follows
-  them while more pages exist — tappable and button-reachable like any row.
+- **Pagination** (json): the browse request should return up to `{limit}` items.
+  Grid and list layouts use `grid_page_size` and `list_page_size` independently;
+  the extra item only determines whether another server page exists. Enhanced
+  plugin UIs use FreeInkUI's native two-action footer for Previous/Next; the
+  unavailable direction remains visible but disabled, and D-pad focus reaches
+  Previous immediately before Next after the content items.
+- **Progressive cache** (json): an optional top-level `cache` block keeps each
+  fetched catalog page and its converted display-ready thumbnails under that
+  plugin's own `.cache` directory. A fresh cached page opens directly from SD
+  without requiring Wi-Fi. Browsing beyond the cached frontier fetches only the
+  missing page and adds it to the existing cache; there is no prefetch or bulk
+  catalog download. `refresh` controls catalog-page freshness (`always`, `3d`,
+  `7d`, or `14d`; default `7d`). Cached images are keyed independently by their
+  resolved request and remain reusable across catalog refreshes, so an unchanged
+  image URL is not downloaded again. If a network refresh fails, an existing
+  stale page is used when available. `limit_mb` is clamped to 8..128 MB (default
+  32 MB); when the limit is exceeded, old image entries are evicted before old
+  catalog pages while the page currently on screen and its images are protected.
+  Cache-enabled plugins may expose those controls inside the native Settings tab: the top-level
+  Settings list gets an expandable Cache section containing cache-bound settings, last refresh,
+  page/image counts, storage usage, seed controls, Refresh now, and Clear cache. The legacy
+  `cache` tab remains supported for existing manifests. Manual refresh updates the current catalog
+  progressively rather than downloading every page. Search results are not cached.
 - **Lists** (json): with `browse.lists`, opening the catalog shows a picker
   of the named entries first; each entry browses with its own url/body
   overrides (server-side categories, shelves, sort orders). A list with
@@ -369,6 +441,28 @@ For JSON catalogs, `browse.compatibility` maps optional catalog-entry fields to 
   defaults to the list title, and omitted button labels use the firmware's
   translated Cancel/Confirm defaults. Back from the book list returns to the
   picker.
+- **Native tabs and settings** (json): `ui.tabs` exposes a bounded native tab
+  shell using the same tab treatment as the main UI. Supported tab types are
+  `browse` and `settings` (maximum 4 tabs). A settings tab edits the plugin's
+  existing `config.file`; settings are declarative `choice` or `toggle` rows
+  (maximum 8 settings, 6 choices each). Missing config keys use their declared
+  defaults. Presentation properties may bind to those values with the existing
+  `{cfg.KEY}` template syntax, so changing a plugin setting can switch layout
+  without a firmware or plugin update.
+- **Image layouts** (json): `browse.image.url` is a per-item request template
+  and may use `{id}`, `{title}`, `{author}`, `{url}`, or `{thumbnail}`. `view: "grid"` uses
+  `grid_columns` (1..4, default 4) by `grid_rows` (1..4, default 2) as the visible
+  viewport. If `grid_page_size` exceeds that viewport, FreeInkUI scrolls the grid
+  to keep the selected cover visible. `list_page_size` is independent.
+  `list_thumbnail: true` uses thumbnail cards; false returns to the normal one-row
+  list and skips preview fetching. `selection_style` controls list-row selection as
+  `theme`, `light`, `dark`, or `outline`; grid items always use a cover frame so
+  their preview is never obscured. The native footer uses its own FreeInkUI focus
+  treatment. `image.radius` optionally masks preview corners to a bounded 0..16 px
+  radius. JPEG and PNG sources are downsampled to 1-bit BMP on SD; `format: "bmp"`
+  expects an already suitably sized BMP. If `image` is omitted, the normal one-row
+  list remains in use; an individual image fetch/convert failure renders that item
+  with the standard empty preview placeholder.
 - **XML navigation**: Confirm on a folder (an item carrying `container_element`)
   descends into it, Back climbs out (Back at the root leaves the screen).
   With `resolve_urls`, server-relative URLs resolve against the browse URL's
@@ -389,6 +483,10 @@ For JSON catalogs, `browse.compatibility` maps optional catalog-entry fields to 
 - Catalog responses are parsed with a dynamically built ArduinoJson filter
   containing only the declared field paths, so a page parses into a few KB
   no matter the body size.
+- JSON preview images are downloaded one at a time to SD with a 256KB source
+  cap. JPEG/PNG previews are converted directly to small 1-bit BMP files; the
+  catalog keeps only one file-backed bitmap reader in memory and at most 16
+  ready-bit flags, matching the JSON page-size ceiling.
 - One TLS session is kept alive across browse requests: repeated handshakes
   permanently fragment the heap.
 - The book download streams to SD via `HttpDownloader`; file size is

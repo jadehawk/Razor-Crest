@@ -1408,10 +1408,11 @@ void GfxRenderer::drawIcon(const uint8_t bitmap[], const int x, const int y, con
 }
 
 bool GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, const int maxWidth, const int maxHeight,
-                             const float cropX, const float cropY, const bool whiteAsTransparent) const {
+                             const float cropX, const float cropY, const bool whiteAsTransparent,
+                             const bool allowUpscale) const {
   if (fontCacheManager_ && fontCacheManager_->isScanning()) return false;
   // For 1-bit bitmaps, use optimized 1-bit rendering path (no crop support for 1-bit)
-  if (bitmap.is1Bit() && cropX == 0.0f && cropY == 0.0f) {
+  if (bitmap.is1Bit() && cropX == 0.0f && cropY == 0.0f && !allowUpscale) {
     return drawBitmap1Bit(bitmap, x, y, maxWidth, maxHeight);
   }
 
@@ -1438,10 +1439,11 @@ bool GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
     hasTargetBounds = true;
   }
 
-  if (hasTargetBounds && fitScale < 1.0f) {
+  if (hasTargetBounds && (fitScale < 1.0f || (allowUpscale && fitScale > 1.0f))) {
     scale = fitScale;
     isScaled = true;
   }
+  const bool upscale = isScaled && scale > 1.0f;
   LOG_DBG("GFX", "Scaling by %f - %s", scale, isScaled ? "scaled" : "not scaled");
 
   // Calculate output row size (2 bits per pixel, packed into bytes)
@@ -1461,59 +1463,68 @@ bool GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
   for (int bmpY = 0; bmpY < (bitmap.getHeight() - cropPixY); bmpY++) {
     // The BMP's (0, 0) is the bottom-left corner (if the height is positive, top-left if negative).
     // Screen's (0, 0) is the top-left corner.
-    int screenY = -cropPixY + (bitmap.isTopDown() ? bmpY : bitmap.getHeight() - 1 - bmpY);
+    const int sourceY = -cropPixY + (bitmap.isTopDown() ? bmpY : bitmap.getHeight() - 1 - bmpY);
+    int screenY = sourceY;
+    int screenYEnd = sourceY;
     if (isScaled) {
-      screenY = std::floor(screenY * scale);
+      screenY = std::floor(sourceY * scale);
+      screenYEnd = upscale ? static_cast<int>(std::floor((sourceY + 1) * scale)) - 1 : screenY;
     }
-    screenY += y;  // the offset should not be scaled
-    if (screenY >= getScreenHeight()) {
-      break;
-    }
+    screenY += y;
+    screenYEnd += y;
 
     if (bitmap.readNextRow(outputRow, rowBytes) != BmpReaderError::Ok) {
       LOG_ERR("GFX", "Failed to read row %d from bitmap", bmpY);
-
       return false;
     }
 
-    if (screenY < 0) {
+    if (bmpY < cropPixY || screenYEnd < 0) continue;
+    if (screenY >= getScreenHeight() && screenYEnd >= getScreenHeight()) {
+      if (bitmap.isTopDown()) break;
       continue;
     }
-
-    if (bmpY < cropPixY) {
-      // Skip the row if it's outside the crop area
-      continue;
-    }
+    const int drawY0 = std::max(0, screenY);
+    const int drawY1 = std::min(getScreenHeight() - 1, screenYEnd);
 
     for (int bmpX = cropPixX; bmpX < bitmap.getWidth() - cropPixX; bmpX++) {
-      int screenX = bmpX - cropPixX;
+      const int sourceX = bmpX - cropPixX;
+      int screenX = sourceX;
+      int screenXEnd = sourceX;
       if (isScaled) {
-        screenX = std::floor(screenX * scale);
+        screenX = std::floor(sourceX * scale);
+        screenXEnd = upscale ? static_cast<int>(std::floor((sourceX + 1) * scale)) - 1 : screenX;
       }
-      screenX += x;  // the offset should not be scaled
-      if (screenX >= getScreenWidth()) {
-        break;
-      }
-      if (screenX < 0) {
-        continue;
-      }
+      screenX += x;
+      screenXEnd += x;
+      if (screenX >= getScreenWidth()) break;
+      if (screenXEnd < 0) continue;
 
       const uint8_t val = outputRow[bmpX / 4] >> (6 - ((bmpX * 2) % 8)) & 0x3;
       if (whiteAsTransparent && val == 3) continue;
 
-      if (renderMode == BW && val < 3) {
-        drawPixel(screenX, screenY);
-      } else if (renderMode == GRAYSCALE_LSB || renderMode == GRAYSCALE_MSB) {
-        const auto pixel = grayPlanePixel(val, renderMode == GRAYSCALE_MSB, absoluteGrayPlanes);
-        if (pixel.write) drawPixel(screenX, screenY, pixel.black);
+      const int drawX0 = std::max(0, screenX);
+      const int drawX1 = std::min(getScreenWidth() - 1, screenXEnd);
+      for (int py = drawY0; py <= drawY1; ++py) {
+        for (int px = drawX0; px <= drawX1; ++px) {
+          if (renderMode == BW && val < 3) {
+            drawPixel(px, py);
+          } else if (renderMode == GRAYSCALE_LSB || renderMode == GRAYSCALE_MSB) {
+            const auto pixel = grayPlanePixel(val, renderMode == GRAYSCALE_MSB, absoluteGrayPlanes);
+            if (pixel.write) drawPixel(px, py, pixel.black);
+          }
+        }
       }
     }
   }
 
   const int sourceWidth = bitmap.getWidth() - cropPixX * 2;
   const int sourceHeight = bitmap.getHeight() - cropPixY * 2;
-  const int renderedWidth = isScaled ? static_cast<int>(std::floor((sourceWidth - 1) * scale)) + 1 : sourceWidth;
-  const int renderedHeight = isScaled ? static_cast<int>(std::floor((sourceHeight - 1) * scale)) + 1 : sourceHeight;
+  const int renderedWidth =
+      upscale ? static_cast<int>(std::floor(sourceWidth * scale))
+              : (isScaled ? static_cast<int>(std::floor((sourceWidth - 1) * scale)) + 1 : sourceWidth);
+  const int renderedHeight =
+      upscale ? static_cast<int>(std::floor(sourceHeight * scale))
+              : (isScaled ? static_cast<int>(std::floor((sourceHeight - 1) * scale)) + 1 : sourceHeight);
   preserveImagePolarity(x, y, renderedWidth, renderedHeight);
   return true;
 }

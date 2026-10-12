@@ -71,6 +71,11 @@ bool saveTokenToFile(const std::string& file, const std::string& path, const std
 // Loads a flat JSON config file into {cfg.KEY} pairs. Missing file = empty.
 void loadConfigFile(const std::string& file, Headers& out);
 
+// Updates one flat config key while preserving every other JSON value/type.
+// Native plugin settings use strings for choices and JSON booleans for toggles.
+bool saveConfigValue(const std::string& file, const std::string& key, const std::string& value,
+                     bool booleanValue = false);
+
 // --- bounded transport ---
 // `session` is an optional caller-owned TLS session reused across requests
 // (repeated handshakes permanently fragment the heap); pass nullptr to use a
