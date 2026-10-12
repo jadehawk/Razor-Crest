@@ -5,6 +5,24 @@
 >
 > Razor-Crest deliberately keeps the broad firmware family as `crosspoint` for plugin compatibility, while advertising the exact firmware ID `Razor-Crest` so plugins and catalogs can distinguish this fork when needed.
 
+## Public firmware downloads
+
+Razor-Crest publishes device-specific firmware binaries through this fork's GitHub Releases. Release tags use `razor-crest-v<upstream-version>-r<revision>` (for example `razor-crest-v1.6.5-r1`), so the CrossPoint baseline and Razor-Crest revision are both visible.
+
+Each release builds and publishes firmware for every device currently covered by the upstream CrossPoint release matrix:
+
+- X3 / X4
+- Seeed reTerminal Sticky
+- X4 Pro
+- X4 Classic
+- Paper Mono
+- MetalIO EInk4
+- EEGO A4
+
+Release assets use names such as `razor-crest-1.6.5-r1-x3-x4.bin`. Use only the binary intended for your device. Each release also includes `SHA256SUMS.txt` and a machine-readable `release-manifest.json` containing the source commit, upstream baseline, firmware identity, and asset mapping.
+
+These are Razor-Crest fork builds, not official CrossPoint releases.
+
 ## Current Razor-Crest-only additions
 
 The list below describes the current **net differences from upstream `develop`**. Intermediate experiments that were later removed or superseded are intentionally not listed.
