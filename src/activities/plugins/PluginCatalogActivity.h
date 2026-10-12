@@ -174,6 +174,8 @@ class PluginCatalogActivity final : public CatalogActivity {
   std::string manifestPath;  // empty while the picker is showing
   std::string catalogTitle;
   Manifest manifest;
+  bool manifestLoaded = false;
+  bool browseListsRemoteAttempted = false;
   std::vector<PluginRef> installedPlugins;
   bool pluginHubAvailable = false;
   bool showPluginHubInstallRow = false;

@@ -726,6 +726,7 @@ void PluginCatalogActivity::enterPluginPicker() {
 
   manifestPath.clear();
   manifest = Manifest{};
+  manifestLoaded = false;
   activePluginTab = -1;
   pluginTabNavs.clear();
   catalogTitle = tr(STR_PLUGINS);
@@ -788,10 +789,13 @@ void PluginCatalogActivity::enterCatalog() {
   session.reset(new (std::nothrow) freeink::SecureHttpClient());
   if (session) session->setReuse(true);
 
+  manifestLoaded = false;
   if (!loadManifest()) {
+    manifest = Manifest{};
     fail(StrId::STR_PLUGIN_MANIFEST_INVALID);
     return;
   }
+  manifestLoaded = true;
   loadConfig();
   if (!manifest.tabs.empty()) {
     activePluginTab = 0;
@@ -904,6 +908,7 @@ void PluginCatalogActivity::resetBrowse() {
   page = 1;
   hasMore = false;
   currentList = -1;
+  browseListsRemoteAttempted = false;
   searchActive = false;
   searchQuery.clear();
   browseRefreshNeeded = false;
@@ -950,10 +955,10 @@ bool PluginCatalogActivity::loadBrowseListIndex() {
   }
 
   constexpr size_t MAX_REMOTE_BROWSE_LISTS = 64;
-  manifest.browseLists.clear();
-  manifest.browseLists.reserve(std::min<size_t>(lists.size(), MAX_REMOTE_BROWSE_LISTS));
+  std::vector<Manifest::BrowseList> remoteLists;
+  remoteLists.reserve(std::min<size_t>(lists.size(), MAX_REMOTE_BROWSE_LISTS));
   for (JsonVariantConst l : lists) {
-    if (manifest.browseLists.size() >= MAX_REMOTE_BROWSE_LISTS) break;
+    if (remoteLists.size() >= MAX_REMOTE_BROWSE_LISTS) break;
     Manifest::BrowseList entry;
     entry.title = l["title"] | "";
     entry.url = l["url"] | "";
@@ -963,12 +968,13 @@ bool PluginCatalogActivity::loadBrowseListIndex() {
     entry.noticeMessage = notice["message"] | "";
     entry.noticeConfirm = notice["confirm"] | "";
     entry.noticeCancel = notice["cancel"] | "";
-    if (!entry.title.empty() && !entry.url.empty()) manifest.browseLists.push_back(std::move(entry));
+    if (!entry.title.empty() && !entry.url.empty()) remoteLists.push_back(std::move(entry));
   }
-  if (manifest.browseLists.empty()) {
+  if (remoteLists.empty()) {
     LOG_ERR("PCAT", "browse list index has no usable lists: %s", url.c_str());
     return false;
   }
+  manifest.browseLists = std::move(remoteLists);
   return true;
 }
 
@@ -1021,7 +1027,7 @@ void PluginCatalogActivity::startBrowse() {
   }
 
   const bool needsRemoteLists =
-      !manifest.isXmlList() && !manifest.browseListsUrl.empty() && manifest.browseLists.empty();
+      !manifest.isXmlList() && !manifest.browseListsUrl.empty() && !browseListsRemoteAttempted;
   const bool needsListAuth = needsRemoteLists || wantsListPicker();
   if (needsListAuth) {
     // Dynamic list indexes and list pickers may both use {token}/{cfg.KEY}, so
@@ -1043,7 +1049,8 @@ void PluginCatalogActivity::startBrowse() {
       launchWifiSelection();
       return;
     }
-    if (!loadBrowseListIndex()) {
+    browseListsRemoteAttempted = true;
+    if (!loadBrowseListIndex() && manifest.browseLists.empty()) {
       fail(StrId::STR_FETCH_FEED_FAILED);
       return;
     }
@@ -2788,9 +2795,14 @@ bool PluginCatalogActivity::handleCustomInput() {
 }
 
 void PluginCatalogActivity::retryBrowse() {
+  if (!manifestLoaded) {
+    enterCatalog();
+    return;
+  }
   if (state == State::NO_TOKEN && manifest.hasDeviceCode()) {
     beginAuth();
   } else if ((!manifest.browseListsUrl.empty() && manifest.browseLists.empty()) || wantsListPicker()) {
+    if (!manifest.browseListsUrl.empty() && manifest.browseLists.empty()) browseListsRemoteAttempted = false;
     startBrowse();
   } else {
     beginLoading();

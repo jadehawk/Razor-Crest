@@ -218,6 +218,10 @@ void CrossPointWebServer::begin() {
     sendStaticContent(server.get(), crosspoint_iconSvg, sizeof(crosspoint_iconSvg), crosspoint_iconSvgETag,
                       "image/svg+xml");
   });
+  server->on("/assets/razor-crest-icon.svg", HTTP_GET, [this] {
+    sendStaticContent(server.get(), crosspoint_iconSvg, sizeof(crosspoint_iconSvg), crosspoint_iconSvgETag,
+                      "image/svg+xml");
+  });
 
   server->on("/api/status", HTTP_GET, [this] { handleStatus(); });
   server->on("/api/files", HTTP_GET, [this] { handleFileListData(); });
