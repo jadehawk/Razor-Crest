@@ -181,7 +181,7 @@ of the plugin-system contract, not hardware detection.
 | `plugin_api` | `1` | Numeric plugin contract level for requirements that need a minimum firmware API generation. |
 | `plugin_capabilities` | comma-separated names below | Fine-grained feature advertisement. A catalog entry may require one or more capabilities without hard-coding a firmware version. |
 
-Stock CrossPoint currently advertises these catalog capabilities:
+Razor-Crest currently advertises these catalog capabilities:
 
 | Capability | What it means | Why it exists in the plugin system |
 |---|---|---|
@@ -190,6 +190,9 @@ Stock CrossPoint currently advertises these catalog capabilities:
 | `catalog.bundle_install` | A catalog entry can install a multi-file plugin bundle from a base URL plus a file list into the plugin directory. | Any catalog can distribute a plugin or other supported bundle made of multiple files without a dedicated installer in firmware. Plugin Hub currently uses this to install complete plugins. |
 | `catalog.version_tracking` | Catalog item versions are compared with installed plugin manifests to show Installed or Update status. | Any catalog can expose install/update state using the generic installed-plugin version contract. Plugin Hub currently uses it to identify available updates. |
 | `catalog.compatibility` | JSON catalog entries can be filtered by firmware family, exact firmware ID, minimum plugin API, and required capabilities. | Any catalog can omit entries that require firmware behavior the current device does not provide, while entries with no compatibility metadata remain backward-compatible. Plugin Hub currently uses this for compatibility-aware discovery. |
+| `catalog.images` | JSON catalog items can fetch and render native BMP/JPEG/PNG preview images in list or grid layouts. | Any plugin can add image-backed browsing without implementing its own renderer. |
+| `catalog.cache` | JSON catalog pages and display-ready previews can use the bounded progressive SD cache. | Any plugin can reuse fetched catalog/image data without adding plugin-specific storage logic. |
+| `catalog.refresh` | A JSON catalog can opt into a native Refresh footer action that forces a network refetch of the current page. | Any dynamic catalog can refresh in place, including one-page catalogs that have no paging action to trigger another request. |
 
 Capability names describe firmware behavior available to the entire plugin system.
 They must not encode Plugin Hub policy or ownership, and another plugin may use the
@@ -197,6 +200,29 @@ same capability whenever it depends on the same generic firmware behavior.
 Additional firmware features should advertise their own capability names only when
 the corresponding runtime support is actually present. Catalog entries that omit
 compatibility metadata remain visible for backward compatibility.
+
+### Runtime device capabilities
+
+Runtime device capabilities describe hardware/input features of the current device and
+are intentionally separate from the static `plugin_capabilities` firmware contract.
+Native plugin settings may use `visible_if.device_capability` to appear only when the
+current hardware provides that capability. The first supported capability is `touch`,
+which is true when the active device exposes usable touch input. Unknown capability
+names evaluate false.
+
+This is useful for controls that only make sense on touch hardware. For example, a
+plugin can offer a touch-only pagination preference without exposing a dead setting on
+button-only devices:
+
+```jsonc
+{
+  "key": "hide_pagination",
+  "title": "Hide pagination buttons",
+  "type": "toggle",
+  "default": false,
+  "visible_if": { "device_capability": "touch" }
+}
+```
 
 ### Schema
 
@@ -270,6 +296,9 @@ For JSON catalogs, `browse.compatibility` maps optional catalog-entry fields to 
       ] },
     { "key": "list_thumbnails", "title": "Show thumbnails in list view",
       "type": "toggle", "default": true },
+    { "key": "hide_pagination", "title": "Hide pagination buttons",
+      "type": "toggle", "default": false,
+      "visible_if": { "device_capability": "touch" } },
     { "key": "cache_refresh", "title": "Refresh cache", "type": "choice", "default": "7d",
       "options": [
         { "title": "Always", "value": "always" }, { "title": "3 days", "value": "3d" },
@@ -317,13 +346,15 @@ For JSON catalogs, `browse.compatibility` maps optional catalog-entry fields to 
     "grid_rows": 2,                         // visible grid rows: 1..4; default 2
     "list_thumbnail": false,                // list only: request thumbnail cards
     "selection_style": "theme",             // theme, light, dark, or outline
+    "hide_pagination": "{cfg.hide_pagination}", // touch only: hide Previous/Next; swipes still page
+    "refresh": true,                          // optional native Refresh footer action
     // Presentation values above may also be strings such as "{cfg.layout}"
     // or "{cfg.grid_rows}", binding the renderer to native plugin settings.
     "image": {                              // optional per-item preview request (json only)
       "url": "{thumbnail}",                // or any template using id/title/author/url/thumbnail
       "method": "GET",                      // default GET; body/headers work like browse
       "headers": { "Authorization": "Bearer {token}" },
-      "format": "jpeg",                     // jpeg (default), png, or already-sized bmp
+      "format": "jpeg",                     // jpeg (default), png, bmp, or auto-detect
       "radius": 0                             // optional rounded preview corners, 0..16
     },
 
@@ -380,7 +411,13 @@ For JSON catalogs, `browse.compatibility` maps optional catalog-entry fields to 
     "code_path": "user_code", "verify_url_path": "verification_uri",
     "device_code_path": "device_code", "interval_path": "interval",
     "expires_path": "expires_in", "token_path": "access_token",
-    "error_path": "error"
+    "error_path": "error",
+
+    // optional presentation-only hints for the device-code screen. These do
+    // not alter the QR payload or polling flow:
+    "display_url": "https://example.com",
+    "qr_hint": "Scan QR to join this session",
+    "manual_hint": "Or open the server, choose \"Join Session\", and enter the code above"
 
     // password (silent: mints a token from stored config credentials — for
     // OAuth2 password grants and login-returns-token APIs). Only "request" and
@@ -410,12 +447,19 @@ For JSON catalogs, `browse.compatibility` maps optional catalog-entry fields to 
   plugin.
 - **Stale tokens**: a 401/403 from browse returns to the sign-in screen rather
   than an error.
-- **Pagination** (json): the browse request should return up to `{limit}` items.
+- **Pagination and refresh** (json): the browse request should return up to `{limit}` items.
   Grid and list layouts use `grid_page_size` and `list_page_size` independently;
   the extra item only determines whether another server page exists. Enhanced
-  plugin UIs use FreeInkUI's native two-action footer for Previous/Next; the
-  unavailable direction remains visible but disabled, and D-pad focus reaches
-  Previous immediately before Next after the content items.
+  plugin UIs use FreeInkUI's native footer for Previous/Next pagination. Setting
+  `browse.refresh: true` adds a separate Refresh action between them; Refresh forces
+  a network refetch of the current page, bypassing a fresh catalog-page cache when
+  one is configured. On touch hardware, `browse.hide_pagination` may resolve to
+  true to omit only the Previous/Next footer actions; Refresh remains independent.
+  Vertical browse swipes still cross server-page boundaries at the first/last
+  viewport, so hidden pagination never disables paging. Non-touch devices ignore a
+  true `hide_pagination` value and keep Previous/Next visible. When pagination is
+  shown, unavailable directions remain visible but disabled, and D-pad focus moves
+  through the footer actions after the content items.
 - **Progressive cache** (json): an optional top-level `cache` block keeps each
   fetched catalog page and its converted display-ready thumbnails under that
   plugin's own `.cache` directory. A fresh cached page opens directly from SD
@@ -460,7 +504,9 @@ For JSON catalogs, `browse.compatibility` maps optional catalog-entry fields to 
   their preview is never obscured. The native footer uses its own FreeInkUI focus
   treatment. `image.radius` optionally masks preview corners to a bounded 0..16 px
   radius. JPEG and PNG sources are downsampled to 1-bit BMP on SD; `format: "bmp"`
-  expects an already suitably sized BMP. If `image` is omitted, the normal one-row
+  expects an already suitably sized BMP. `format: "auto"` detects BMP, JPEG, or PNG
+  from the downloaded file signature before selecting the decoder. If `image` is
+  omitted, the normal one-row
   list remains in use; an individual image fetch/convert failure renders that item
   with the standard empty preview placeholder.
 - **XML navigation**: Confirm on a folder (an item carrying `container_element`)

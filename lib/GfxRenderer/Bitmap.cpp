@@ -274,14 +274,30 @@ BmpReaderError Bitmap::readNextRow(uint8_t* data, uint8_t* rowBuffer) const {
       break;
     }
     case 1: {
-      for (int x = 0; x < width; x++) {
-        // Get palette index (0 or 1) from bit at position x
-        const uint8_t palIndex = (rowBuffer[x >> 3] & (0x80 >> (x & 7))) ? 1 : 0;
-        // Use palette lookup for proper black/white mapping
-        lum = paletteLum[palIndex];
-        packPixel(lum);
+      if (!nativePalette) {
+        for (int x = 0; x < width; ++x) {
+          const uint8_t palIndex = (rowBuffer[x >> 3] & (0x80 >> (x & 7))) ? 1 : 0;
+          packPixel(paletteLum[palIndex]);
+        }
+        break;
       }
-      break;
+      // Native 1-bit BMP palettes only need brightness/contrast/gamma evaluated
+      // once per palette entry rather than once per source pixel.
+      const uint8_t color0 = static_cast<uint8_t>(adjustPixel(paletteLum[0]) >> 6);
+      const uint8_t color1 = static_cast<uint8_t>(adjustPixel(paletteLum[1]) >> 6);
+      outPtr = data;
+      for (int x = 0; x < width; x += 4) {
+        uint8_t packed = 0;
+        const int remaining = width - x;
+        const int count = remaining < 4 ? remaining : 4;
+        for (int i = 0; i < count; ++i) {
+          const int sourceX = x + i;
+          const bool index1 = (rowBuffer[sourceX >> 3] & (0x80 >> (sourceX & 7))) != 0;
+          packed |= static_cast<uint8_t>((index1 ? color1 : color0) << (6 - i * 2));
+        }
+        *outPtr++ = packed;
+      }
+      return BmpReaderError::Ok;
     }
     default:
       return BmpReaderError::UnsupportedBpp;
@@ -295,6 +311,15 @@ BmpReaderError Bitmap::readNextRow(uint8_t* data, uint8_t* rowBuffer) const {
   // Flush remaining bits if width is not a multiple of 4
   if (bitShift != 6) *outPtr = currentOutByte;
 
+  return BmpReaderError::Ok;
+}
+
+BmpReaderError Bitmap::skipRows(const int count) const {
+  if (bpp != 1) return BmpReaderError::UnsupportedBpp;
+  if (count <= 0) return BmpReaderError::Ok;
+  const int64_t bytes = static_cast<int64_t>(rowBytes) * count;
+  if (!file.seekCur(bytes)) return BmpReaderError::SeekPixelDataFailed;
+  prevRowY += count;
   return BmpReaderError::Ok;
 }
 

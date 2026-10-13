@@ -33,7 +33,7 @@ The list below describes the current **net differences from upstream `develop`**
   - firmware family: `crosspoint`
   - exact firmware ID: `Razor-Crest`
   - plugin API level: `1`
-  - advertised plugin capabilities: `catalog.lists`, `catalog.notices`, `catalog.bundle_install`, `catalog.version_tracking`, `catalog.compatibility`, `catalog.images`, and `catalog.cache`
+  - advertised plugin capabilities: `catalog.lists`, `catalog.notices`, `catalog.bundle_install`, `catalog.version_tracking`, `catalog.compatibility`, `catalog.images`, `catalog.cache`, and `catalog.refresh`
 - Exposes firmware family, exact firmware ID, plugin API level, and capability list through `/api/status`.
 - Makes the same identity values available to plugin/catalog templates through `{firmware_family}`, `{firmware_id}`, `{firmware_version}`, `{plugin_api}`, and `{plugin_capabilities}`.
 - Replaces the stock CrossPoint branding artwork with the Razor-Crest logo in firmware/web assets.
@@ -85,7 +85,8 @@ These capabilities are implemented as **plugin-agnostic firmware features**. Plu
 - **Native plugin settings** — declarative `choice` and `toggle` settings can edit a plugin's existing JSON config file and immediately drive presentation through `{cfg.KEY}` values.
 - **Grid/list presentation controls** — manifests can independently configure grid/list page sizes, 1–4 grid columns, 1–4 visible grid rows, list thumbnails, selection style, and rounded preview corners.
 - **Native footer pagination** — enhanced catalog UIs use Previous/Next footer actions instead of consuming catalog rows for paging.
-- **Image-backed catalogs** — items can declare thumbnail/image requests using BMP, JPEG, or PNG sources. JPEG/PNG previews are converted to display-ready BMP data on SD and failed previews fall back to the normal placeholder.
+- **Catalog refresh action** — manifests can opt into a native Refresh footer action that refetches the current catalog page; it is separate from Previous/Next pagination and also works when only one page exists.
+- **Image-backed catalogs** — items can declare thumbnail/image requests using BMP, JPEG, or PNG sources, or `auto` to detect those formats from the downloaded bytes. JPEG/PNG previews are converted to display-ready BMP data on SD and failed previews fall back to the normal placeholder.
 - **Full-screen image preview before save** — direct image downloads can opt into a Close/Save preview flow before the final file is published to its destination. Grayscale previews show a Processing state until the final action footer is safe to reveal.
 - **Image format-aware publishing** — downloaded image content is signature-checked and can be converted to BMP when the destination requires BMP rather than trusting the remote filename alone.
 - **Bitmap upscaling support** — the renderer can optionally upscale bitmap content to a requested target instead of only downscaling, supporting larger native image previews.

@@ -178,6 +178,9 @@ void loadConfigFile(const std::string& file, Headers& out) {
   out.clear();
   if (file.empty()) return;
   if (!allowedFile(file)) return;
+  // Plugin config is optional and created lazily on the first settings change.
+  // A missing file means "use manifest defaults", not an SD read error.
+  if (!Storage.exists(file.c_str())) return;
   std::string raw;
   if (!Storage.readFileToString("PHTP", file, MAX_TOKEN_FILE_SIZE, raw)) return;
   JsonDocument doc;

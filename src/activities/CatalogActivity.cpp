@@ -143,8 +143,9 @@ void CatalogActivity::navigateButtons() {
   if (nav.selected != before) searchPending = false;
 }
 
-void CatalogActivity::beginDownload(const std::string& title) {
+void CatalogActivity::beginDownload(const std::string& title, const char* heading) {
   state = State::DOWNLOADING;
+  downloadHeading = heading ? heading : tr(STR_DOWNLOADING);
   statusMessage = title;
   downloadProgress = downloadTotal = 0;
   cancelDownload = goHomeAfterCancel = false;
@@ -212,8 +213,8 @@ void CatalogActivity::screenHeader(UiScreen& screen, const char* title) {
 bool CatalogActivity::buildStatusScreen(UiScreen& screen, const bool boldError, const bool showDownloadTotal) {
   switch (state) {
     case State::DOWNLOADING:
-      catalogDownloadScreen(screen, statusMessage.c_str(), downloadProgress, showDownloadTotal ? downloadTotal : 0,
-                            ACTION_CANCEL);
+      catalogDownloadScreen(screen, downloadHeading.c_str(), statusMessage.c_str(), downloadProgress,
+                            showDownloadTotal ? downloadTotal : 0, ACTION_CANCEL);
       break;
     case State::ERROR:
       if (mappedInput.hasTouch()) {

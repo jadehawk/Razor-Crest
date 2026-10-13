@@ -33,9 +33,11 @@
 #include "activities/util/BmpViewerActivity.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "components/CatalogScreens.h"
+#include "components/UIScale.h"
 #include "components/UITheme.h"
 #include "components/media/book-card.h"
 #include "components/media/cover-grid.h"
+#include "fontIds.h"
 #include "network/HttpDownloader.h"
 #include "network/ProtectedPaths.h"
 #include "util/BookCacheUtils.h"
@@ -366,6 +368,9 @@ bool PluginCatalogActivity::loadManifest() {
   manifest.gridRowsTpl = variantToString(browse["grid_rows"]);
   if (manifest.gridRowsTpl.empty()) manifest.gridRowsTpl = "2";
   manifest.listThumbnailsTpl = variantToString(browse["list_thumbnail"]);
+  manifest.refreshEnabled = browse["refresh"] | false;
+  manifest.hidePaginationTpl = variantToString(browse["hide_pagination"]);
+  if (manifest.hidePaginationTpl.empty()) manifest.hidePaginationTpl = "false";
   if (manifest.listThumbnailsTpl.empty()) manifest.listThumbnailsTpl = "false";
   manifest.selectionStyleTpl = variantToString(browse["selection_style"]);
   if (manifest.selectionStyleTpl.empty()) manifest.selectionStyleTpl = "theme";
@@ -384,6 +389,7 @@ bool PluginCatalogActivity::loadManifest() {
   manifest.cacheSeedUrl = cache["seed"]["url"] | "";
   pluginhttp::readRequest(browse["image"], "GET", manifest.imageReq);
   const char* imageFormat = browse["image"]["format"] | "jpeg";
+  if (strcasecmp(imageFormat, "auto") == 0) manifest.imageFormat = Manifest::ImageFormat::Auto;
   if (strcasecmp(imageFormat, "bmp") == 0) manifest.imageFormat = Manifest::ImageFormat::Bmp;
   if (strcasecmp(imageFormat, "png") == 0) manifest.imageFormat = Manifest::ImageFormat::Png;
   manifest.browseListsUrl = browse["lists_url"] | "";
@@ -430,6 +436,7 @@ bool PluginCatalogActivity::loadManifest() {
     setting.key = n["key"] | "";
     setting.title = n["title"] | setting.key.c_str();
     setting.defaultValue = variantToString(n["default"]);
+    setting.visibleDeviceCapability = n["visible_if"]["device_capability"] | "";
     const char* type = n["type"] | "choice";
     if (strcmp(type, "toggle") == 0) {
       setting.type = Manifest::Setting::Type::Toggle;
@@ -507,6 +514,9 @@ bool PluginCatalogActivity::loadManifest() {
   manifest.authExpiresPath = auth["expires_path"] | "expires_in";
   manifest.authTokenPath = auth["token_path"] | "access_token";
   manifest.authErrorPath = auth["error_path"] | "error";
+  manifest.authDisplayUrl = auth["display_url"] | "";
+  manifest.authQrHint = auth["qr_hint"] | "";
+  manifest.authManualHint = auth["manual_hint"] | "";
 
   return !manifest.browseReq.url.empty();
 }
@@ -538,6 +548,11 @@ void PluginCatalogActivity::resolvePresentation() {
   manifest.listThumbnails =
       strcasecmp(thumbnails.c_str(), "true") == 0 || thumbnails == "1" || strcasecmp(thumbnails.c_str(), "on") == 0;
 
+  const std::string hidePagination = substituted(manifest.hidePaginationTpl, nullptr);
+  const bool wantsHiddenPagination = strcasecmp(hidePagination.c_str(), "true") == 0 || hidePagination == "1" ||
+                                     strcasecmp(hidePagination.c_str(), "on") == 0;
+  manifest.paginationHidden = mappedInput.hasTouch() && wantsHiddenPagination;
+
   const std::string previewOnSelect = substituted(manifest.previewOnSelectTpl, nullptr);
   manifest.previewOnSelect = strcasecmp(previewOnSelect.c_str(), "true") == 0 || previewOnSelect == "1" ||
                              strcasecmp(previewOnSelect.c_str(), "on") == 0;
@@ -568,20 +583,31 @@ void PluginCatalogActivity::resolvePresentation() {
 void PluginCatalogActivity::loadConfig() {
   pluginhttp::loadConfigFile(manifest.configFile, config);
   for (const auto& setting : manifest.settings) {
-    bool found = false;
-    for (const auto& kv : config) {
-      if (kv.first == setting.key) {
-        found = true;
-        break;
-      }
+    auto existing = std::find_if(config.begin(), config.end(), [&](const auto& kv) { return kv.first == setting.key; });
+    if (existing == config.end()) {
+      config.emplace_back(setting.key, setting.defaultValue);
+      continue;
     }
-    if (!found) config.emplace_back(setting.key, setting.defaultValue);
+    if (setting.type != Manifest::Setting::Type::Choice || setting.options.empty()) continue;
+    const bool supported = std::any_of(setting.options.begin(), setting.options.end(),
+                                       [&](const auto& option) { return option.value == existing->second; });
+    if (!supported) existing->second = setting.defaultValue;
   }
   resolvePresentation();
 }
 
 std::string PluginCatalogActivity::settingValue(const Manifest::Setting& setting) const {
   return configValue(setting.key, setting.defaultValue);
+}
+
+bool PluginCatalogActivity::deviceCapabilityAvailable(const std::string& capability) const {
+  if (capability.empty()) return true;
+  if (strcasecmp(capability.c_str(), "touch") == 0) return mappedInput.hasTouch();
+  return false;
+}
+
+bool PluginCatalogActivity::settingVisible(const Manifest::Setting& setting) const {
+  return deviceCapabilityAvailable(setting.visibleDeviceCapability);
 }
 
 bool PluginCatalogActivity::saveSettingValue(const Manifest::Setting& setting, const std::string& value) {
@@ -691,6 +717,7 @@ void PluginCatalogActivity::onEnter() {
   CatalogActivity::onEnter();
   app.on(ACTION_PLUGIN_TAB, &PluginCatalogActivity::onPluginTabEvent, this);
   app.on(ACTION_PAGE, &PluginCatalogActivity::onPageEvent, this);
+  app.on(ACTION_REFRESH, &PluginCatalogActivity::onRefreshEvent, this);
   enterPluginPicker();
 }
 
@@ -808,7 +835,9 @@ void PluginCatalogActivity::enterCatalog() {
     pluginTabNavs.assign(manifest.tabs.size(), fui::ListNav{});
     for (auto& tabNav : pluginTabNavs) tabNav.reset();
   }
-  if (cacheUsable()) refreshCacheStats();
+  // Cache statistics require a full directory walk. Defer that work until a
+  // cache/settings surface actually needs the values so browse startup stays fast.
+  cacheStatsDirty = true;
   requestUpdate();
   // Let fetchPage decide whether the requested page can be served from SD.
   // Wi-Fi is only requested on an actual cache miss/stale refresh.
@@ -895,11 +924,20 @@ void PluginCatalogActivity::onPluginTabEvent(const fui::ActionEvent& event, void
 
 void PluginCatalogActivity::onPageEvent(const fui::ActionEvent& event, void* user) {
   auto* self = static_cast<PluginCatalogActivity*>(user);
-  if (!self->footerPagerActive() || (event.value != -1 && event.value != 1)) return;
+  if (!self->nativeFooterActive() || (event.value != -1 && event.value != 1)) return;
   if ((event.value < 0 && !self->prevRowVisible()) || (event.value > 0 && !self->nextRowVisible())) return;
   self->app.clearTapFlash();
   self->beginLoading();
   self->fetchPage(self->page + event.value);
+}
+
+void PluginCatalogActivity::onRefreshEvent(const fui::ActionEvent&, void* user) {
+  auto* self = static_cast<PluginCatalogActivity*>(user);
+  if (!self->nativeFooterActive() || !self->manifest.refreshEnabled) return;
+  self->app.clearTapFlash();
+  self->forceCacheRefresh = true;
+  self->beginLoading();
+  self->fetchPage(std::max(1, self->page));
 }
 
 void PluginCatalogActivity::resetBrowse() {
@@ -914,6 +952,9 @@ void PluginCatalogActivity::resetBrowse() {
   browseRefreshNeeded = false;
   browseLoadedFromCache = false;
   forceCacheRefresh = false;
+  browseRequestedTop.store(-1);
+  browseViewportTop.store(0);
+  browseViewportItems.store(1);
   pendingNetworkPage = 0;
   pendingItemActivation = -1;
   pendingCacheSeedInstall = false;
@@ -1026,8 +1067,16 @@ void PluginCatalogActivity::startBrowse() {
     return;
   }
 
-  const bool needsRemoteLists =
+  const bool remoteListsAvailable =
       !manifest.isXmlList() && !manifest.browseListsUrl.empty() && !browseListsRemoteAttempted;
+  // A manifest-provided list is an intentional offline/fast-start fallback. Do not
+  // force Wi-Fi merely to refresh lists_url before the plugin can show that list.
+  // Reopening while already connected still refreshes the dynamic index normally.
+  if (remoteListsAvailable && !manifest.browseLists.empty() && !wifiConnected()) {
+    browseListsRemoteAttempted = true;
+    LOG_INF("PCAT", "browse list index: using manifest fallback while offline");
+  }
+  const bool needsRemoteLists = remoteListsAvailable && !browseListsRemoteAttempted;
   const bool needsListAuth = needsRemoteLists || wantsListPicker();
   if (needsListAuth) {
     // Dynamic list indexes and list pickers may both use {token}/{cfg.KEY}, so
@@ -1191,7 +1240,7 @@ int PluginCatalogActivity::rowCount() const {
   if (state != State::BROWSING) return 0;
   if (cacheTabActive()) return cacheRowCount();
   if (settingsTabActive()) return settingsRowCount();
-  if (footerPagerActive()) return static_cast<int>(items.size());
+  if (nativeFooterActive()) return static_cast<int>(items.size());
   return static_cast<int>(items.size()) + (prevRowVisible() ? 1 : 0) + (nextRowVisible() ? 1 : 0);
 }
 
@@ -1213,29 +1262,39 @@ bool PluginCatalogActivity::wantsPreviewImages() const {
          (manifest.gridView || manifest.listThumbnails);
 }
 
-bool PluginCatalogActivity::footerPagerActive() const {
+bool PluginCatalogActivity::nativeFooterActive() const {
   if (state != State::BROWSING || settingsTabActive() || cacheTabActive() || manifest.isXmlList()) return false;
-  // The enhanced plugin UI uses the SDK footer as its paging surface. Plain
+  // Enhanced plugin UIs use the SDK footer as their action surface. Plain
   // legacy catalogs keep their existing synthetic Previous/Next rows.
-  return pluginTabsActive() || manifest.hasImages();
+  return pluginTabsActive() || manifest.hasImages() || manifest.refreshEnabled;
 }
 
 int PluginCatalogActivity::contentSelectionOffset() const { return pluginTabsActive() ? 1 : 0; }
 
 int PluginCatalogActivity::footerPreviousSelection() const {
-  if (!footerPagerActive() || !prevRowVisible()) return -1;
+  if (!nativeFooterActive() || manifest.paginationHidden || !prevRowVisible()) return -1;
   return contentSelectionOffset() + static_cast<int>(items.size());
 }
 
+int PluginCatalogActivity::footerRefreshSelection() const {
+  if (!nativeFooterActive() || !manifest.refreshEnabled) return -1;
+  return contentSelectionOffset() + static_cast<int>(items.size()) +
+         (!manifest.paginationHidden && prevRowVisible() ? 1 : 0);
+}
+
 int PluginCatalogActivity::footerNextSelection() const {
-  if (!footerPagerActive() || !nextRowVisible()) return -1;
-  return contentSelectionOffset() + static_cast<int>(items.size()) + (prevRowVisible() ? 1 : 0);
+  if (!nativeFooterActive() || manifest.paginationHidden || !nextRowVisible()) return -1;
+  return contentSelectionOffset() + static_cast<int>(items.size()) + (prevRowVisible() ? 1 : 0) +
+         (manifest.refreshEnabled ? 1 : 0);
 }
 
 int PluginCatalogActivity::navigationCount() const {
   const int offset = contentSelectionOffset();
-  if (footerPagerActive())
-    return offset + static_cast<int>(items.size()) + (prevRowVisible() ? 1 : 0) + (nextRowVisible() ? 1 : 0);
+  if (nativeFooterActive()) {
+    const bool showPagination = !manifest.paginationHidden;
+    return offset + static_cast<int>(items.size()) + (showPagination && prevRowVisible() ? 1 : 0) +
+           (manifest.refreshEnabled ? 1 : 0) + (showPagination && nextRowVisible() ? 1 : 0);
+  }
   return offset + rowCount();
 }
 
@@ -1445,10 +1504,7 @@ void PluginCatalogActivity::refreshCacheStats() {
   cacheStatsDirty = false;
 }
 
-void PluginCatalogActivity::noteCacheRefresh() {
-  cacheStatsDirty = true;
-  refreshCacheStats();
-}
+void PluginCatalogActivity::noteCacheRefresh() { cacheStatsDirty = true; }
 
 void PluginCatalogActivity::enforceCacheLimit() {
   if (!cacheUsable()) return;
@@ -1543,7 +1599,7 @@ void PluginCatalogActivity::clearCatalogCache() {
     if (dir.isOpen()) dir.close();
   }
 
-  beginDownload(tr(STR_PLUGIN_CACHE_CLEAR));
+  beginDownload("", tr(STR_PLUGIN_CACHE_CLEAR));
   downloadProgress = 0;
   downloadTotal = totalFiles;
   requestUpdateAndWait();
@@ -1623,7 +1679,7 @@ bool PluginCatalogActivity::isCacheSetting(const Manifest::Setting& setting) con
 int PluginCatalogActivity::cacheSettingCount() const {
   int count = 0;
   for (const auto& setting : manifest.settings)
-    if (isCacheSetting(setting)) ++count;
+    if (settingVisible(setting) && isCacheSetting(setting)) ++count;
   return count;
 }
 
@@ -1631,7 +1687,7 @@ int PluginCatalogActivity::settingsRowCount() const {
   if (cacheSettingsExpanded) return cacheSettingCount() + cacheRowCount();
   int count = 0;
   for (const auto& setting : manifest.settings)
-    if (!isCacheSetting(setting)) ++count;
+    if (settingVisible(setting) && !isCacheSetting(setting)) ++count;
   if (cacheUsable()) ++count;  // expandable Cache section
   return count;
 }
@@ -1639,6 +1695,7 @@ int PluginCatalogActivity::settingsRowCount() const {
 int PluginCatalogActivity::settingsManifestIndex(const int displayIndex, const bool cacheOnly) const {
   int visible = 0;
   for (size_t i = 0; i < manifest.settings.size(); ++i) {
+    if (!settingVisible(manifest.settings[i])) continue;
     const bool cacheSetting = isCacheSetting(manifest.settings[i]);
     if (cacheSetting != cacheOnly) continue;
     if (visible++ == displayIndex) return static_cast<int>(i);
@@ -1649,6 +1706,7 @@ int PluginCatalogActivity::settingsManifestIndex(const int displayIndex, const b
 void PluginCatalogActivity::activateSetting(const int manifestIndex) {
   if (manifestIndex < 0 || manifestIndex >= static_cast<int>(manifest.settings.size())) return;
   const auto& setting = manifest.settings[manifestIndex];
+  if (!settingVisible(setting)) return;
   const std::string current = settingValue(setting);
   std::string next;
   if (setting.type == Manifest::Setting::Type::Toggle) {
@@ -1695,40 +1753,76 @@ bool PluginCatalogActivity::extractCacheSeed(const std::string& archivePath) {
 
   constexpr size_t BATCH_SIZE = 64;
   constexpr size_t MAX_SEED_IMAGES = 4096;
+  constexpr size_t MAX_SEED_PAGES = 1024;
   constexpr size_t MAX_SEED_IMAGE_BYTES = 64 * 1024;
+  constexpr size_t MAX_SEED_PAGE_BYTES = MAX_BROWSE_RESPONSE;
+  constexpr size_t MAX_SEED_META_BYTES = 512;
   constexpr size_t MAX_SEED_SUMMARY_BYTES = 8 * 1024;
   constexpr size_t ZIP_CHUNK_SIZE = 1024;
-  constexpr std::string_view PREFIX = ".cache/i_";
-  constexpr std::string_view SUFFIX = ".bmp";
+  constexpr std::string_view IMAGE_PREFIX = ".cache/i_";
+  constexpr std::string_view PAGE_PREFIX = ".cache/p_";
+  constexpr std::string_view IMAGE_SUFFIX = ".bmp";
+  constexpr std::string_view PAGE_SUFFIX = ".json";
+  constexpr std::string_view META_SUFFIX = ".meta";
 
-  auto eligiblePath = [&](const std::string_view path) {
-    const bool prefix = path.size() > PREFIX.size() + SUFFIX.size() && path.substr(0, PREFIX.size()) == PREFIX;
-    const bool suffix = prefix && path.substr(path.size() - SUFFIX.size()) == SUFFIX;
-    const bool flat = suffix && path.find('/', PREFIX.size()) == std::string_view::npos;
-    return flat && path.find("..") == std::string_view::npos;
+  enum class SeedEntryKind : uint8_t { None, Image, Page, Meta };
+  const auto matchesFlatPath = [&](const std::string_view path, const std::string_view prefix,
+                                   const std::string_view suffix) {
+    if (path.size() <= prefix.size() + suffix.size() || path.substr(0, prefix.size()) != prefix ||
+        path.substr(path.size() - suffix.size()) != suffix)
+      return false;
+    return path.find("/", prefix.size()) == std::string_view::npos && path.find("..") == std::string_view::npos;
+  };
+  const auto classifyPath = [&](const std::string_view path) {
+    if (matchesFlatPath(path, IMAGE_PREFIX, IMAGE_SUFFIX)) return SeedEntryKind::Image;
+    if (matchesFlatPath(path, PAGE_PREFIX, PAGE_SUFFIX)) return SeedEntryKind::Page;
+    if (matchesFlatPath(path, PAGE_PREFIX, META_SUFFIX)) return SeedEntryKind::Meta;
+    return SeedEntryKind::None;
   };
 
   size_t totalImages = 0;
+  size_t totalPages = 0;
+  size_t totalMetas = 0;
   bool tooMany = false;
   {
     ZipFile listing(archivePath);
     const bool listed = listing.enumerateFilePaths([&](const std::string_view path) {
-      if (!eligiblePath(path)) return;
-      if (totalImages >= MAX_SEED_IMAGES) {
-        tooMany = true;
-        return;
+      switch (classifyPath(path)) {
+        case SeedEntryKind::Image:
+          if (totalImages >= MAX_SEED_IMAGES)
+            tooMany = true;
+          else
+            ++totalImages;
+          break;
+        case SeedEntryKind::Page:
+          if (totalPages >= MAX_SEED_PAGES)
+            tooMany = true;
+          else
+            ++totalPages;
+          break;
+        case SeedEntryKind::Meta:
+          if (totalMetas >= MAX_SEED_PAGES)
+            tooMany = true;
+          else
+            ++totalMetas;
+          break;
+        case SeedEntryKind::None:
+          break;
       }
-      ++totalImages;
     });
-    if (!listed || tooMany || totalImages == 0) {
-      LOG_ERR("PCAT", "cache seed zip listing invalid: images=%u", static_cast<unsigned>(totalImages));
+    if (!listed || tooMany || totalImages == 0 || totalPages != totalMetas) {
+      LOG_ERR("PCAT", "cache seed zip listing invalid: images=%u pages=%u meta=%u", static_cast<unsigned>(totalImages),
+              static_cast<unsigned>(totalPages), static_cast<unsigned>(totalMetas));
       return false;
     }
   }
 
+  const size_t totalEntries = totalImages + totalPages + totalMetas;
   const std::string dir = cacheDir();
   size_t skip = 0;
   size_t extractedCount = 0;
+  size_t extractedImages = 0;
+  size_t extractedPages = 0;
   ZipFile extractor(archivePath);
   if (!extractor.open()) {
     LOG_ERR("PCAT", "cache seed zip open failed");
@@ -1744,16 +1838,16 @@ bool PluginCatalogActivity::extractCacheSeed(const std::string& archivePath) {
   }
 
   downloadProgress = 0;
-  downloadTotal = totalImages;
+  downloadTotal = totalEntries;
   requestUpdateAndWait();
 
-  while (extractedCount < totalImages) {
+  while (extractedCount < totalEntries) {
     std::vector<std::string> batch;
     batch.reserve(BATCH_SIZE);
     size_t eligible = 0;
     ZipFile listing(archivePath);
     const bool listed = listing.enumerateFilePaths([&](const std::string_view path) {
-      if (!eligiblePath(path)) return;
+      if (classifyPath(path) == SeedEntryKind::None) return;
       const size_t itemIndex = eligible++;
       if (itemIndex < skip || batch.size() >= BATCH_SIZE) return;
       batch.emplace_back(path);
@@ -1764,36 +1858,49 @@ bool PluginCatalogActivity::extractCacheSeed(const std::string& archivePath) {
       return false;
     }
 
-    for (const auto& entry : batch) {
-      const size_t slash = entry.find_last_of('/');
-      const std::string filename = slash == std::string::npos ? entry : entry.substr(slash + 1);
-      const std::string dest = dir + "/" + filename;
-      const std::string tmp = dest + ".seedtmp";
-      bool ok = false;
-      {
-        HalFile out;
-        if (Storage.openFileForWrite("PCAT", tmp, out))
-          ok = extractor.readFileToStream(entry.c_str(), out, ZIP_CHUNK_SIZE);
-      }
+    {
+      // InflateStream can use the framebuffer loan as scratch for legacy deflated
+      // seeds. Current seeds use stored ZIP entries and need no DEFLATE window.
+      GfxRenderer::FrameBufferLoan framebufferLoan(renderer);
+      for (const auto& entry : batch) {
+        const SeedEntryKind kind = classifyPath(entry);
+        const size_t slash = entry.find_last_of("/");
+        const std::string filename = slash == std::string::npos ? entry : entry.substr(slash + 1);
+        const std::string dest = dir + "/" + filename;
+        const std::string tmp = dest + ".seedtmp";
+        bool ok = false;
+        {
+          HalFile out;
+          if (Storage.openFileForWrite("PCAT", tmp, out))
+            ok = extractor.readFileToStream(entry.c_str(), out, ZIP_CHUNK_SIZE);
+        }
 
-      size_t extractedSize = 0;
-      if (ok) {
-        HalFile check;
-        if (Storage.openFileForRead("PCAT", tmp, check)) extractedSize = check.fileSize();
+        size_t extractedSize = 0;
+        if (ok) {
+          HalFile check;
+          if (Storage.openFileForRead("PCAT", tmp, check)) extractedSize = check.fileSize();
+        }
+        const bool sizeValid =
+            kind == SeedEntryKind::Image ? extractedSize >= 62 && extractedSize <= MAX_SEED_IMAGE_BYTES
+            : kind == SeedEntryKind::Page
+                ? extractedSize > 0 && extractedSize <= MAX_SEED_PAGE_BYTES
+                : kind == SeedEntryKind::Meta && extractedSize > 0 && extractedSize <= MAX_SEED_META_BYTES;
+        if (!ok || !sizeValid || !Storage.replaceFile(tmp.c_str(), dest.c_str())) {
+          Storage.remove(tmp.c_str());
+          LOG_ERR("PCAT", "cache seed entry failed: %s (%u bytes)", entry.c_str(),
+                  static_cast<unsigned>(extractedSize));
+          extractor.close();
+          return false;
+        }
+        ++extractedCount;
+        if (kind == SeedEntryKind::Image) ++extractedImages;
+        if (kind == SeedEntryKind::Page) ++extractedPages;
       }
-      if (!ok || extractedSize < 62 || extractedSize > MAX_SEED_IMAGE_BYTES ||
-          !Storage.replaceFile(tmp.c_str(), dest.c_str())) {
-        Storage.remove(tmp.c_str());
-        LOG_ERR("PCAT", "cache seed entry failed: %s (%u bytes)", entry.c_str(), static_cast<unsigned>(extractedSize));
-        extractor.close();
-        return false;
-      }
-      ++extractedCount;
     }
 
     skip += batch.size();
     downloadProgress = extractedCount;
-    downloadTotal = totalImages;
+    downloadTotal = totalEntries;
     requestUpdateAndWait();
 
     mappedInput.update(true);
@@ -1808,6 +1915,7 @@ bool PluginCatalogActivity::extractCacheSeed(const std::string& archivePath) {
   const std::string markerTmp = markerPath + ".tmp";
   bool markerOk = false;
   {
+    GfxRenderer::FrameBufferLoan framebufferLoan(renderer);
     HalFile out;
     if (Storage.openFileForWrite("PCAT", markerTmp, out))
       markerOk = extractor.readFileToStream("wallpaper-cache-seed.json", out, ZIP_CHUNK_SIZE);
@@ -1819,8 +1927,9 @@ bool PluginCatalogActivity::extractCacheSeed(const std::string& archivePath) {
     return false;
   }
 
-  LOG_INF("PCAT", "cache seed installed: %u images", static_cast<unsigned>(extractedCount));
-  return extractedCount == totalImages;
+  LOG_INF("PCAT", "cache seed installed: %u images, %u pages", static_cast<unsigned>(extractedImages),
+          static_cast<unsigned>(extractedPages));
+  return extractedCount == totalEntries;
 }
 
 void PluginCatalogActivity::installCacheSeed() {
@@ -1848,7 +1957,8 @@ void PluginCatalogActivity::installCacheSeed() {
     return;
   }
 
-  statusMessage = tr(STR_PLUGIN_CACHE_SEED_INSTALLING);
+  downloadHeading = tr(STR_PLUGIN_CACHE_SEED_INSTALLING);
+  statusMessage.clear();
   requestUpdateAndWait();
   const bool installed = extractCacheSeed(CACHE_SEED_TMP_PATH);
   Storage.remove(CACHE_SEED_TMP_PATH);
@@ -1858,7 +1968,7 @@ void PluginCatalogActivity::installCacheSeed() {
       requestUpdate();
       return;
     }
-    fail(StrId::STR_DOWNLOAD_FAILED);
+    fail(StrId::STR_PLUGIN_CACHE_SEED_INSTALL_FAILED);
     return;
   }
 
@@ -1902,25 +2012,43 @@ bool PluginCatalogActivity::fetchPreviewToPath(const Item& item, const std::stri
     return false;
   }
 
+  auto imageFormat = manifest.imageFormat;
+  if (imageFormat == Manifest::ImageFormat::Auto) {
+    switch (detectImageFileKind(PREVIEW_TMP_PATH)) {
+      case ImageFileKind::Bmp:
+        imageFormat = Manifest::ImageFormat::Bmp;
+        break;
+      case ImageFileKind::Jpeg:
+        imageFormat = Manifest::ImageFormat::Jpeg;
+        break;
+      case ImageFileKind::Png:
+        imageFormat = Manifest::ImageFormat::Png;
+        break;
+      default:
+        LOG_ERR("PCAT", "unsupported thumbnail image: id=%s", item.id.c_str());
+        Storage.remove(PREVIEW_TMP_PATH);
+        return false;
+    }
+  }
+
   Storage.remove(dest.c_str());
   bool ok = false;
-  if (manifest.imageFormat == Manifest::ImageFormat::Bmp) {
+  if (imageFormat == Manifest::ImageFormat::Bmp) {
     ok = Storage.rename(PREVIEW_TMP_PATH, dest.c_str()) && cachedPreviewValid(dest);
     if (!ok) Storage.remove(dest.c_str());
   } else {
     HalFile src, dst;
     if (Storage.openFileForRead("PCAT", PREVIEW_TMP_PATH, src) && Storage.openFileForWrite("PCAT", dest, dst)) {
-      ok = manifest.imageFormat == Manifest::ImageFormat::Png
-               ? PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(src, dst, targetWidth, targetHeight)
-               : JpegToBmpConverter::jpegFileTo1BitBmpStreamWithSize(src, dst, targetWidth, targetHeight);
+      ok = imageFormat == Manifest::ImageFormat::Png
+               ? PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(src, dst, targetWidth, targetHeight, false)
+               : JpegToBmpConverter::jpegFileTo1BitBmpStreamWithSize(src, dst, targetWidth, targetHeight, false);
     }
     if (src.isOpen()) src.close();
     if (dst.isOpen()) dst.close();
     Storage.remove(PREVIEW_TMP_PATH);
     if (!ok || !cachedPreviewValid(dest)) {
       ok = false;
-      LOG_ERR("PCAT", "thumbnail conversion failed: id=%s format=%d", item.id.c_str(),
-              static_cast<int>(manifest.imageFormat));
+      LOG_ERR("PCAT", "thumbnail conversion failed: id=%s format=%d", item.id.c_str(), static_cast<int>(imageFormat));
       Storage.remove(dest.c_str());
     }
   }
@@ -1943,12 +2071,11 @@ bool PluginCatalogActivity::preparePreviews() {
   for (size_t i = 0; i < items.size() && i < MAX_PAGE_SIZE; ++i) {
     const std::string dest = persistent ? cacheImagePath(items[i]) : previewPath(static_cast<int>(i));
     if (!dest.empty() && Storage.exists(dest.c_str())) {
-      if (cachedPreviewValid(dest)) {
-        previewReadyMask |= static_cast<uint16_t>(1u << i);
-        continue;
-      }
-      LOG_ERR("PCAT", "discarding invalid cached thumbnail: id=%s", items[i].id.c_str());
-      Storage.remove(dest.c_str());
+      // Persistent thumbnails are already in the renderer-native BMP cache format.
+      // Avoid opening every cached image once to validate and again to render it;
+      // paintPreview() invalidates the cache file if the actual read/draw fails.
+      previewReadyMask |= static_cast<uint16_t>(1u << i);
+      continue;
     }
     if (dest.empty()) continue;
 
@@ -1992,50 +2119,62 @@ bool PluginCatalogActivity::paintPreview(const fui::Rect rect, const int itemInd
     return false;
   if (previewFile.isOpen()) previewFile.close();
   const std::string path = cacheUsable() ? cacheImagePath(items[itemIndex]) : previewPath(itemIndex);
-  if (path.empty() || !Storage.openFileForRead("PCAT", path, previewFile)) return false;
-  if (previewBitmap.parseHeaders() != BmpReaderError::Ok) {
-    if (previewFile.isOpen()) previewFile.close();
+  const auto invalidatePreview = [&] {
+    previewReadyMask &= static_cast<uint16_t>(~static_cast<uint16_t>(1u << itemIndex));
+    if (cacheUsable() && !path.empty()) {
+      Storage.remove(path.c_str());
+      cacheStatsDirty = true;
+    }
+  };
+  if (path.empty() || !Storage.openFileForRead("PCAT", path, previewFile)) {
+    invalidatePreview();
     return false;
   }
-  bool drawn = false;
-  const bool singleCell = manifest.gridView && manifest.gridColumns == 1 && manifest.gridRows == 1;
-  if (singleCell) {
-    const float scale = std::min(static_cast<float>(rect.width) / previewBitmap.getWidth(),
-                                 static_cast<float>(rect.height) / previewBitmap.getHeight());
-    const int drawWidth = std::max(1, std::min<int>(rect.width, static_cast<int>(previewBitmap.getWidth() * scale)));
-    const int drawHeight = std::max(1, std::min<int>(rect.height, static_cast<int>(previewBitmap.getHeight() * scale)));
-    const int drawX = rect.x + (rect.width - drawWidth) / 2;
-    const int drawY = rect.y + (rect.height - drawHeight) / 2;
-    drawn = renderer.drawBitmap(previewBitmap, drawX, drawY, drawWidth, drawHeight, 0, 0, false, true);
-  } else {
-    drawn = GUI.drawCoverThumbFill(renderer, previewBitmap, Rect{rect.x, rect.y, rect.width, rect.height});
+  if (previewBitmap.parseHeaders() != BmpReaderError::Ok) {
+    if (previewFile.isOpen()) previewFile.close();
+    invalidatePreview();
+    return false;
   }
+  const float scale = std::min(static_cast<float>(rect.width) / previewBitmap.getWidth(),
+                               static_cast<float>(rect.height) / previewBitmap.getHeight());
+  const int drawWidth = std::max(1, std::min<int>(rect.width, static_cast<int>(previewBitmap.getWidth() * scale)));
+  const int drawHeight = std::max(1, std::min<int>(rect.height, static_cast<int>(previewBitmap.getHeight() * scale)));
+  const int drawX = rect.x + (rect.width - drawWidth) / 2;
+  const int drawY = rect.y + (rect.height - drawHeight) / 2;
+  const bool allowUpscale = drawWidth > previewBitmap.getWidth() || drawHeight > previewBitmap.getHeight();
+  const bool drawn = renderer.drawBitmap(previewBitmap, drawX, drawY, drawWidth, drawHeight, 0, 0, false, allowUpscale);
   if (previewFile.isOpen()) previewFile.close();
+  if (!drawn) invalidatePreview();
 
   if (drawn) {
-    std::string dest;
-    if (downloadDestination(items[itemIndex], dest) && Storage.exists(dest.c_str())) {
-      constexpr char badge[] = "SAVED";
-      constexpr int padX = 6;
-      constexpr int padY = 4;
-      constexpr int inset = 7;
-      const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, badge, EpdFontFamily::BOLD);
-      const int textHeight = renderer.getTextHeight(SMALL_FONT_ID);
-      const int badgeWidth = textWidth + padX * 2;
-      const int badgeHeight = textHeight + padY * 2;
-      const int badgeX = rect.x + rect.width - badgeWidth - inset;
-      const int badgeY = rect.y + inset;
-      renderer.fillRect(badgeX, badgeY, badgeWidth, badgeHeight, false);
-      renderer.drawRect(badgeX, badgeY, badgeWidth, badgeHeight);
-      renderer.drawText(SMALL_FONT_ID, badgeX + padX, badgeY + padY, badge, true, EpdFontFamily::BOLD);
+    if (manifest.gridView) {
+      std::string dest;
+      if (downloadDestination(items[itemIndex], dest) && Storage.exists(dest.c_str())) {
+        constexpr char badge[] = "SAVED";
+        constexpr int padX = 6;
+        constexpr int padY = 4;
+        constexpr int inset = 7;
+        const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, badge, EpdFontFamily::BOLD);
+        const int textHeight = renderer.getTextHeight(SMALL_FONT_ID);
+        const int badgeWidth = textWidth + padX * 2;
+        const int badgeHeight = textHeight + padY * 2;
+        const int badgeX = drawX + drawWidth - badgeWidth - inset;
+        const int badgeY = drawY + inset;
+        renderer.fillRect(badgeX, badgeY, badgeWidth, badgeHeight, false);
+        renderer.drawRect(badgeX, badgeY, badgeWidth, badgeHeight);
+        renderer.drawText(SMALL_FONT_ID, badgeX + padX, badgeY + padY, badge, true, EpdFontFamily::BOLD);
+      }
     }
     if (manifest.coverRadius > 0)
-      renderer.maskRoundedRectOutsideCorners(rect.x, rect.y, rect.width, rect.height, manifest.coverRadius);
+      renderer.maskRoundedRectOutsideCorners(drawX, drawY, drawWidth, drawHeight, manifest.coverRadius);
   }
   return drawn;
 }
 
 void PluginCatalogActivity::fetchPage(const int newPage) {
+  browseRequestedTop.store(-1);
+  browseViewportTop.store(0);
+  browseViewportItems.store(1);
   if (!manifest.isXmlList()) page = newPage;
   clearPreviews();
   browseSourcePath = BROWSE_TMP_PATH;
@@ -2046,7 +2185,7 @@ void PluginCatalogActivity::fetchPage(const int newPage) {
     if (!parseBrowseResponse()) return;
     if (!preparePreviews()) return;
     state = State::BROWSING;
-    activeNav().reset(footerPagerActive() ? contentSelectionOffset() : 0);
+    activeNav().reset(nativeFooterActive() ? contentSelectionOffset() : 0);
     requestUpdate();
     return;
   }
@@ -2065,7 +2204,7 @@ void PluginCatalogActivity::fetchPage(const int newPage) {
       if (!parseBrowseResponse()) return;
       if (!preparePreviews()) return;
       state = State::BROWSING;
-      activeNav().reset(footerPagerActive() ? contentSelectionOffset() : 0);
+      activeNav().reset(nativeFooterActive() ? contentSelectionOffset() : 0);
       requestUpdate();
       return;
     }
@@ -2082,7 +2221,7 @@ void PluginCatalogActivity::fetchPage(const int newPage) {
     noteCacheRefresh();
   }
   state = State::BROWSING;
-  activeNav().reset(footerPagerActive() ? contentSelectionOffset() : 0);
+  activeNav().reset(nativeFooterActive() ? contentSelectionOffset() : 0);
   requestUpdate();
 }
 
@@ -2660,17 +2799,92 @@ void PluginCatalogActivity::onRowAction(const fui::ActionEvent& event) {
   UiListActivity::onRowAction(event);
 }
 
+bool PluginCatalogActivity::stepBrowseViewport(const int direction, const bool moveSelection) {
+  if (direction == 0 || state != State::BROWSING || !browseTabActive() || !nativeFooterActive() || items.empty())
+    return false;
+
+  const int count = static_cast<int>(items.size());
+  const int visible = std::clamp(browseViewportItems.load(), 1, count);
+  const int maxTop = std::max(0, count - visible);
+  const int top = std::clamp(browseViewportTop.load(), 0, maxTop);
+  int nextTop = top;
+
+  if (direction > 0) {
+    if (top < maxTop) {
+      nextTop = std::min(maxTop, top + visible);
+    } else if (nextRowVisible()) {
+      onPageEvent(fui::ActionEvent{ACTION_PAGE, 1, fui::StateNormal}, this);
+      return true;
+    } else {
+      return false;
+    }
+  } else {
+    if (top > 0) {
+      nextTop = std::max(0, top - visible);
+    } else if (prevRowVisible()) {
+      onPageEvent(fui::ActionEvent{ACTION_PAGE, -1, fui::StateNormal}, this);
+      return true;
+    } else {
+      return false;
+    }
+  }
+
+  browseRequestedTop.store(nextTop);
+  if (moveSelection) {
+    const int itemIndex = direction > 0 ? nextTop : std::min(count - 1, nextTop + visible - 1);
+    activeNav().requestSelection(contentSelectionOffset() + itemIndex);
+    // The requested viewport is authoritative for a hardware batch jump. Keep
+    // the new selection visible without letting selection-follow choose a
+    // different grid/list top on the render task.
+    activeNav().followOnBuild.store(false);
+  }
+  requestUpdate();
+  return true;
+}
+
 void PluginCatalogActivity::navigateButtons() {
-  if (!pluginTabsActive() && !footerPagerActive()) {
+  if (!pluginTabsActive() && !nativeFooterActive()) {
     CatalogActivity::navigateButtons();
     return;
   }
+
   auto& current = activeNav();
+  const int selectedItem = current.selected.load() - contentSelectionOffset();
+  const bool browseItemFocused = state == State::BROWSING && browseTabActive() && nativeFooterActive() &&
+                                 selectedItem >= 0 && selectedItem < static_cast<int>(items.size());
+  const int ringSize = navigationCount();
+
+  if (browseItemFocused) {
+    // X3/X4 expose two physical navigation groups. The side/page-turn pair is
+    // internally Up/Down; keep it as one-item navigation. The front/bottom
+    // directional pair is internally Left/Right; use it as the hardware
+    // equivalent of a vertical swipe, jumping one visible batch at a time.
+    const auto nextItem = [this, ringSize] {
+      if (activeNav().selected == footerNextSelection()) {
+        onPageEvent(fui::ActionEvent{ACTION_PAGE, 1, fui::StateNormal}, this);
+        return;
+      }
+      activeNav().requestSelection(ButtonNavigator::nextIndex(activeNav().selected, ringSize));
+      requestUpdate();
+    };
+    const auto previousItem = [this, ringSize] {
+      activeNav().requestSelection(ButtonNavigator::previousIndex(activeNav().selected, ringSize));
+      requestUpdate();
+    };
+
+    ButtonNavigator::onPress({MappedInputManager::Button::Down}, nextItem);
+    ButtonNavigator::onPress({MappedInputManager::Button::Up}, previousItem);
+    buttonNavigator.onContinuous({MappedInputManager::Button::Down}, nextItem);
+    buttonNavigator.onContinuous({MappedInputManager::Button::Up}, previousItem);
+    ButtonNavigator::onPress({MappedInputManager::Button::Right}, [this] { stepBrowseViewport(1, true); });
+    ButtonNavigator::onPress({MappedInputManager::Button::Left}, [this] { stepBrowseViewport(-1, true); });
+    return;
+  }
+
   if (mappedInput.wasPressed(MappedInputManager::Button::NavNext) ||
       mappedInput.wasPressed(MappedInputManager::Button::NavPrevious)) {
     navigationStartedOnTabs = pluginTabsActive() && current.selected == 0;
   }
-  const int ringSize = navigationCount();
   buttonNavigator.onNextPress([this, ringSize] {
     if (activeNav().selected == footerNextSelection()) {
       onPageEvent(fui::ActionEvent{ACTION_PAGE, 1, fui::StateNormal}, this);
@@ -2705,7 +2919,7 @@ bool PluginCatalogActivity::handleButtons() {
     confirmUninstallPlugin(activeNav().selected);
     return true;
   }
-  if (!pluginTabsActive() && !footerPagerActive()) return UiListActivity::handleButtons();
+  if (!pluginTabsActive() && !nativeFooterActive()) return UiListActivity::handleButtons();
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     if (settingsTabActive() && cacheSettingsExpanded) {
       cacheSettingsExpanded = false;
@@ -2728,6 +2942,10 @@ bool PluginCatalogActivity::handleButtons() {
     const int selected = activeNav().selected;
     if (selected == footerPreviousSelection()) {
       onPageEvent(fui::ActionEvent{ACTION_PAGE, -1, fui::StateNormal}, this);
+      return true;
+    }
+    if (selected == footerRefreshSelection()) {
+      onRefreshEvent(fui::ActionEvent{ACTION_REFRESH, 0, fui::StateNormal}, this);
       return true;
     }
     if (selected == footerNextSelection()) {
@@ -2789,6 +3007,22 @@ bool PluginCatalogActivity::handleCustomInput() {
       requestUpdate();
     }
     return true;
+  }
+
+  if (state == State::BROWSING && nativeFooterActive() && !items.empty()) {
+    const auto swipe = mappedInput.wasSwipe();
+    if (swipe == MappedInputManager::SwipeDir::Up || swipe == MappedInputManager::SwipeDir::Down) {
+      // Browse swipes and bottom hardware batch buttons share the same viewport
+      // stepping. Touch intentionally leaves the focused item unchanged.
+      const int direction = swipe == MappedInputManager::SwipeDir::Up ? 1 : -1;
+
+      // A swipe can begin over a tappable cover/row. routeListTouch() normally
+      // delivers the release edge that clears FreeInkUI active press state, but
+      // this custom path returns before the base loop reaches it.
+      routeTouch(mappedInput, true);
+      stepBrowseViewport(direction, false);
+      return true;
+    }
   }
 
   return CatalogActivity::handleCustomInput();
@@ -2872,7 +3106,7 @@ void PluginCatalogActivity::activateIndex(const int index) {
 
     int regularSettings = 0;
     for (const auto& setting : manifest.settings)
-      if (!isCacheSetting(setting)) ++regularSettings;
+      if (settingVisible(setting) && !isCacheSetting(setting)) ++regularSettings;
     if (cacheUsable() && index == regularSettings) {
       cacheSettingsExpanded = true;
       cacheStatsDirty = true;
@@ -2973,7 +3207,7 @@ void PluginCatalogActivity::activateIndex(const int index) {
     startBrowse();
     return;
   }
-  if (footerPagerActive()) {
+  if (nativeFooterActive()) {
     app.clearTapFlash();
     activateItem(index);
     return;
@@ -3026,7 +3260,7 @@ void PluginCatalogActivity::drawFooter() {
     case State::PLUGIN_PICKER: {
       const int count = rowCount();
       const int selectedRow = activeNav().selected - contentSelectionOffset();
-      const int prevOff = footerPagerActive() ? 0 : (prevRowVisible() ? 1 : 0);
+      const int prevOff = nativeFooterActive() ? 0 : (prevRowVisible() ? 1 : 0);
       const int itemSel = selectedRow - prevOff;
       const char* confirmLabel;
       if (state != State::BROWSING) {
@@ -3108,25 +3342,61 @@ void PluginCatalogActivity::buildScreen(UiScreen& screen) {
   }
 }
 
-// Device-code sign-in: verification URL (text + QR) and the user code. The QR
-// bitmap itself is painted by drawFooter() into the rect measured here.
+// Device-code sign-in. The QR payload remains the server-provided verification
+// URL; optional manifest hints only control the human-readable presentation.
 void PluginCatalogActivity::buildAuthScreen(UiScreen& screen) {
-  fui::TextStyle centered = screen.theme().bodyText;
+  const auto& theme = screen.theme();
+  fui::TextStyle centered = theme.bodyText;
   centered.align = fui::TextAlign::Center;
-  fui::TextStyle code = screen.theme().titleText;
+  fui::TextStyle small = theme.smallText;
+  small.align = fui::TextAlign::Center;
+  fui::TextStyle manual = small;
+  manual.maxLines = 2;
+  fui::TextStyle code = theme.titleText;
   code.align = fui::TextAlign::Center;
   code.bold = true;
-  const int16_t lh = screen.target().lineHeight(centered.font);
-  const int16_t gap = screen.theme().spaceMd;
+  uiTarget.setFont(fui::GfxRendererTarget::FONT_LABEL, NOTOSANS_18_FONT_ID);
+  code.font = fui::GfxRendererTarget::FONT_LABEL;
 
-  screen.target().text(screen.takeTop(lh, gap), authVerifyUrl.c_str(), centered);
-  screen.target().text(screen.takeTop(screen.target().lineHeight(code.font), gap), authUserCode.c_str(), code);
+  constexpr int16_t qrSize = 198;
+  const int16_t gap = theme.spaceSm;
+  const int16_t pad = theme.spaceMd;
+  const fui::Rect body = screen.body();
+  const int16_t textWidth = std::max<int16_t>(1, static_cast<int16_t>(body.width - pad * 2));
+  const char* displayUrl = manifest.authDisplayUrl.empty() ? authVerifyUrl.c_str() : manifest.authDisplayUrl.c_str();
+  const char* qrHint = manifest.authQrHint.empty() ? nullptr : manifest.authQrHint.c_str();
+  const char* manualHint = manifest.authManualHint.empty() ? nullptr : manifest.authManualHint.c_str();
 
-  constexpr int16_t qrSize = 180;
+  const auto heightOf = [&](const char* text, const fui::TextStyle& style) -> int16_t {
+    if (!text || !text[0]) return 0;
+    return std::max<int16_t>(screen.target().lineHeight(style.font),
+                             fui::measureWrappedText(screen.target(), text, style, textWidth).height);
+  };
+  const int16_t qrHintH = heightOf(qrHint, centered);
+  const int16_t codeH = heightOf(authUserCode.c_str(), code);
+  const int16_t urlH = heightOf(displayUrl, centered);
+  const int16_t manualH = heightOf(manualHint, manual);
+  const int16_t waitingH = heightOf(tr(STR_PLUGIN_AUTH_WAITING), small);
+  const int visibleTextRows = (qrHintH > 0 ? 1 : 0) + 1 + (urlH > 0 ? 1 : 0) + (manualH > 0 ? 1 : 0) + 1;
+  const int16_t totalH =
+      static_cast<int16_t>(qrHintH + codeH + qrSize + urlH + manualH + waitingH + gap * visibleTextRows);
+  if (body.height > totalH) screen.spacer(static_cast<int16_t>((body.height - totalH) / 2));
+
+  const auto drawCentered = [&](const char* text, const fui::TextStyle& style, const int16_t height) {
+    if (!text || !text[0] || height <= 0) return;
+    screen.target().text(screen.takeTop(height, gap).inset(fui::Insets{0, pad, 0, pad}), text, style);
+  };
+
+  drawCentered(qrHint, centered, qrHintH);
+  drawCentered(authUserCode.c_str(), code, codeH);
   const fui::Rect band = screen.takeTop(qrSize, gap);
   authQrRect = fui::Rect{static_cast<int16_t>(band.x + (band.width - qrSize) / 2), band.y, qrSize, qrSize};
-
-  screen.target().text(screen.takeTop(lh), tr(STR_PLUGIN_AUTH_WAITING), centered);
+  drawCentered(displayUrl, centered, urlH);
+  drawCentered(manualHint, manual, manualH);
+  if (waitingH > 0)
+    screen.target().text(screen.takeTop(waitingH).inset(fui::Insets{0, pad, 0, pad}), tr(STR_PLUGIN_AUTH_WAITING),
+                         small);
+  uiTarget.setFont(fui::GfxRendererTarget::FONT_LABEL, uiScaleSpec().smallFontId);
 }
 
 std::string PluginCatalogActivity::browsingHeaderLabel() const {
@@ -3212,24 +3482,40 @@ void PluginCatalogActivity::buildPluginTabBar(UiScreen& screen) {
   screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 }
 
-void PluginCatalogActivity::buildPagerFooter(UiScreen& screen) {
-  if (!footerPagerActive()) return;
-  fui::FooterAction actions[2];
-  actions[0].label = tr(STR_PREV_PAGE);
-  actions[0].action = ACTION_PAGE;
-  actions[0].value = -1;
-  actions[0].enabled = prevRowVisible();
-  if (activeNav().selected == footerPreviousSelection()) actions[0].state = fui::StateFocused;
+void PluginCatalogActivity::buildCatalogFooter(UiScreen& screen) {
+  if (!nativeFooterActive()) return;
+  fui::FooterAction actions[3];
+  uint8_t actionCount = 0;
 
-  actions[1].label = tr(STR_NEXT_PAGE);
-  actions[1].action = ACTION_PAGE;
-  actions[1].value = 1;
-  actions[1].enabled = nextRowVisible();
-  if (activeNav().selected == footerNextSelection()) actions[1].state = fui::StateFocused;
+  if (!manifest.paginationHidden) {
+    auto& previous = actions[actionCount++];
+    previous.label = tr(STR_PREV_SHORT);
+    previous.action = ACTION_PAGE;
+    previous.value = -1;
+    previous.enabled = prevRowVisible();
+    if (activeNav().selected == footerPreviousSelection()) previous.state = fui::StateFocused;
+  }
 
+  if (manifest.refreshEnabled) {
+    auto& refresh = actions[actionCount++];
+    refresh.label = tr(STR_REFRESH);
+    refresh.action = ACTION_REFRESH;
+    if (activeNav().selected == footerRefreshSelection()) refresh.state = fui::StateFocused;
+  }
+
+  if (!manifest.paginationHidden) {
+    auto& next = actions[actionCount++];
+    next.label = tr(STR_NEXT_SHORT);
+    next.action = ACTION_PAGE;
+    next.value = 1;
+    next.enabled = nextRowVisible();
+    if (activeNav().selected == footerNextSelection()) next.state = fui::StateFocused;
+  }
+
+  if (actionCount == 0) return;
   fui::FooterProps props;
   props.actions = actions;
-  props.count = 2;
+  props.count = actionCount;
   screen.footer(props);
 }
 
@@ -3244,7 +3530,7 @@ void PluginCatalogActivity::buildCacheScreen(UiScreen& screen) {
 void PluginCatalogActivity::buildPluginSettingsScreen(UiScreen& screen) { buildBrowsingScreen(screen); }
 
 void PluginCatalogActivity::buildPlainListScreen(UiScreen& screen) {
-  buildPagerFooter(screen);
+  buildCatalogFooter(screen);
   const auto& theme = screen.theme();
   const fui::Rect body = screen.body();
   const int offset = contentSelectionOffset();
@@ -3253,10 +3539,18 @@ void PluginCatalogActivity::buildPlainListScreen(UiScreen& screen) {
   const bool touch = screen.frame().device().hasTouch;
   const int16_t rowHeight = touch ? std::max(theme.rowHeight, theme.listTouchMinRowHeight) : theme.rowHeight;
   const int16_t rowGap = touch ? std::max(theme.listRowGap, theme.listTouchRowGap) : theme.listRowGap;
-  const uint16_t visible = fui::listVisibleRows(body, rowHeight, rowGap);
-  uint16_t top = static_cast<uint16_t>(std::max(0, activeNav().top));
-  if (selectedItem >= 0) top = fui::listTopIndexFor(selectedItem, top, visible, static_cast<uint16_t>(items.size()));
+  const uint16_t visible = std::max<uint16_t>(1, fui::listVisibleRows(body, rowHeight, rowGap));
+  const int requestedTop = browseRequestedTop.exchange(-1);
+  uint16_t top = static_cast<uint16_t>(std::max(0, requestedTop >= 0 ? requestedTop : activeNav().top));
+  const bool followSelection = activeNav().followOnBuild.exchange(false);
+  if (selectedItem >= 0 && followSelection)
+    top = fui::listTopIndexFor(selectedItem, top, visible, static_cast<uint16_t>(items.size()));
+  const uint16_t visibleItems = std::max<uint16_t>(1, std::min<uint16_t>(visible, static_cast<uint16_t>(items.size())));
+  const uint16_t maxTop = items.size() > visibleItems ? static_cast<uint16_t>(items.size() - visibleItems) : 0;
+  top = std::min(top, maxTop);
   activeNav().top = top;
+  browseViewportTop.store(top);
+  browseViewportItems.store(visibleItems);
 
   fui::ListProps props;
   props.items = rowItems.data();
@@ -3291,7 +3585,7 @@ void PluginCatalogActivity::buildBrowsingScreen(UiScreen& screen) {
     buildThumbnailListScreen(screen);
     return;
   }
-  if (footerPagerActive()) {
+  if (nativeFooterActive()) {
     buildPlainListScreen(screen);
     return;
   }
@@ -3317,7 +3611,7 @@ void PluginCatalogActivity::buildBrowsingScreen(UiScreen& screen) {
 }
 
 void PluginCatalogActivity::buildGridScreen(UiScreen& screen) {
-  buildPagerFooter(screen);
+  buildCatalogFooter(screen);
   const auto& theme = screen.theme();
   const uint8_t columns = manifest.gridColumns;
   const uint8_t targetRows = manifest.gridRows;
@@ -3358,23 +3652,22 @@ void PluginCatalogActivity::buildGridScreen(UiScreen& screen) {
       std::max<int16_t>(static_cast<int16_t>(coverHeight + labelHeight + labelGap), targetRowHeight);
   const uint16_t pageItems = fui::coverGridVisibleCells(gridRect, columns, gridRowHeight, gap);
 
-  uint16_t top = static_cast<uint16_t>(std::max(0, activeNav().top));
-  if (selectedItem >= 0) {
+  const uint16_t visibleItems =
+      std::max<uint16_t>(1, std::min<uint16_t>(std::max<uint16_t>(1, pageItems), static_cast<uint16_t>(items.size())));
+  const uint16_t maxTop = items.size() > visibleItems ? static_cast<uint16_t>(items.size() - visibleItems) : 0;
+  const int requestedTop = browseRequestedTop.exchange(-1);
+  uint16_t top = static_cast<uint16_t>(std::max(0, requestedTop >= 0 ? requestedTop : activeNav().top));
+  const bool followSelection = activeNav().followOnBuild.exchange(false);
+  if (selectedItem >= 0 && followSelection) {
     top = fui::coverGridTopIndexFor(static_cast<uint16_t>(selectedItem), static_cast<uint16_t>(items.size()), columns,
                                     pageItems);
-    // Clamp the final viewport to a full grid whenever enough items exist.
-    // For example, a 16-item catalog page in a 3-column/6-cell viewport
-    // finishes at items 11-16 instead of rendering one cover plus two empty
-    // cells on the final row. The overlap is intentional and keeps source
-    // pagination unchanged.
-    if (pageItems > 0 && items.size() > pageItems && items.size() - top < pageItems) {
-      top = static_cast<uint16_t>(items.size() - pageItems);
-    }
-    activeNav().top = top;
-  } else if (top >= items.size()) {
-    top = 0;
-    activeNav().top = 0;
   }
+  // Keep the final viewport full whenever enough items exist. With a 16-item
+  // source page and a 6-cover viewport, swipes land at 1-6, 7-12, then 11-16.
+  top = std::min(top, maxTop);
+  activeNav().top = top;
+  browseViewportTop.store(top);
+  browseViewportItems.store(visibleItems);
 
   fui::CoverGridProps props;
   props.count = static_cast<uint16_t>(items.size());
@@ -3395,7 +3688,7 @@ void PluginCatalogActivity::buildGridScreen(UiScreen& screen) {
   props.titleText = titleText;
   props.selectionIndicator = fui::CoverGridSelectionIndicator::CoverFrame;
   props.selectedCoverFrameGap = 3;
-  props.selectedCoverFrameWidth = 3;
+  props.selectedCoverFrameWidth = 5;
   props.selectedCoverFrameRadius =
       manifest.coverRadius > 0 ? static_cast<uint8_t>(std::min<int>(255, manifest.coverRadius + 3)) : 0;
   props.scrollIndicator = items.size() > pageItems;
@@ -3412,7 +3705,7 @@ void PluginCatalogActivity::buildGridScreen(UiScreen& screen) {
 }
 
 void PluginCatalogActivity::buildThumbnailListScreen(UiScreen& screen) {
-  buildPagerFooter(screen);
+  buildCatalogFooter(screen);
   const auto& theme = screen.theme();
   const fui::Rect body = screen.body();
   constexpr int targetVisibleItems = 5;
@@ -3424,16 +3717,21 @@ void PluginCatalogActivity::buildThumbnailListScreen(UiScreen& screen) {
   const int16_t fitHeight =
       std::max<int16_t>(normalHeight, static_cast<int16_t>((body.height - rowGap * (target - 1)) / target));
   const int16_t cardHeight = std::min<int16_t>(twoRowHeight, fitHeight);
-  const uint16_t visible = fui::listVisibleRows(body, cardHeight, rowGap);
+  const uint16_t visible = std::max<uint16_t>(1, fui::listVisibleRows(body, cardHeight, rowGap));
 
   const int selected = activeNav().selected - contentSelectionOffset();
   const int selectedItem = selected >= 0 && selected < static_cast<int>(items.size()) ? selected : -1;
-  uint16_t top = static_cast<uint16_t>(std::max(0, activeNav().top));
-  if (selectedItem >= 0)
+  const uint16_t visibleItems = std::max<uint16_t>(1, std::min<uint16_t>(visible, static_cast<uint16_t>(items.size())));
+  const uint16_t maxTop = items.size() > visibleItems ? static_cast<uint16_t>(items.size() - visibleItems) : 0;
+  const int requestedTop = browseRequestedTop.exchange(-1);
+  uint16_t top = static_cast<uint16_t>(std::max(0, requestedTop >= 0 ? requestedTop : activeNav().top));
+  const bool followSelection = activeNav().followOnBuild.exchange(false);
+  if (selectedItem >= 0 && followSelection)
     top = fui::listTopIndexFor(selectedItem, top, visible, static_cast<uint16_t>(items.size()));
-  else if (top >= items.size())
-    top = 0;
+  top = std::min(top, maxTop);
   activeNav().top = top;
+  browseViewportTop.store(top);
+  browseViewportItems.store(visibleItems);
 
   int16_t y = body.y;
   for (uint16_t index = top; index < items.size() && index < top + visible; ++index) {
@@ -3451,7 +3749,18 @@ void PluginCatalogActivity::buildThumbnailListScreen(UiScreen& screen) {
     card.progressMax = 0;
     card.centerTextOnCover = true;
     card.author = items[index].author.empty() ? nullptr : items[index].author.c_str();
+    std::string dest;
+    const bool saved = downloadDestination(items[index], dest) && Storage.exists(dest.c_str());
     card.meta = items[index].status.empty() ? nullptr : items[index].status.c_str();
+    constexpr char savedBadge[] = "SAVED";
+    constexpr int savedPadX = 6;
+    constexpr int savedPadY = 4;
+    constexpr int savedInset = 8;
+    const int savedTextWidth = saved ? renderer.getTextWidth(SMALL_FONT_ID, savedBadge, EpdFontFamily::BOLD) : 0;
+    const int savedTextHeight = saved ? renderer.getTextHeight(SMALL_FONT_ID) : 0;
+    const int savedBadgeWidth = saved ? savedTextWidth + savedPadX * 2 : 0;
+    const int savedBadgeHeight = saved ? savedTextHeight + savedPadY * 2 : 0;
+    if (saved) card.padding.right = static_cast<int16_t>(card.padding.right + savedBadgeWidth + savedInset);
     const int16_t coverHeight = std::max<int16_t>(1, std::min<int16_t>(LIST_PREVIEW_HEIGHT, cardHeight - 12));
     card.coverSize =
         fui::Size{std::max<int16_t>(1, std::min<int16_t>(LIST_PREVIEW_WIDTH, coverHeight * 2 / 3)), coverHeight};
@@ -3460,6 +3769,13 @@ void PluginCatalogActivity::buildThumbnailListScreen(UiScreen& screen) {
       return static_cast<PluginCatalogActivity*>(user)->paintPreview(coverRect, props.value);
     };
     fui::bookCard(screen.frame(), rect, card);
+    if (saved) {
+      const int badgeX = rect.x + rect.width - card.padding.right + savedInset;
+      const int badgeY = rect.y + (rect.height - savedBadgeHeight) / 2;
+      renderer.fillRect(badgeX, badgeY, savedBadgeWidth, savedBadgeHeight, false);
+      renderer.drawRect(badgeX, badgeY, savedBadgeWidth, savedBadgeHeight);
+      renderer.drawText(SMALL_FONT_ID, badgeX + savedPadX, badgeY + savedPadY, savedBadge, true, EpdFontFamily::BOLD);
+    }
     y = static_cast<int16_t>(y + cardHeight + rowGap);
   }
 }
@@ -3537,7 +3853,7 @@ void PluginCatalogActivity::rebuildRowItems() {
     if (cacheSettingsExpanded) {
       if (cacheStatsDirty) refreshCacheStats();
       for (const auto& setting : manifest.settings)
-        if (isCacheSetting(setting)) addSettingRow(setting);
+        if (settingVisible(setting) && isCacheSetting(setting)) addSettingRow(setting);
       addRow(tr(STR_PLUGIN_CACHE_LAST_REFRESH), nullptr, cacheLastRefreshValue.c_str());
       addRow(tr(STR_PLUGIN_CACHE_PAGES), nullptr, cachePagesValue.c_str());
       addRow(tr(STR_PLUGIN_CACHE_IMAGES), nullptr, cacheImagesValue.c_str());
@@ -3552,18 +3868,19 @@ void PluginCatalogActivity::rebuildRowItems() {
       addRow(tr(STR_PLUGIN_CACHE_CLEAR), nullptr, ">");
     } else {
       for (const auto& setting : manifest.settings)
-        if (!isCacheSetting(setting)) addSettingRow(setting);
+        if (settingVisible(setting) && !isCacheSetting(setting)) addSettingRow(setting);
       if (cacheUsable()) {
-        if (cacheStatsDirty) refreshCacheStats();
-        addRow("Cache", cacheStorageValue.c_str(), ">");
+        addRow("Cache", cacheStatsDirty ? nullptr : cacheStorageValue.c_str(), ">");
       }
     }
   } else {
-    if (!footerPagerActive() && prevRowVisible()) addRow(tr(STR_PREV_PAGE), nullptr, ">");
+    if (!nativeFooterActive() && prevRowVisible()) addRow(tr(STR_PREV_PAGE), nullptr, ">");
     for (const auto& entry : items) {
-      addRow(entry.title.c_str(), entry.author.c_str(), entry.isDir ? ">" : entry.status.c_str());
+      std::string dest;
+      const bool saved = !entry.isDir && downloadDestination(entry, dest) && Storage.exists(dest.c_str());
+      addRow(entry.title.c_str(), entry.author.c_str(), entry.isDir ? ">" : (saved ? "SAVED" : entry.status.c_str()));
     }
-    if (!footerPagerActive() && nextRowVisible()) addRow(tr(STR_NEXT_PAGE), nullptr, ">");
+    if (!nativeFooterActive() && nextRowVisible()) addRow(tr(STR_NEXT_PAGE), nullptr, ">");
   }
 }
 

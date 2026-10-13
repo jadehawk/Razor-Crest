@@ -90,8 +90,8 @@ void catalogCenteredBlock(UiAppHost::UiScreen& screen, const std::initializer_li
   }
 }
 
-void catalogDownloadScreen(UiAppHost::UiScreen& screen, const char* status, const size_t progress, const size_t total,
-                           const fui::ActionId cancelAction) {
+void catalogDownloadScreen(UiAppHost::UiScreen& screen, const char* heading, const char* status, const size_t progress,
+                           const size_t total, const fui::ActionId cancelAction) {
   // Centered block: status line, item title, progress, optional cancel.
   const auto& theme = screen.theme();
   fui::TextStyle centered = theme.bodyText;
@@ -102,18 +102,20 @@ void catalogDownloadScreen(UiAppHost::UiScreen& screen, const char* status, cons
   const int16_t progressH = showBytes ? lh : 16;
   const bool withCancel = cancelAction != fui::NO_ACTION;
   const int16_t btnH = withCancel ? theme.rowHeight : 0;
+  const bool hasStatus = status && status[0] != '\0';
   // The item title gets two padded lines: long book titles wrap once and then
   // truncate, instead of running edge-to-edge in a single clipped line.
   fui::TextStyle title = centered;
   title.maxLines = 2;
-  const int16_t titleH = static_cast<int16_t>(lh * 2);
+  const int16_t titleH = hasStatus ? static_cast<int16_t>(lh * 2) : 0;
   const int16_t pad = static_cast<int16_t>(UITheme::getInstance().getMetrics().contentSidePadding);
-  const int16_t blockH = static_cast<int16_t>(lh + titleH + progressH + btnH + gap * (withCancel ? 3 : 2));
+  const int16_t gaps = static_cast<int16_t>(1 + (hasStatus ? 1 : 0) + (withCancel ? 1 : 0));
+  const int16_t blockH = static_cast<int16_t>(lh + titleH + progressH + btnH + gap * gaps);
   const fui::Rect body = screen.body();
   if (body.height > blockH) screen.spacer(static_cast<int16_t>((body.height - blockH) / 2));
 
-  screen.target().text(screen.takeTop(lh, gap), tr(STR_DOWNLOADING), centered);
-  screen.target().text(screen.takeTop(titleH, gap).inset(fui::Insets{0, pad, 0, pad}), status, title);
+  screen.target().text(screen.takeTop(lh, gap), heading ? heading : tr(STR_DOWNLOADING), centered);
+  if (hasStatus) screen.target().text(screen.takeTop(titleH, gap).inset(fui::Insets{0, pad, 0, pad}), status, title);
 
   const fui::Rect progressArea = screen.takeTop(progressH, gap).inset(fui::Insets{0, 50, 0, 50});
   if (!showBytes) {

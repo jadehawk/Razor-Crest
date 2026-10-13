@@ -3,6 +3,7 @@
 #include <HalStorage.h>
 #include <I18n.h>
 
+#include <atomic>
 #include <memory>
 #include <string>
 #include <utility>
@@ -52,6 +53,7 @@ class PluginCatalogActivity final : public CatalogActivity {
  private:
   static constexpr freeink::ui::ActionId ACTION_PLUGIN_TAB = ACTION_USER + 2;
   static constexpr freeink::ui::ActionId ACTION_PAGE = ACTION_USER + 3;
+  static constexpr freeink::ui::ActionId ACTION_REFRESH = ACTION_USER + 4;
 
   struct Manifest {
     // Shared on-SD token and flat {cfg.KEY} configuration.
@@ -74,7 +76,7 @@ class PluginCatalogActivity final : public CatalogActivity {
       return !compatFamilyPath.empty() || !compatFirmwarePath.empty() || !compatApiMinPath.empty() ||
              !compatRequiresPath.empty();
     }
-    enum class ImageFormat : uint8_t { Bmp, Jpeg, Png };
+    enum class ImageFormat : uint8_t { Bmp, Jpeg, Png, Auto };
     enum class SelectionStyle : uint8_t { Theme, Light, Dark, Outline };
     pluginhttp::RequestSpec imageReq;
     ImageFormat imageFormat = ImageFormat::Jpeg;
@@ -83,11 +85,14 @@ class PluginCatalogActivity final : public CatalogActivity {
     std::string gridPageSizeTpl = "6", listPageSizeTpl = "10";
     std::string selectionStyleTpl = "theme", coverRadiusTpl = "0";
     std::string cacheRefreshTpl = "7d", cacheLimitMbTpl = "32";
+    std::string hidePaginationTpl = "false";
     bool gridView = false;
     uint8_t gridColumns = 4;
     uint8_t gridRows = 2;
     uint8_t coverRadius = 0;
     bool listThumbnails = false;
+    bool refreshEnabled = false;
+    bool paginationHidden = false;
     SelectionStyle selectionStyle = SelectionStyle::Theme;
     bool cacheEnabled = false;
     uint16_t cacheRefreshDays = 7;  // 0 = always refresh from the network
@@ -111,6 +116,7 @@ class PluginCatalogActivity final : public CatalogActivity {
     struct Setting {
       enum class Type : uint8_t { Toggle, Choice };
       std::string key, title, defaultValue;
+      std::string visibleDeviceCapability;
       Type type = Type::Choice;
       std::vector<SettingOption> options;
     };
@@ -156,6 +162,10 @@ class PluginCatalogActivity final : public CatalogActivity {
     pluginhttp::RequestSpec authReq, pollReq;
     std::string authCodePath, authVerifyPath, authDeviceCodePath;
     std::string authIntervalPath, authExpiresPath, authTokenPath, authErrorPath;
+    // Optional presentation-only hints for device-code screens. These never change
+    // the QR payload or authorization flow; they only replace the raw verification
+    // URL with cleaner service-specific instructions when provided by the plugin.
+    std::string authDisplayUrl, authQrHint, authManualHint;
 
     bool hasDeviceCode() const { return authType == "device_code" && !authReq.url.empty() && !pollReq.url.empty(); }
     bool hasPasswordGrant() const { return authType == "password" && !authReq.url.empty(); }
@@ -212,6 +222,12 @@ class PluginCatalogActivity final : public CatalogActivity {
   int activePluginTab = -1;
   std::vector<freeink::ui::ListNav> pluginTabNavs;
   bool navigationStartedOnTabs = false;
+  // Touch browse swipes scroll the viewport independently of the focused item.
+  // Builders publish the viewport they actually drew; input posts a requested
+  // top index without mutating render-owned ListNav::top from the input task.
+  std::atomic<int> browseViewportTop{0};
+  std::atomic<int> browseViewportItems{1};
+  std::atomic<int> browseRequestedTop{-1};
   bool browseRefreshNeeded = false;
   bool browseLoadedFromCache = false;
   bool forceCacheRefresh = false;
@@ -269,6 +285,9 @@ class PluginCatalogActivity final : public CatalogActivity {
   freeink::ui::ListNav& activeNav() override;
   void onRowAction(const freeink::ui::ActionEvent& event) override;
   void navigateButtons() override;
+  // Move one visible browse batch. Touch keeps the focused item unchanged;
+  // hardware batch navigation moves focus into the newly visible batch.
+  bool stepBrowseViewport(int direction, bool moveSelection);
   bool handleButtons() override;
   bool handleCustomInput() override;
   void onBackButton() override;
@@ -280,7 +299,7 @@ class PluginCatalogActivity final : public CatalogActivity {
   void buildAuthScreen(UiScreen& screen);
   void buildBrowsingScreen(UiScreen& screen);
   void buildPluginTabBar(UiScreen& screen);
-  void buildPagerFooter(UiScreen& screen);
+  void buildCatalogFooter(UiScreen& screen);
   void buildCacheScreen(UiScreen& screen);
   void buildPluginSettingsScreen(UiScreen& screen);
   void buildPlainListScreen(UiScreen& screen);
@@ -295,15 +314,19 @@ class PluginCatalogActivity final : public CatalogActivity {
   void stepPluginTab(int direction);
   static void onPluginTabEvent(const freeink::ui::ActionEvent& event, void* user);
   static void onPageEvent(const freeink::ui::ActionEvent& event, void* user);
+  static void onRefreshEvent(const freeink::ui::ActionEvent& event, void* user);
   void resolvePresentation();
   std::string configValue(const std::string& key, const std::string& fallback = {}) const;
   std::string settingValue(const Manifest::Setting& setting) const;
+  bool deviceCapabilityAvailable(const std::string& capability) const;
+  bool settingVisible(const Manifest::Setting& setting) const;
   bool saveSettingValue(const Manifest::Setting& setting, const std::string& value);
   freeink::ui::StyleSet selectionStyles(const freeink::ui::StyleSet& base) const;
   bool wantsPreviewImages() const;
-  bool footerPagerActive() const;
+  bool nativeFooterActive() const;
   int contentSelectionOffset() const;
   int footerPreviousSelection() const;
+  int footerRefreshSelection() const;
   int footerNextSelection() const;
   int navigationCount() const;
   void clearPreviews();

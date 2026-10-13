@@ -70,10 +70,62 @@ void clearActionFooter(GfxRenderer& renderer) {
 BmpViewerActivity::BmpViewerActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string path,
                                      const bool actionMode, std::string backLabel, std::string confirmLabel)
     : Activity("BmpViewer", renderer, mappedInput),
+      UiAppHost(renderer),
       filePath(std::move(path)),
       actionMode(actionMode),
       actionBackLabel(std::move(backLabel)),
       actionConfirmLabel(std::move(confirmLabel)) {}
+
+void BmpViewerActivity::actionScreen(UiScreen& screen, void* user) {
+  static_cast<BmpViewerActivity*>(user)->buildActionScreen(screen);
+}
+
+void BmpViewerActivity::onCloseAction(const freeink::ui::ActionEvent&, void* user) {
+  static_cast<BmpViewerActivity*>(user)->closeAction();
+}
+
+void BmpViewerActivity::onConfirmAction(const freeink::ui::ActionEvent&, void* user) {
+  static_cast<BmpViewerActivity*>(user)->confirmAction();
+}
+
+void BmpViewerActivity::buildActionScreen(UiScreen& screen) {
+  if (!actionMode || !actionReady) return;
+  freeink::ui::FooterAction actions[2];
+  actions[0].label = actionBackLabel.c_str();
+  actions[0].action = ACTION_CLOSE;
+  actions[1].label = actionConfirmLabel.c_str();
+  actions[1].action = ACTION_CONFIRM;
+  actions[1].enabled = actionCanConfirm;
+  freeink::ui::FooterProps props;
+  props.actions = actions;
+  props.count = actionCanConfirm ? 2 : 1;
+  screen.footer(props);
+}
+
+void BmpViewerActivity::closeAction() {
+  ActivityResult result;
+  result.isCancelled = true;
+  setResult(std::move(result));
+  finish();
+}
+
+void BmpViewerActivity::confirmAction() {
+  if (!actionCanConfirm) return;
+  setResult(ActivityResult{});
+  finish();
+}
+
+void BmpViewerActivity::drawReadyFooter(const MappedInputManager::Labels& labels, const bool allowConfirm) {
+  if (actionMode) {
+    actionReady = true;
+    actionCanConfirm = allowConfirm;
+    if (mappedInput.hasTouch()) {
+      renderUi();
+      return;
+    }
+  }
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+}
 
 void BmpViewerActivity::loadSiblingImages() {
   siblingImages.clear();
@@ -162,7 +214,7 @@ bool BmpViewerActivity::renderImage() {
     if (processing) {
       drawProcessingFooter(renderer);
     } else {
-      GUI.drawButtonHints(renderer, readyLabels.btn1, readyLabels.btn2, readyLabels.btn3, readyLabels.btn4);
+      drawReadyFooter(readyLabels);
     }
     return true;
   };
@@ -206,14 +258,14 @@ bool BmpViewerActivity::renderImage() {
     // falsely tell the controller that Processing was already erased.
     drawProcessingFooter(renderer);
   } else {
-    GUI.drawButtonHints(renderer, readyLabels.btn1, readyLabels.btn2, readyLabels.btn3, readyLabels.btn4);
+    drawReadyFooter(readyLabels);
   }
   renderer.cleanupGrayscaleWithFrameBuffer();
   if (ready && actionMode) {
     // Transition from the synced Processing baseline to a clean white footer
     // plus the final actions, forcing the panel to erase every Processing pixel.
     clearActionFooter(renderer);
-    GUI.drawButtonHints(renderer, readyLabels.btn1, readyLabels.btn2, readyLabels.btn3, readyLabels.btn4);
+    drawReadyFooter(readyLabels);
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   }
   return ready;
@@ -222,6 +274,13 @@ bool BmpViewerActivity::renderImage() {
 void BmpViewerActivity::onEnter() {
   Activity::onEnter();
   actionReady = !actionMode;
+  actionCanConfirm = !actionMode;
+  if (actionMode && mappedInput.hasTouch()) {
+    resetUi();
+    app.on(ACTION_CLOSE, &BmpViewerActivity::onCloseAction, this);
+    app.on(ACTION_CONFIRM, &BmpViewerActivity::onConfirmAction, this);
+    app.setScreen(&BmpViewerActivity::actionScreen, this);
+  }
 
   if (!actionMode && siblingImages.empty() && !filePath.empty()) {
     loadSiblingImages();
@@ -237,7 +296,7 @@ void BmpViewerActivity::onEnter() {
       renderer.clearScreen();
       renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_FILE_OPEN_FAILED));
       const auto labels = imageLabels(false, false, false);
-      GUI.drawButtonHints(renderer, labels.btn1, "", "", "");
+      drawReadyFooter(labels, false);
       renderer.displayBuffer(HalDisplay::HALF_REFRESH);
     } else {
       actionReady = true;
@@ -287,7 +346,7 @@ void BmpViewerActivity::onEnter() {
         if (processing) {
           drawProcessingFooter(renderer);
         } else {
-          GUI.drawButtonHints(renderer, readyLabels.btn1, readyLabels.btn2, readyLabels.btn3, readyLabels.btn4);
+          drawReadyFooter(readyLabels);
         }
       };
       GUI.fillPopupProgress(renderer, popupRect, 50);
@@ -296,6 +355,8 @@ void BmpViewerActivity::onEnter() {
       if (!renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, 0, 0)) {
         renderer.clearScreen();
         renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_FILE_OPEN_FAILED));
+        const auto labels = imageLabels(false, false, false);
+        drawReadyFooter(labels, false);
         renderer.displayBuffer(HalDisplay::HALF_REFRESH);
         return;
       }
@@ -348,11 +409,15 @@ void BmpViewerActivity::onEnter() {
         if (planesReady) {
           if (actionMode) {
             clearActionFooter(renderer);
-            GUI.drawButtonHints(renderer, readyLabels.btn1, readyLabels.btn2, readyLabels.btn3, readyLabels.btn4);
+            drawReadyFooter(readyLabels);
             renderer.displayBuffer(HalDisplay::FAST_REFRESH);
           }
           actionReady = true;
         } else {
+          if (actionMode) {
+            clearActionFooter(renderer);
+            drawReadyFooter(readyLabels, false);
+          }
           renderer.displayBuffer(HalDisplay::HALF_REFRESH);
         }
       } else {
@@ -365,7 +430,7 @@ void BmpViewerActivity::onEnter() {
       renderer.clearScreen();
       renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_INVALID_BMP_FILE));
       const auto labels = imageLabels(false, false, false);
-      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+      drawReadyFooter(labels, false);
       renderer.displayBuffer(HalDisplay::HALF_REFRESH);
     }
 
@@ -375,12 +440,13 @@ void BmpViewerActivity::onEnter() {
     renderer.clearScreen();
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_FILE_OPEN_FAILED));
     const auto labels = imageLabels(false, false, false);
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    drawReadyFooter(labels, false);
     renderer.displayBuffer(HalDisplay::HALF_REFRESH);
   }
 }
 
 void BmpViewerActivity::onExit() {
+  if (actionMode && mappedInput.hasTouch()) closeRouting();
   Activity::onExit();
   renderer.clearScreen();
   renderer.displayBuffer(HalDisplay::HALF_REFRESH);
@@ -532,15 +598,15 @@ void BmpViewerActivity::loop() {
 
   if (actionMode) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-      ActivityResult result;
-      result.isCancelled = true;
-      setResult(std::move(result));
-      finish();
+      closeAction();
       return;
     }
-    if (actionReady && mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-      setResult(ActivityResult{});
-      finish();
+    if (actionReady && mappedInput.hasTouch()) {
+      const auto route = routeTouch(mappedInput);
+      if (route.routed) return;
+    }
+    if (actionReady && actionCanConfirm && mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      confirmAction();
       return;
     }
     return;

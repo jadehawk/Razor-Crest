@@ -1412,7 +1412,10 @@ bool GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
                              const bool allowUpscale) const {
   if (fontCacheManager_ && fontCacheManager_->isScanning()) return false;
   // For 1-bit bitmaps, use optimized 1-bit rendering path (no crop support for 1-bit)
-  if (bitmap.is1Bit() && cropX == 0.0f && cropY == 0.0f && !allowUpscale) {
+  const bool oneBitNeedsDownscale =
+      (maxWidth > 0 && bitmap.getWidth() > maxWidth) || (maxHeight > 0 && bitmap.getHeight() > maxHeight);
+  if (bitmap.is1Bit() && cropX == 0.0f && cropY == 0.0f &&
+      (!allowUpscale || (oneBitNeedsDownscale && bitmap.hasNativePalette()))) {
     return drawBitmap1Bit(bitmap, x, y, maxWidth, maxHeight);
   }
 
@@ -1542,62 +1545,87 @@ bool GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y,
     isScaled = true;
   }
 
-  // For 1-bit BMP, output is still 2-bit packed (for consistency with readNextRow)
+  // For 1-bit BMP, output is still 2-bit packed (for consistency with readNextRow).
   const int outputRowSize = (bitmap.getWidth() + 3) / 4;
   const auto rowBytesSize = static_cast<size_t>(bitmap.getRowBytes());
   auto rowScratch = makeUniqueNoThrow<uint8_t[]>(static_cast<size_t>(outputRowSize) + rowBytesSize);
   if (!rowScratch) {
     LOG_ERR("GFX", "!! Failed to allocate 1-bit BMP row buffers");
-
     return false;
   }
 
   auto* outputRow = rowScratch.get();
   auto* rowBytes = rowScratch.get() + outputRowSize;
-
-  for (int bmpY = 0; bmpY < bitmap.getHeight(); bmpY++) {
-    // Read rows sequentially using readNextRow
-    if (bitmap.readNextRow(outputRow, rowBytes) != BmpReaderError::Ok) {
-      LOG_ERR("GFX", "Failed to read row %d from 1-bit bitmap", bmpY);
-
-      return false;
-    }
-
-    // Calculate screen Y based on whether BMP is top-down or bottom-up
-    const int bmpYOffset = bitmap.isTopDown() ? bmpY : bitmap.getHeight() - 1 - bmpY;
-    int screenY = y + (isScaled ? static_cast<int>(std::floor(bmpYOffset * scale)) : bmpYOffset);
-    if (screenY >= getScreenHeight()) {
-      continue;  // Continue reading to keep row counter in sync
-    }
-    if (screenY < 0) {
-      continue;
-    }
-
-    for (int bmpX = 0; bmpX < bitmap.getWidth(); bmpX++) {
-      int screenX = x + (isScaled ? static_cast<int>(std::floor(bmpX * scale)) : bmpX);
-      if (screenX >= getScreenWidth()) {
-        break;
-      }
-      if (screenX < 0) {
-        continue;
-      }
-
-      // Get 2-bit value (result of readNextRow quantization)
-      const uint8_t val = outputRow[bmpX / 4] >> (6 - ((bmpX * 2) % 8)) & 0x3;
-
-      // For 1-bit source: 0 or 1 -> map to black (0,1,2) or white (3)
-      // val < 3 means black pixel (draw it)
-      if (val < 3) {
-        drawPixel(screenX, screenY, true);
-      }
-      // White pixels (val == 3) are not drawn (leave background)
-    }
-  }
-
   const int renderedWidth =
       isScaled ? static_cast<int>(std::floor((bitmap.getWidth() - 1) * scale)) + 1 : bitmap.getWidth();
   const int renderedHeight =
       isScaled ? static_cast<int>(std::floor((bitmap.getHeight() - 1) * scale)) + 1 : bitmap.getHeight();
+
+  // Cache thumbnails are top-down 1-bit BMPs and are normally reduced for grid/list cells.
+  // Sample by destination pixel instead of walking every source pixel. Rows between samples are
+  // skipped directly in the file, which cuts both SD traffic and CPU work on low-power devices.
+  // Bottom-up BMPs retain the established path below because their visual row order is reversed.
+  if (isScaled && bitmap.isTopDown() && bitmap.hasNativePalette() && renderedWidth > 0 && renderedHeight > 0) {
+    const uint32_t xStep = static_cast<uint32_t>((static_cast<uint64_t>(bitmap.getWidth()) << 16) / renderedWidth);
+    const uint32_t yStep = static_cast<uint32_t>((static_cast<uint64_t>(bitmap.getHeight()) << 16) / renderedHeight);
+    uint32_t sourceYFixed = yStep / 2;
+    int nextFileRow = 0;
+
+    for (int destY = 0; destY < renderedHeight; ++destY) {
+      const int sourceY = std::min(bitmap.getHeight() - 1, static_cast<int>(sourceYFixed >> 16));
+      const int rowsToSkip = sourceY - nextFileRow;
+      if (rowsToSkip > 0 && bitmap.skipRows(rowsToSkip) != BmpReaderError::Ok) {
+        LOG_ERR("GFX", "Failed to skip %d row(s) in 1-bit bitmap", rowsToSkip);
+        return false;
+      }
+      nextFileRow = sourceY;
+      if (bitmap.readNextRow(outputRow, rowBytes) != BmpReaderError::Ok) {
+        LOG_ERR("GFX", "Failed to read sampled row %d from 1-bit bitmap", sourceY);
+        return false;
+      }
+      nextFileRow = sourceY + 1;
+      sourceYFixed += yStep;
+
+      const int screenY = y + destY;
+      if (screenY < 0 || screenY >= getScreenHeight()) continue;
+
+      uint32_t sourceXFixed = xStep / 2;
+      for (int destX = 0; destX < renderedWidth; ++destX) {
+        const int sourceX = std::min(bitmap.getWidth() - 1, static_cast<int>(sourceXFixed >> 16));
+        sourceXFixed += xStep;
+        const int screenX = x + destX;
+        if (screenX < 0) continue;
+        if (screenX >= getScreenWidth()) break;
+        const uint8_t val = outputRow[sourceX / 4] >> (6 - ((sourceX * 2) % 8)) & 0x3;
+        if (val < 3) drawPixel(screenX, screenY, true);
+      }
+    }
+
+    preserveImagePolarity(x, y, renderedWidth, renderedHeight);
+    return true;
+  }
+
+  for (int bmpY = 0; bmpY < bitmap.getHeight(); bmpY++) {
+    if (bitmap.readNextRow(outputRow, rowBytes) != BmpReaderError::Ok) {
+      LOG_ERR("GFX", "Failed to read row %d from 1-bit bitmap", bmpY);
+      return false;
+    }
+
+    const int bmpYOffset = bitmap.isTopDown() ? bmpY : bitmap.getHeight() - 1 - bmpY;
+    int screenY = y + (isScaled ? static_cast<int>(std::floor(bmpYOffset * scale)) : bmpYOffset);
+    if (screenY >= getScreenHeight()) continue;
+    if (screenY < 0) continue;
+
+    for (int bmpX = 0; bmpX < bitmap.getWidth(); bmpX++) {
+      int screenX = x + (isScaled ? static_cast<int>(std::floor(bmpX * scale)) : bmpX);
+      if (screenX >= getScreenWidth()) break;
+      if (screenX < 0) continue;
+
+      const uint8_t val = outputRow[bmpX / 4] >> (6 - ((bmpX * 2) % 8)) & 0x3;
+      if (val < 3) drawPixel(screenX, screenY, true);
+    }
+  }
+
   preserveImagePolarity(x, y, renderedWidth, renderedHeight);
   return true;
 }

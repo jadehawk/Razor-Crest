@@ -33,7 +33,7 @@ class CatalogActivity : public UiListActivity {
   static constexpr freeink::ui::ActionId ACTION_CANCEL = ACTION_USER + 1;
 
   State state = State::LOADING;
-  std::string errorMessage, statusMessage;
+  std::string errorMessage, statusMessage, downloadHeading;
   size_t downloadProgress = 0, downloadTotal = 0;
   bool cancelDownload = false;
 
@@ -59,7 +59,7 @@ class CatalogActivity : public UiListActivity {
   void checkAndConnectWifi();
   void launchWifiSelection();
   void launchSearch();
-  void beginDownload(const std::string& title);
+  void beginDownload(const std::string& title, const char* heading = nullptr);
   void finishDownload(HttpDownloader::DownloadError result);
   HttpDownloader::DownloadError downloadFile(const std::string& url, const std::string& dest,
                                              const std::string& user = {}, const std::string& password = {},

@@ -97,7 +97,7 @@ By default, use the active authoritative ThinkForge workspace/worktree as the bu
 
 The normal build must clean each requested target before compiling while retaining the installed compiler/package cache. Do not use `-NoClean` unless an incremental target build is explicitly requested.
 
-Output belongs under `C:\XP-FW\out\<timestamp>-<sha>\` with the latest successful build copied to `C:\XP-FW\out\latest\`. Do not scatter test firmware into ad-hoc build folders.
+Output belongs under `C:\XP-FW\out\<timestamp>-<sha>\`. For every successful firmware build, also copy that model's complete build output into the established model-specific delivery folder `C:\XP-FW\out\latest\<MODEL>\` (for example `C:\XP-FW\out\latest\X3\` or `C:\XP-FW\out\latest\X4Pro\`). Preserve other model folders already present under `out\latest`; a later single-model build must not erase them. Never create or use a parallel convenience path such as `C:\XP-FW\Latest\`. Do not scatter test firmware into ad-hoc build folders.
 
 For first-time or repair setup, run `C:\XP-FW\setup.cmd`. No global Windows `PATH` changes are required. See `C:\XP-FW\README.md` for the canonical workstation build instructions.
 
