@@ -207,7 +207,7 @@ class PluginCatalogActivity final : public CatalogActivity {
   OptionPopup pluginHubPopup;
   bool showOpds = false;
   bool rootMode = false;
-  int pickerReturnRow = 0;  // picker row to reselect after leaving a catalog
+  std::string pickerReturnName;  // plugin identity to reselect after leaving a catalog
   std::vector<Item> items;
   // Row buffer over the active content. Footer paging is a separate native
   // FreeInkUI control and never occupies an item row.
