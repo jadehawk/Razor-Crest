@@ -353,6 +353,9 @@ std::vector<PluginRef> discoverPlugins() {
     plugins.push_back(std::move(ref));
   }
   std::sort(plugins.begin(), plugins.end(), [](const PluginRef& lhs, const PluginRef& rhs) {
+    const bool lhsHub = lhs.name == "pluginhub";
+    const bool rhsHub = rhs.name == "pluginhub";
+    if (lhsHub != rhsHub) return lhsHub;
     const int titleOrder = strcasecmp(lhs.title.c_str(), rhs.title.c_str());
     return titleOrder != 0 ? titleOrder < 0 : strcasecmp(lhs.name.c_str(), rhs.name.c_str()) < 0;
   });
@@ -836,18 +839,21 @@ void PluginCatalogActivity::enterPluginPicker() {
   errorMessage.clear();
   session.reset();  // no TLS while only picking
   state = State::PLUGIN_PICKER;
+  bool restoredSelection = false;
   for (size_t i = 0; i < installedPlugins.size(); ++i) {
     if (installedPlugins[i].name != pickerReturnName) continue;
     const int prefixRows = (showOpds ? 1 : 0) + (showPluginHubInstallRow ? 1 : 0);
     moveSelectionTo(prefixRows + static_cast<int>(i));
+    restoredSelection = true;
     break;
   }
+  if (!restoredSelection && rowCount() > 0) moveSelectionTo(0);
   requestUpdate();
 }
 
 void PluginCatalogActivity::confirmUninstallPlugin(const int pickerIndex) {
   if (state != State::PLUGIN_PICKER) return;
-  const int offset = showOpds ? 1 : 0;
+  const int offset = (showOpds ? 1 : 0) + (showPluginHubInstallRow ? 1 : 0);
   const int pluginIndex = pickerIndex - offset;
   if (pluginIndex < 0 || pluginIndex >= static_cast<int>(installedPlugins.size())) return;
 
@@ -873,13 +879,19 @@ void PluginCatalogActivity::confirmUninstallPlugin(const int pickerIndex) {
     return;
   }
 
+  std::string returnPluginName;
+  if (pluginIndex + 1 < static_cast<int>(installedPlugins.size()))
+    returnPluginName = installedPlugins[pluginIndex + 1].name;
+  else if (pluginIndex > 0)
+    returnPluginName = installedPlugins[pluginIndex - 1].name;
+
   app.clearTapFlash();
-  startActivityForResult(std::move(confirmation), [this, plugin, pickerIndex](const ActivityResult& result) {
+  startActivityForResult(std::move(confirmation), [this, plugin, returnPluginName](const ActivityResult& result) {
     if (result.isCancelled) return;
     const bool removed = !Storage.exists(plugin.dir.c_str()) || Storage.removeDir(plugin.dir.c_str());
     if (!removed) LOG_ERR("PCAT", "Failed to recursively uninstall plugin: %s", plugin.dir.c_str());
 
-    pickerReturnRow = pickerIndex;
+    pickerReturnName = returnPluginName;
     enterPluginPicker();
   });
 }
@@ -3364,8 +3376,6 @@ void PluginCatalogActivity::activateItem(const int itemIndex) {
     previewItem(itemIndex);
     return;
   }
-    return;
-  }
   downloadItem(itemIndex);
 }
 
@@ -3522,12 +3532,12 @@ void PluginCatalogActivity::drawFooter() {
         const int selected = activeNav().selected.load();
         const bool onFooterAction = selected == footerPreviousSelection() || selected == footerRefreshSelection() ||
                                     selected == footerNextSelection();
-        confirmLabel = onFooterAction
-                           ? tr(STR_FETCH)
-                           : (count == 0 ? ""
-                                         : (onDir || manifest.previewOnSelect
-                                                ? tr(STR_OPEN)
-                                                : (onDetails ? tr(STR_DETAILS) : tr(STR_FETCH))));
+        confirmLabel =
+            onFooterAction
+                ? tr(STR_FETCH)
+                : (count == 0 ? ""
+                              : (onDir || manifest.previewOnSelect ? tr(STR_OPEN)
+                                                                   : (onDetails ? tr(STR_DETAILS) : tr(STR_FETCH))));
       }
       // On the top row of a searchable catalog the previous-nav slot becomes
       // Search (front Left), mirroring the OPDS browser's side-button search.
