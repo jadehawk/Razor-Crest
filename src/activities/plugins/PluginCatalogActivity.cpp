@@ -73,6 +73,7 @@ constexpr size_t MAX_BROWSE_RESPONSE = 1024 * 1024;
 constexpr size_t MAX_BROWSE_LIST_INDEX_RESPONSE = 16 * 1024;
 constexpr char CACHE_SEED_TMP_PATH[] = "/.pcat_cache_seed.zip";
 constexpr size_t MAX_PREVIEW_RESPONSE = 256 * 1024;
+constexpr size_t MAX_ITEM_DETAILS_RESPONSE = 24 * 1024;
 constexpr unsigned long PLUGIN_UNINSTALL_HOLD_MS = 1000;
 constexpr int MAX_PAGE_SIZE = 16;
 constexpr int GRID_PREVIEW_WIDTH = 200;
@@ -89,6 +90,34 @@ constexpr int64_t MIN_VALID_UNIX_TIME = 1609459200LL;  // 2021-01-01
 int64_t currentUnixTime() {
   const int64_t now = static_cast<int64_t>(time(nullptr));
   return now >= MIN_VALID_UNIX_TIME ? now : 0;
+}
+
+std::string htmlEscape(const std::string& value) {
+  std::string escaped;
+  escaped.reserve(value.size());
+  for (const char ch : value) {
+    switch (ch) {
+      case '&':
+        escaped += "&amp;";
+        break;
+      case '<':
+        escaped += "&lt;";
+        break;
+      case '>':
+        escaped += "&gt;";
+        break;
+      case '"':
+        escaped += "&quot;";
+        break;
+      case 0x27:
+        escaped += "&#39;";
+        break;
+      default:
+        escaped += ch;
+        break;
+    }
+  }
+  return escaped;
 }
 
 std::string md5Hex(const std::string& text) {
@@ -323,6 +352,10 @@ std::vector<PluginRef> discoverPlugins() {
     if (e.hasDevice) readPluginMetadata(ref.manifestPath, ref, true);
     plugins.push_back(std::move(ref));
   }
+  std::sort(plugins.begin(), plugins.end(), [](const PluginRef& lhs, const PluginRef& rhs) {
+    const int titleOrder = strcasecmp(lhs.title.c_str(), rhs.title.c_str());
+    return titleOrder != 0 ? titleOrder < 0 : strcasecmp(lhs.name.c_str(), rhs.name.c_str()) < 0;
+  });
   return plugins;
 }
 
@@ -357,6 +390,23 @@ bool PluginCatalogActivity::loadManifest() {
   manifest.urlPath = browse["fields"]["url"] | "";
   manifest.thumbnailPath = browse["fields"]["thumbnail"] | "";
   manifest.versionPath = browse["fields"]["version"] | "";
+  manifest.descriptionPath = browse["fields"]["description"] | "";
+  manifest.detailAuthorPath = browse["fields"]["detail_author"] | "";
+  if (manifest.detailAuthorPath.empty()) manifest.detailAuthorPath = manifest.authorPath;
+  manifest.repositoryPath = browse["fields"]["repository"] | "";
+  manifest.detailsUrlPath = browse["fields"]["details_url"] | "";
+  manifest.detailsFormatPath = browse["fields"]["details_format"] | "";
+  // Version-tracked catalogs predate item details. Conventional field names
+  // keep those manifests working while newer catalogs can map the fields explicitly.
+  if (manifest.tracksInstalls()) {
+    if (manifest.descriptionPath.empty()) manifest.descriptionPath = "description";
+    if (manifest.repositoryPath.empty()) manifest.repositoryPath = "repository";
+    if (manifest.detailsUrlPath.empty()) manifest.detailsUrlPath = "details.url";
+    if (manifest.detailsFormatPath.empty()) manifest.detailsFormatPath = "details.format";
+    if (manifest.detailAuthorPath.empty() || manifest.detailAuthorPath == manifest.descriptionPath) {
+      manifest.detailAuthorPath = "author";
+    }
+  }
   JsonVariantConst compatibility = browse["compatibility"];
   manifest.compatFamilyPath = compatibility["firmware_family"] | "";
   manifest.compatFirmwarePath = compatibility["firmware"] | "";
@@ -2530,7 +2580,7 @@ HttpDownloader::DownloadError PluginCatalogActivity::downloadBundle(const Item& 
     return HttpDownloader::FILE_ERROR;
   }
   std::string root = downloadDir();
-  if (!root.empty() && root.back() == '/') root.pop_back();
+  while (!root.empty() && root.back() == '/') root.pop_back();
   std::string dir;
   if (PluginLocations::shouldReuseInstalledBundleDir(root, subdir)) {
     dir = PluginLocations::findPluginDir(subdir.c_str());
@@ -3301,11 +3351,139 @@ void PluginCatalogActivity::activateItem(const int itemIndex) {
     launchWifiSelection();
     return;
   }
+  if (!manifest.isXmlList() && manifest.hasItemDetails()) {
+    showItemDetails(itemIndex);
+    return;
+  }
   if (manifest.previewOnSelect) {
     previewItem(itemIndex);
     return;
   }
+    return;
+  }
   downloadItem(itemIndex);
+}
+
+bool PluginCatalogActivity::loadItemDetails(const int itemIndex, ItemDetails& details) {
+  if (itemIndex < 0 || itemIndex >= static_cast<int>(items.size())) return false;
+  const Item& target = items[itemIndex];
+  bool found = false;
+  auto capture = [&](JsonListParser::Row& row) {
+    if (found) return;
+    const bool idMatch = !target.id.empty() && row.field[JsonListParser::F_AUTHOR] == target.id;
+    const bool fallbackMatch = target.id.empty() && row.field[JsonListParser::F_TITLE] == target.title &&
+                               (target.version.empty() || row.field[JsonListParser::F_VERSION] == target.version);
+    if (!idMatch && !fallbackMatch) return;
+    details.description = std::move(row.field[JsonListParser::F_ID]);
+    details.author = std::move(row.field[JsonListParser::F_URL]);
+    details.repository = std::move(row.field[JsonListParser::F_BASE]);
+    found = true;
+  };
+  const std::string* const fields[] = {&manifest.titlePath,        &manifest.idPath,      &manifest.descriptionPath,
+                                       &manifest.detailAuthorPath, &manifest.versionPath, &manifest.repositoryPath};
+  const std::string unused;
+  auto parser = makeUniqueNoThrow<JsonListParser>(
+      manifest.itemsPath, fields, unused,
+      [](void* context, JsonListParser::Row& row) { (*static_cast<decltype(capture)*>(context))(row); }, &capture);
+  const bool metadataFound = streamBrowseFile(parser.get()) && found;
+
+  if (manifest.detailsUrlPath.empty()) return metadataFound;
+  bool richFound = false;
+  auto captureRich = [&](JsonListParser::Row& row) {
+    if (richFound) return;
+    const bool idMatch = !target.id.empty() && row.field[JsonListParser::F_AUTHOR] == target.id;
+    const bool fallbackMatch = target.id.empty() && row.field[JsonListParser::F_TITLE] == target.title &&
+                               (target.version.empty() || row.field[JsonListParser::F_VERSION] == target.version);
+    if (!idMatch && !fallbackMatch) return;
+    details.detailsUrl = std::move(row.field[JsonListParser::F_ID]);
+    details.detailsFormat = std::move(row.field[JsonListParser::F_URL]);
+    richFound = true;
+  };
+  const std::string* const richFields[] = {&manifest.titlePath,         &manifest.idPath,      &manifest.detailsUrlPath,
+                                           &manifest.detailsFormatPath, &manifest.versionPath, &unused};
+  auto richParser = makeUniqueNoThrow<JsonListParser>(
+      manifest.itemsPath, richFields, unused,
+      [](void* context, JsonListParser::Row& row) { (*static_cast<decltype(captureRich)*>(context))(row); },
+      &captureRich);
+  return (streamBrowseFile(richParser.get()) && richFound) || metadataFound;
+}
+
+void PluginCatalogActivity::showItemDetails(const int itemIndex) {
+  if (itemIndex < 0 || itemIndex >= static_cast<int>(items.size())) return;
+  const Item& item = items[itemIndex];
+
+  ItemDetails details;
+  loadItemDetails(itemIndex, details);
+
+  std::string body;
+  bool htmlDefinition = false;
+  if (!details.detailsUrl.empty()) {
+    String response;
+    const std::string url = substituted(details.detailsUrl, &item);
+    const int status = pluginhttp::request(session.get(), url, "GET", "", {}, response, MAX_ITEM_DETAILS_RESPONSE);
+    if (status >= 200 && status < 300 && response.length() > 0) {
+      if (details.detailsFormat == "html") {
+        body.assign(response.c_str(), response.length());
+        htmlDefinition = true;
+      } else if (details.detailsFormat.empty() || details.detailsFormat == "text") {
+        body.assign(response.c_str(), response.length());
+      } else {
+        LOG_INF("PCAT", "unsupported item details format: %s", details.detailsFormat.c_str());
+      }
+    } else {
+      LOG_INF("PCAT", "item details fetch failed: HTTP %d", status);
+    }
+  }
+
+  if (body.empty()) body = details.description;
+  if (htmlDefinition) {
+    const auto appendHtmlField = [&](const StrId label, const std::string& value) {
+      if (value.empty()) return;
+      body += "<p><strong>";
+      body += htmlEscape(I18N.get(label));
+      body += ":</strong> ";
+      body += htmlEscape(value);
+      body += "</p>";
+    };
+    appendHtmlField(StrId::STR_AUTHOR, details.author);
+    appendHtmlField(StrId::STR_VERSION, item.version);
+    appendHtmlField(StrId::STR_REPOSITORY, details.repository);
+    if (item.status == tr(STR_INSTALLED) || item.status == tr(STR_UPDATE_AVAILABLE)) {
+      body += "<p><strong>";
+      body += htmlEscape(item.status);
+      body += "</strong></p>";
+    }
+  } else {
+    const auto appendField = [&](const StrId label, const std::string& value) {
+      if (value.empty()) return;
+      if (!body.empty()) body += "\n\n";
+      body += I18N.get(label);
+      body += ": ";
+      body += value;
+    };
+    appendField(StrId::STR_AUTHOR, details.author);
+    appendField(StrId::STR_VERSION, item.version);
+    appendField(StrId::STR_REPOSITORY, details.repository);
+    if (item.status == tr(STR_INSTALLED) || item.status == tr(STR_UPDATE_AVAILABLE)) {
+      if (!body.empty()) body += "\n\n";
+      body += item.status;
+    }
+  }
+  if (body.empty()) body = item.title;
+
+  const bool updateAvailable = item.status == tr(STR_UPDATE_AVAILABLE);
+  const char* actionLabel =
+      updateAvailable ? tr(STR_UPDATE) : (manifest.tracksInstalls() ? tr(STR_INSTALL) : tr(STR_FETCH));
+  auto detailsActivity = makeUniqueNoThrow<DictionaryDefinitionActivity>(
+      renderer, mappedInput, item.title, std::move(body), htmlDefinition, actionLabel, CrossPointSettings::LEFT_ALIGN);
+  if (!detailsActivity) {
+    LOG_ERR("PCAT", "OOM: item details");
+    return;
+  }
+  startActivityForResult(std::move(detailsActivity), [this, itemIndex](const ActivityResult& result) {
+    if (result.isCancelled || itemIndex < 0 || itemIndex >= static_cast<int>(items.size())) return;
+    downloadItem(itemIndex);
+  });
 }
 
 void PluginCatalogActivity::drawFooter() {
@@ -3333,15 +3511,18 @@ void PluginCatalogActivity::drawFooter() {
       } else if (settingsTabActive()) {
         confirmLabel = count > 0 ? tr(STR_SELECT) : "";
       } else {
-        // Folders open; items and the pager rows both fetch from the server.
-        const bool onDir =
-            manifest.isXmlList() && itemSel >= 0 && itemSel < static_cast<int>(items.size()) && items[itemSel].isDir;
+        const bool onItem = itemSel >= 0 && itemSel < static_cast<int>(items.size());
+        const bool onDir = manifest.isXmlList() && onItem && items[itemSel].isDir;
+        const bool onDetails = !manifest.isXmlList() && onItem && manifest.hasItemDetails();
         const int selected = activeNav().selected.load();
         const bool onFooterAction = selected == footerPreviousSelection() || selected == footerRefreshSelection() ||
                                     selected == footerNextSelection();
         confirmLabel = onFooterAction
                            ? tr(STR_FETCH)
-                           : (count == 0 ? "" : (onDir || manifest.previewOnSelect ? tr(STR_OPEN) : tr(STR_FETCH)));
+                           : (count == 0 ? ""
+                                         : (onDir || manifest.previewOnSelect
+                                                ? tr(STR_OPEN)
+                                                : (onDetails ? tr(STR_DETAILS) : tr(STR_FETCH))));
       }
       // On the top row of a searchable catalog the previous-nav slot becomes
       // Search (front Left), mirroring the OPDS browser's side-button search.
@@ -3669,6 +3850,11 @@ void PluginCatalogActivity::buildBrowsingScreen(UiScreen& screen) {
     // Mark the subtitle style caller-owned before resolving the theme.
     props.subtitleText = screen.theme().smallText;
     props.subtitleText.maxLines = 2;
+  } else if (state == State::BROWSING && !manifest.isXmlList()) {
+    // Catalog descriptions get enough room to be useful without replacing
+    // the explicit Details page.
+    props.subtitleText = screen.theme().smallText;
+    props.subtitleText.maxLines = 3;
   }
   syncListViewport(screen, props, pluginTabsActive() ? 1 : 0);
   if (state == State::PLUGIN_PICKER) {

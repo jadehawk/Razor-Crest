@@ -37,7 +37,7 @@ Response:
   "firmwareFamily": "crosspoint",
   "firmwareId": "Razor-Crest",
   "pluginApi": 1,
-  "pluginCapabilities": "catalog.lists,catalog.notices,catalog.bundle_install,catalog.version_tracking,catalog.compatibility,catalog.images,catalog.cache,catalog.refresh",
+  "pluginCapabilities": "catalog.lists,catalog.notices,catalog.bundle_install,catalog.version_tracking,catalog.compatibility,catalog.images,catalog.cache,catalog.refresh,catalog.item_details",
   "ip": "192.168.1.100",
   "mode": "STA",
   "rssi": -45,

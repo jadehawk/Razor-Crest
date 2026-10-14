@@ -67,12 +67,19 @@ class PluginCatalogActivity final : public CatalogActivity {
     std::string itemsPath;  // JSON: dotted path to the item array; "" = response root
     // JSON field paths (dotted); XML field selectors ("elem", "elem@attr", "@attr").
     std::string titlePath, authorPath, idPath, urlPath, thumbnailPath;
+    // Optional JSON detail fields are streamed only for the selected item so a
+    // page of long descriptions/repository metadata does not stay in DRAM.
+    std::string descriptionPath, detailAuthorPath, repositoryPath;
+    std::string detailsUrlPath, detailsFormatPath;
     // Compare this item field against the installed manifest version for badges.
     std::string versionPath;
     // Optional catalog-entry compatibility fields. Empty paths mean no
     // restriction; entries that omit the mapped values remain visible.
     std::string compatFamilyPath, compatFirmwarePath, compatApiMinPath, compatRequiresPath;
     bool tracksInstalls() const { return !versionPath.empty(); }
+    bool hasItemDetails() const {
+      return tracksInstalls() || !descriptionPath.empty() || !repositoryPath.empty() || !detailsUrlPath.empty();
+    }
     bool filtersCompatibility() const {
       return !compatFamilyPath.empty() || !compatFirmwarePath.empty() || !compatApiMinPath.empty() ||
              !compatRequiresPath.empty();
@@ -181,6 +188,11 @@ class PluginCatalogActivity final : public CatalogActivity {
     // Bundle download only: base URL + relative file paths for this item.
     std::string base;
     std::vector<std::string> files;
+  };
+
+  struct ItemDetails {
+    std::string description, author, repository;
+    std::string detailsUrl, detailsFormat;
   };
 
   std::string manifestPath;  // empty while the picker is showing
@@ -378,8 +390,10 @@ class PluginCatalogActivity final : public CatalogActivity {
   void computeInstallStatus();
   bool parseXmlList();
   bool parseBrowseResponse();
-  void activateItem(int itemIndex);  // XML list: navigate into a folder, else preview/download
+  void activateItem(int itemIndex);  // XML list: navigate into a folder, else details/preview/download
   void previewItem(int itemIndex);
+  bool loadItemDetails(int itemIndex, ItemDetails& details);
+  void showItemDetails(int itemIndex);
   void downloadItem(int itemIndex);
   bool downloadDestination(const Item& item, std::string& dest);
   HttpDownloader::DownloadError finalizeDownloadedFile(const Item& item, const std::string& dest);
