@@ -68,6 +68,10 @@ bool loadTokenFromFile(const std::string& file, const std::string& path, std::st
 // a truncated token is never persisted.
 bool saveTokenToFile(const std::string& file, const std::string& path, const std::string& value);
 
+// Removes a token file through the same manifest-path validation as token reads
+// and writes. Missing/empty files are already cleared and return true.
+bool removeTokenFile(const std::string& file);
+
 // Loads a flat JSON config file into {cfg.KEY} pairs. Missing file = empty.
 void loadConfigFile(const std::string& file, Headers& out);
 

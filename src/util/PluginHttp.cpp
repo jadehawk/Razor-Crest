@@ -174,6 +174,15 @@ bool saveTokenToFile(const std::string& file, const std::string& path, const std
   return true;
 }
 
+bool removeTokenFile(const std::string& file) {
+  if (file.empty()) return true;
+  if (!allowedFile(file)) return false;
+  if (!Storage.exists(file.c_str())) return true;
+  if (Storage.remove(file.c_str())) return true;
+  LOG_ERR("PHTP", "Failed to remove token file: %s", file.c_str());
+  return false;
+}
+
 void loadConfigFile(const std::string& file, Headers& out) {
   out.clear();
   if (file.empty()) return;

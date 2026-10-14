@@ -343,6 +343,7 @@ bool PluginCatalogActivity::loadManifest() {
   const std::string pluginDir = manifestPath.substr(0, manifestPath.rfind('/'));
   manifest.tokenFile = pluginhttp::inPluginDir(pluginDir, doc["token"]["file"] | "");
   manifest.tokenPath = doc["token"]["path"] | "token";
+  manifest.tokenPersistent = doc["token"]["persist"] | true;
   manifest.configFile = pluginhttp::inPluginDir(pluginDir, doc["config"]["file"] | "");
 
   JsonVariantConst browse = doc["browse"];
@@ -382,6 +383,8 @@ bool PluginCatalogActivity::loadManifest() {
   if (manifest.listPageSizeTpl.empty()) manifest.listPageSizeTpl = legacyPageSizeTpl.empty() ? "10" : legacyPageSizeTpl;
   const JsonVariantConst cache = doc["cache"];
   manifest.cacheEnabled = cache["enabled"] | false;
+  const char* cacheScope = cache["scope"] | "shared";
+  manifest.cacheTokenScoped = strcasecmp(cacheScope, "token") == 0;
   manifest.cacheRefreshTpl = variantToString(cache["refresh"]);
   if (manifest.cacheRefreshTpl.empty()) manifest.cacheRefreshTpl = "7d";
   manifest.cacheLimitMbTpl = variantToString(cache["limit_mb"]);
@@ -526,7 +529,25 @@ bool PluginCatalogActivity::saveToken(const std::string& value) {
 }
 
 bool PluginCatalogActivity::loadToken() {
+  // Keep an already-loaded ephemeral session value in RAM while this catalog is open.
+  // Its backing file may also be browse scratch storage that moves into the page cache.
+  if (!manifest.tokenPersistent && !token.empty()) return true;
   return pluginhttp::loadTokenFromFile(manifest.tokenFile, manifest.tokenPath, token);
+}
+
+bool PluginCatalogActivity::clearEphemeralToken() {
+  if (manifest.tokenPersistent || manifest.tokenFile.empty()) return true;
+  const bool cleared = pluginhttp::removeTokenFile(manifest.tokenFile);
+  token.clear();
+  return cleared;
+}
+
+void PluginCatalogActivity::startDeviceAuth() {
+  if (!wifiConnected()) {
+    launchWifiSelection();
+    return;
+  }
+  beginAuth();
 }
 
 std::string PluginCatalogActivity::configValue(const std::string& key, const std::string& fallback) const {
@@ -551,7 +572,7 @@ void PluginCatalogActivity::resolvePresentation() {
   const std::string hidePagination = substituted(manifest.hidePaginationTpl, nullptr);
   const bool wantsHiddenPagination = strcasecmp(hidePagination.c_str(), "true") == 0 || hidePagination == "1" ||
                                      strcasecmp(hidePagination.c_str(), "on") == 0;
-  manifest.paginationHidden = mappedInput.hasTouch() && wantsHiddenPagination;
+  manifest.paginationHidden = wantsHiddenPagination;
 
   const std::string previewOnSelect = substituted(manifest.previewOnSelectTpl, nullptr);
   manifest.previewOnSelect = strcasecmp(previewOnSelect.c_str(), "true") == 0 || previewOnSelect == "1" ||
@@ -823,6 +844,10 @@ void PluginCatalogActivity::enterCatalog() {
     return;
   }
   manifestLoaded = true;
+  if (!clearEphemeralToken()) {
+    fail(StrId::STR_PLUGIN_AUTH_FAILED);
+    return;
+  }
   loadConfig();
   if (!manifest.tabs.empty()) {
     activePluginTab = 0;
@@ -847,7 +872,10 @@ void PluginCatalogActivity::enterCatalog() {
 // Leaving the open catalog (Back at its root, or Back out of an error /
 // sign-in screen): return to the plugin picker. Wi-Fi stays up so the next
 // pick connects instantly; onExit tears it down when the activity ends.
-void PluginCatalogActivity::exitCatalog() { enterPluginPicker(); }
+void PluginCatalogActivity::exitCatalog() {
+  clearEphemeralToken();
+  enterPluginPicker();
+}
 
 bool PluginCatalogActivity::pluginTabsActive() const {
   return state == State::BROWSING && activePluginTab >= 0 && activePluginTab < static_cast<int>(manifest.tabs.size()) &&
@@ -897,8 +925,10 @@ void PluginCatalogActivity::switchPluginTab(const int index, const bool keepFocu
     requestUpdate();
     return;
   }
-  if (browseTabActive() && browseRefreshNeeded) {
+  const bool refreshEmptyBrowse = browseTabActive() && items.empty();
+  if (browseTabActive() && (browseRefreshNeeded || refreshEmptyBrowse)) {
     browseRefreshNeeded = false;
+    if (refreshEmptyBrowse) forceCacheRefresh = true;
     beginLoading();
     fetchPage(1);
     return;
@@ -1023,6 +1053,7 @@ void PluginCatalogActivity::onExit() {
   clearPreviews();
   items.clear();
   session.reset();  // drop browse TLS before Wi-Fi teardown
+  clearEphemeralToken();
   Storage.remove(BROWSE_TMP_PATH);
   Storage.remove(CACHE_SEED_TMP_PATH);
   CatalogActivity::onExit();
@@ -1067,6 +1098,14 @@ void PluginCatalogActivity::startBrowse() {
     return;
   }
 
+  if (manifest.hasDeviceCode() && !manifest.tokenPersistent) {
+    loadConfig();
+    if (!loadToken()) {
+      startDeviceAuth();
+      return;
+    }
+  }
+
   const bool remoteListsAvailable =
       !manifest.isXmlList() && !manifest.browseListsUrl.empty() && !browseListsRemoteAttempted;
   // A manifest-provided list is an intentional offline/fast-start fallback. Do not
@@ -1084,7 +1123,7 @@ void PluginCatalogActivity::startBrowse() {
     loadConfig();
     if (!loadToken() && !(manifest.hasPasswordGrant() && refreshCredentialToken())) {
       if (manifest.hasDeviceCode()) {
-        beginAuth();
+        startDeviceAuth();
       } else {
         state = State::NO_TOKEN;
         requestUpdate();
@@ -1116,6 +1155,10 @@ void PluginCatalogActivity::startBrowse() {
     state = State::LIST_PICKER;
     requestUpdate();
     return;
+  }
+  if (currentList >= 0 && browseRefreshNeeded) {
+    browseRefreshNeeded = false;
+    forceCacheRefresh = true;
   }
   beginLoading();
   fetchPage(1);
@@ -1305,7 +1348,8 @@ std::string PluginCatalogActivity::previewPath(const int itemIndex) {
 }
 
 bool PluginCatalogActivity::cacheUsable() const {
-  return manifest.cacheEnabled && !manifest.isXmlList() && !searchActive && !manifestPath.empty();
+  return manifest.cacheEnabled && !manifest.isXmlList() && !searchActive && !manifestPath.empty() &&
+         (!manifest.cacheTokenScoped || !token.empty());
 }
 
 std::string PluginCatalogActivity::cacheDir() const {
@@ -1336,11 +1380,12 @@ std::string PluginCatalogActivity::cacheSubstituted(std::string tpl, const Item*
 
 std::string PluginCatalogActivity::cachePagePath(const int requestedPage) const {
   if (!cacheUsable()) return "";
-  const std::string key =
+  std::string key =
       "page-v1|" + manifest.browseReq.method + "|" + cacheSubstituted(activeBrowseUrl(), nullptr, requestedPage) + "|" +
       cacheSubstituted(activeBrowseBody(), nullptr, requestedPage) + "|" + std::to_string(currentList) + "|" +
       std::to_string(manifest.pageSize) + "|" + manifest.itemsPath + "|" + manifest.titlePath + "|" +
       manifest.authorPath + "|" + manifest.idPath + "|" + manifest.urlPath + "|" + manifest.versionPath;
+  if (manifest.cacheTokenScoped) key += "|token|" + md5Hex(token);
   return cacheDir() + "/p_" + md5Hex(key) + ".json";
 }
 
@@ -1352,9 +1397,10 @@ std::string PluginCatalogActivity::cachePageMetaPath(const int requestedPage) co
 
 std::string PluginCatalogActivity::cacheImagePath(const Item& item) const {
   if (!cacheUsable() || !manifest.hasImages()) return "";
-  const std::string key = "image-v1|200x300|" + std::to_string(static_cast<int>(manifest.imageFormat)) + "|" +
-                          manifest.imageReq.method + "|" + cacheSubstituted(manifest.imageReq.url, &item) + "|" +
-                          cacheSubstituted(manifest.imageReq.body, &item);
+  std::string key = "image-v1|200x300|" + std::to_string(static_cast<int>(manifest.imageFormat)) + "|" +
+                    manifest.imageReq.method + "|" + cacheSubstituted(manifest.imageReq.url, &item) + "|" +
+                    cacheSubstituted(manifest.imageReq.body, &item);
+  if (manifest.cacheTokenScoped) key += "|token|" + md5Hex(token);
   return cacheDir() + "/i_" + md5Hex(key) + ".bmp";
 }
 
@@ -1396,9 +1442,11 @@ bool PluginCatalogActivity::tryLoadCachedPage(const int requestedPage, const boo
   if (!cacheUsable()) return false;
   const std::string path = cachePagePath(requestedPage);
   if (path.empty() || !Storage.exists(path.c_str())) return false;
-  int64_t capturedAt = 0;
-  readCacheTimestamp(cachePageMetaPath(requestedPage), capturedAt);
-  if (!allowStale && !cachePageFresh(capturedAt)) return false;
+  if (!allowStale && !manifest.cacheTokenScoped) {
+    int64_t capturedAt = 0;
+    readCacheTimestamp(cachePageMetaPath(requestedPage), capturedAt);
+    if (!cachePageFresh(capturedAt)) return false;
+  }
   page = requestedPage;
   browseSourcePath = path;
   browseLoadedFromCache = true;
@@ -2180,6 +2228,7 @@ void PluginCatalogActivity::fetchPage(const int newPage) {
   browseSourcePath = BROWSE_TMP_PATH;
   browseLoadedFromCache = false;
 
+  if (manifest.cacheTokenScoped) loadToken();
   const bool canCache = cacheUsable();
   if (canCache && !forceCacheRefresh && tryLoadCachedPage(newPage, false)) {
     if (!parseBrowseResponse()) return;
@@ -2208,15 +2257,24 @@ void PluginCatalogActivity::fetchPage(const int newPage) {
       requestUpdate();
       return;
     }
+    if (authFailed && manifest.hasDeviceCode() && !manifest.tokenPersistent) {
+      if (!clearEphemeralToken()) {
+        fail(StrId::STR_PLUGIN_AUTH_FAILED);
+        return;
+      }
+      startDeviceAuth();
+      return;
+    }
     if (!authFailed) fail(StrId::STR_FETCH_FEED_FAILED);
     return;
   }
 
   forceCacheRefresh = false;
-  if (canCache && !storeFetchedPage(newPage)) browseSourcePath = BROWSE_TMP_PATH;
+  const bool canStoreCache = cacheUsable();
+  if (canStoreCache && !storeFetchedPage(newPage)) browseSourcePath = BROWSE_TMP_PATH;
   if (!parseBrowseResponse()) return;
   if (!preparePreviews()) return;
-  if (canCache) {
+  if (canStoreCache) {
     enforceCacheLimit();
     noteCacheRefresh();
   }
@@ -2421,6 +2479,7 @@ void PluginCatalogActivity::pollAuth() {
         fail(StrId::STR_PLUGIN_AUTH_FAILED);
         return;
       }
+      token = newToken;
       startBrowse();
       return;
     }
@@ -2800,8 +2859,7 @@ void PluginCatalogActivity::onRowAction(const fui::ActionEvent& event) {
 }
 
 bool PluginCatalogActivity::stepBrowseViewport(const int direction, const bool moveSelection) {
-  if (direction == 0 || state != State::BROWSING || !browseTabActive() || !nativeFooterActive() || items.empty())
-    return false;
+  if (direction == 0 || state != State::BROWSING || !nativeFooterActive() || items.empty()) return false;
 
   const int count = static_cast<int>(items.size());
   const int visible = std::clamp(browseViewportItems.load(), 1, count);
@@ -2850,8 +2908,8 @@ void PluginCatalogActivity::navigateButtons() {
 
   auto& current = activeNav();
   const int selectedItem = current.selected.load() - contentSelectionOffset();
-  const bool browseItemFocused = state == State::BROWSING && browseTabActive() && nativeFooterActive() &&
-                                 selectedItem >= 0 && selectedItem < static_cast<int>(items.size());
+  const bool browseItemFocused = state == State::BROWSING && nativeFooterActive() && selectedItem >= 0 &&
+                                 selectedItem < static_cast<int>(items.size());
   const int ringSize = navigationCount();
 
   if (browseItemFocused) {
@@ -3034,7 +3092,7 @@ void PluginCatalogActivity::retryBrowse() {
     return;
   }
   if (state == State::NO_TOKEN && manifest.hasDeviceCode()) {
-    beginAuth();
+    startDeviceAuth();
   } else if ((!manifest.browseListsUrl.empty() && manifest.browseLists.empty()) || wantsListPicker()) {
     if (!manifest.browseListsUrl.empty() && manifest.browseLists.empty()) browseListsRemoteAttempted = false;
     startBrowse();
@@ -3080,7 +3138,10 @@ void PluginCatalogActivity::onBackButton() {
     beginLoading();
     fetchPage(page);
   } else if (state == State::BROWSING && currentList >= 0) {
-    // Browsing a picked list: Back returns to the list picker, not out.
+    // Browsing a picked list: Back returns to the list picker, not out. If
+    // the list was empty, remember that re-entering it should check the
+    // network instead of accepting the cached empty page again.
+    if (items.empty()) browseRefreshNeeded = true;
     currentList = -1;
     startBrowse();
   } else {
@@ -3275,7 +3336,12 @@ void PluginCatalogActivity::drawFooter() {
         // Folders open; items and the pager rows both fetch from the server.
         const bool onDir =
             manifest.isXmlList() && itemSel >= 0 && itemSel < static_cast<int>(items.size()) && items[itemSel].isDir;
-        confirmLabel = count == 0 ? "" : (onDir || manifest.previewOnSelect ? tr(STR_OPEN) : tr(STR_FETCH));
+        const int selected = activeNav().selected.load();
+        const bool onFooterAction = selected == footerPreviousSelection() || selected == footerRefreshSelection() ||
+                                    selected == footerNextSelection();
+        confirmLabel = onFooterAction
+                           ? tr(STR_FETCH)
+                           : (count == 0 ? "" : (onDir || manifest.previewOnSelect ? tr(STR_OPEN) : tr(STR_FETCH)));
       }
       // On the top row of a searchable catalog the previous-nav slot becomes
       // Search (front Left), mirroring the OPDS browser's side-button search.
@@ -3571,6 +3637,7 @@ void PluginCatalogActivity::buildBrowsingScreen(UiScreen& screen) {
   }
 
   if (rowItems.empty()) {
+    if (nativeFooterActive()) buildCatalogFooter(screen);
     screen.centeredText(state == State::PLUGIN_PICKER ? tr(STR_NO_PLUGINS_INSTALLED) : tr(STR_NO_ENTRIES),
                         screen.theme().bodyText);
     return;

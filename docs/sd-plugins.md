@@ -266,7 +266,8 @@ For JSON catalogs, `browse.compatibility` maps optional catalog-entry fields to 
   // The credential stores (wifi/opds/koreader .json) are refused.
   "token": {                                // omit for token-less catalogs
     "file": "token.json",                   // written by auth (either side)
-    "path": "token"                         // dotted JSON path inside the file
+    "path": "token",                        // dotted JSON path inside the file
+    "persist": true                          // false = discard when this plugin catalog is left/reopened
   },
 
   "config": {                               // optional: flat JSON of {cfg.KEY} values,
@@ -283,6 +284,7 @@ For JSON catalogs, `browse.compatibility` maps optional catalog-entry fields to 
   },
   "cache": {                                // optional progressive JSON catalog/image cache
     "enabled": true,
+    "scope": "shared",                         // shared (default) or token (auth-token cache identity)
     "refresh": "{cfg.cache_refresh}",          // always, 3d, 7d, 14d; default 7d
     "limit_mb": "{cfg.cache_limit_mb}",        // bounded by firmware to 8..128 MB; default 32
     "seed": { "url": "https://.../thumbnail-cache.zip" } // optional user-triggered cache seed
@@ -346,7 +348,7 @@ For JSON catalogs, `browse.compatibility` maps optional catalog-entry fields to 
     "grid_rows": 2,                         // visible grid rows: 1..4; default 2
     "list_thumbnail": false,                // list only: request thumbnail cards
     "selection_style": "theme",             // theme, light, dark, or outline
-    "hide_pagination": "{cfg.hide_pagination}", // touch only: hide Previous/Next; swipes still page
+    "hide_pagination": "{cfg.hide_pagination}", // hide Previous/Next; swipe/hardware paging still works
     "refresh": true,                          // optional native Refresh footer action
     // Presentation values above may also be strings such as "{cfg.layout}"
     // or "{cfg.grid_rows}", binding the renderer to native plugin settings.
@@ -432,12 +434,17 @@ For JSON catalogs, `browse.compatibility` maps optional catalog-entry fields to 
 
 ### Behavior
 
-- **Sign-in (`device_code`)**: the not-signed-in screen offers Sign in on the
-  device: it shows the verification URL (text + QR) and user code, then polls
-  until authorized, honoring `authorization_pending`, `slow_down`,
-  `expired_token`, and `access_denied`. The token is written to `token.file`
-  in the shape `token.path` expects, so the web plugin and the device share
-  one sign-in.
+- **Sign-in (`device_code`)**: when a token is needed, firmware establishes Wi-Fi
+  before starting authorization. It then shows the verification URL (text + QR)
+  and user code and polls until authorized, honoring `authorization_pending`,
+  `slow_down`, `expired_token`, and `access_denied`. The token is written to
+  `token.file` in the shape `token.path` expects, so the web plugin and the device
+  share one sign-in. `token.persist` defaults to `true`; with `false`, firmware
+  discards that token when the catalog is left or reopened, and a browse 401/403
+  automatically starts fresh device authorization instead of retaining stale state.
+  Once loaded, a non-persistent token remains valid in RAM for that open catalog
+  session even if its backing file is also a firmware-owned browse scratch path that
+  is moved or removed while caching the current response.
 - **Sign-in (`password`)**: no on-device UI — the device silently POSTs the
   stored config credentials to the token endpoint before browsing, and re-mints
   a fresh token automatically after any 401 (these tokens are short-lived).
@@ -453,12 +460,11 @@ For JSON catalogs, `browse.compatibility` maps optional catalog-entry fields to 
   plugin UIs use FreeInkUI's native footer for Previous/Next pagination. Setting
   `browse.refresh: true` adds a separate Refresh action between them; Refresh forces
   a network refetch of the current page, bypassing a fresh catalog-page cache when
-  one is configured. On touch hardware, `browse.hide_pagination` may resolve to
-  true to omit only the Previous/Next footer actions; Refresh remains independent.
-  Vertical browse swipes still cross server-page boundaries at the first/last
-  viewport, so hidden pagination never disables paging. Non-touch devices ignore a
-  true `hide_pagination` value and keep Previous/Next visible. When pagination is
-  shown, unavailable directions remain visible but disabled, and D-pad focus moves
+  one is configured. `browse.hide_pagination` may resolve to true on any device to
+  omit only the Previous/Next footer actions; Refresh remains independent. Vertical
+  browse swipes and supported hardware page/batch controls still cross server-page
+  boundaries at the first/last viewport, so hidden pagination never disables paging.
+  When pagination is shown, unavailable directions remain visible but disabled, and D-pad focus moves
   through the footer actions after the content items.
 - **Progressive cache** (json): an optional top-level `cache` block keeps each
   fetched catalog page and its converted display-ready thumbnails under that
@@ -468,7 +474,18 @@ For JSON catalogs, `browse.compatibility` maps optional catalog-entry fields to 
   catalog download. `refresh` controls catalog-page freshness (`always`, `3d`,
   `7d`, or `14d`; default `7d`). Cached images are keyed independently by their
   resolved request and remain reusable across catalog refreshes, so an unchanged
-  image URL is not downloaded again. If a network refresh fails, an existing
+  image URL is not downloaded again. Cache scope defaults to shared. Token scope adds
+  the currently loaded plugin token to the hashed page and image cache identity and is
+  inactive until a token is loaded. Token-scoped pages remain reusable for normal
+  pagination and non-empty tab re-entry regardless of refresh age. The native Refresh
+  action is the explicit network bypass and remains available on an empty enhanced
+  browse surface. Entering a different empty browse tab also bypasses the cached empty
+  page and fetches page 1 so newly available items can appear. For named browse lists,
+  backing out of an empty list and selecting a list again likewise forces one page-1
+  network check instead of accepting the cached empty response. Reusing the same token
+  reuses the same namespace, while services
+  that issue a fresh token per session get session isolation. If a network refresh
+  fails, an existing
   stale page is used when available. `limit_mb` is clamped to 8..128 MB (default
   32 MB); when the limit is exceeded, old image entries are evicted before old
   catalog pages while the page currently on screen and its images are protected.

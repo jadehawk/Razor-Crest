@@ -58,6 +58,7 @@ class PluginCatalogActivity final : public CatalogActivity {
   struct Manifest {
     // Shared on-SD token and flat {cfg.KEY} configuration.
     std::string tokenFile, tokenPath;
+    bool tokenPersistent = true;
     std::string configFile;
     // JSON uses dotted field paths; XML uses element/attribute selectors.
     std::string browseFormat;
@@ -95,6 +96,7 @@ class PluginCatalogActivity final : public CatalogActivity {
     bool paginationHidden = false;
     SelectionStyle selectionStyle = SelectionStyle::Theme;
     bool cacheEnabled = false;
+    bool cacheTokenScoped = false;
     uint16_t cacheRefreshDays = 7;  // 0 = always refresh from the network
     uint16_t cacheLimitMb = 32;
     std::string cacheSeedUrl;
@@ -262,6 +264,8 @@ class PluginCatalogActivity final : public CatalogActivity {
   bool loadManifest();
   bool loadBrowseListIndex();
   bool loadToken();
+  bool clearEphemeralToken();
+  void startDeviceAuth();
   void loadConfig();
   bool saveToken(const std::string& value);
   // Show named lists when present, otherwise fetch the first page.
