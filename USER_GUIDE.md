@@ -219,6 +219,7 @@ The Settings screen allows you to configure the device's behavior. There are a f
   - "Cover + Custom" - The book cover image while actively reading, falls back to "Custom" behavior otherwise
   - "Quick resume" - The text of the last page read will be displayed on the sleep screen and a moon icon is shown on the edge of the screen. Waking up the device will return to the same page of the opened book. This is useful for quickly resuming reading without waiting for the device to fully wake up and load the book.
   - "Transparent" - A transparent overlay image drawn over the current screen; see [Sleep Screen](#37-sleep-screen) below for more information
+- **Timed Sleep-Screen Refresh**: Optionally rotate Custom sleep-screen wallpapers while the device remains asleep. It is **Off** by default; available intervals are 1 minute, 15 minutes, 30 minutes, 1 hour, 3 hours, 6 hours, 12 hours, and 24 hours. This setting applies only when **Sleep Screen** is set to **Custom** and uses valid BMP images from the hidden .sleep directory in the SD-card root. It is shown only on devices whose sleep hardware supports timer wake.
 - **Sleep Screen Cover Mode**: How to display the book cover when "Cover" sleep screen is selected:
   
   - "Fit" (default) - Scale the image down to fit centered on the screen, padding with white borders as necessary
@@ -575,6 +576,14 @@ To use custom sleep images, set the sleep screen mode to **Custom** or **Cover +
 
 - **Multiple Images (recommended):** Create a `.sleep` directory in the root of the SD card and place any number of `.bmp` images inside. One will be randomly selected each time the device sleeps. (A directory named `sleep` is also accepted as a fallback.)
 - **Single Image:** Place a file named `sleep.bmp` in the root directory. This takes priority over the `.sleep`/`sleep` directories.
+
+#### Timed sleep-screen refresh
+
+When **Timed Sleep-Screen Refresh** is enabled and **Sleep Screen** is **Custom**, the device wakes at the selected interval, chooses another valid BMP from the hidden .sleep directory in the SD-card root, refreshes the panel, and immediately returns to deep sleep. This timed path intentionally does not use the root sleep.bmp file or the /sleep fallback directory. If no valid .sleep wallpaper is available, the existing retained sleep image is left unchanged.
+
+On **X3**, GPIO13 controls the switched SD-card power rail rather than the X4 battery latch. When a timer wake is successfully armed, Razor-Crest keeps the X3 SD rail powered so the unattended wake can remount the card and read `.sleep`; with Timed Sleep-Screen Refresh set to **Off**, normal X3 sleep still shuts that rail down. Battery-only one-minute rotation and disabling the feature have been hardware-tested on X3. Standby-current impact is still being measured, so this feature should be treated as experimental while testing continues.
+
+See [Timed wake testing](docs/timed-wake-testing.md) for the implementation background, device test matrix, and suggested validation procedure.
 
 #### Transparent overlay images
 

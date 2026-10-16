@@ -23,6 +23,8 @@ Release assets use names such as `razor-crest-1.6.5-r1-x3-x4.bin`. Use only the 
 
 These are Razor-Crest fork builds, not official CrossPoint releases.
 
+Experimental timed-wake builds are published separately as GitHub prereleases from the `Razor-Crest-TimedWakeup` branch. Their tags use `razor-crest-timedwake-v<upstream-version>-r<revision>` and their asset names begin with `razor-crest-timedwake-`, so they cannot be confused with the normal Razor-Crest release channel. See [Timed wake testing](docs/timed-wake-testing.md) before flashing one of these test builds.
+
 ## Current Razor-Crest-only additions
 
 The list below describes the current **net differences from upstream `develop`**. Intermediate experiments that were later removed or superseded are intentionally not listed.
@@ -38,6 +40,14 @@ The list below describes the current **net differences from upstream `develop`**
 - Makes the same identity values available to plugin/catalog templates through `{firmware_family}`, `{firmware_id}`, `{firmware_version}`, `{plugin_api}`, and `{plugin_capabilities}`.
 - Replaces the stock CrossPoint branding artwork with the Razor-Crest logo in firmware/web assets.
 - Uses a larger 200×200 Razor-Crest logo on the boot and default sleep screens and labels those screens with the exact firmware ID instead of the stock CrossPoint name.
+
+### Experimental timed sleep-screen refresh
+
+- Adopts the optional one-shot timer-wake primitive from upstream CrossPoint PR [#3820](https://github.com/crosspoint-reader/crosspoint-reader/pull/3820) without adding a scheduler or new plugin API.
+- Adds **Timed Sleep-Screen Refresh** for **Custom** sleep screens, defaulting to Off with 1 minute, 15 minute, 30 minute, 1 hour, 3 hour, 6 hour, 12 hour, and 24 hour intervals.
+- Timer wakes perform only local SD/display maintenance: select another valid BMP from `.sleep`, refresh the retained e-ink image, and immediately return to deep sleep without Wi-Fi or plugin execution.
+- X3 requires a board-specific power detail because GPIO13 switches its SD-card rail; the rail remains powered only when a timer wake is successfully armed. X3 battery-only functional testing passes, while standby-current measurement remains in progress.
+- See [Timed wake testing](docs/timed-wake-testing.md) for the validation matrix and test procedure.
 
 ### Global Plugin System control
 

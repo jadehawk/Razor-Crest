@@ -585,6 +585,40 @@ void SleepActivity::onEnter() {
   }
 }
 
+bool SleepActivity::renderTimedSleepScreen() const {
+  std::string selectedPath;
+  if (!selectRandomSleepFile("/.sleep", SleepRecentKind::Standard, selectedPath)) {
+    LOG_DBG("SLP", "Timed refresh: no valid /.sleep wallpaper");
+    return false;
+  }
+
+  HalFile file;
+  if (!Storage.openFileForRead("SLP", selectedPath, file)) return false;
+
+  Bitmap bitmap(file, true,
+                renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported() &&
+                    display.getController() == HalDisplay::Controller::SSD1677 &&
+                    SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::NO_FILTER);
+  if (bitmap.parseHeaders() != BmpReaderError::Ok) {
+    file.close();
+    return false;
+  }
+
+  const uint64_t pixelOffset = static_cast<uint64_t>(file.position());
+  const uint64_t fileSize = static_cast<uint64_t>(file.fileSize());
+  const uint64_t pixelBytes = static_cast<uint64_t>(bitmap.getRowBytes()) * static_cast<uint64_t>(bitmap.getHeight());
+  if (pixelOffset > fileSize || pixelBytes > fileSize - pixelOffset) {
+    LOG_DBG("SLP", "Timed refresh: incomplete wallpaper: %s", selectedPath.c_str());
+    file.close();
+    return false;
+  }
+
+  LOG_DBG("SLP", "Timed refresh loading: %s", selectedPath.c_str());
+  renderBitmapSleepScreen(bitmap);
+  file.close();
+  return true;
+}
+
 void SleepActivity::renderCustomSleepScreen() const {
   // Look for sleep.bmp on the root of the sd card to determine if we should
   // render a custom sleep screen instead of the default.

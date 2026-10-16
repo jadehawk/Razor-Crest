@@ -11,6 +11,9 @@ class SleepActivity final : public Activity {
   explicit SleepActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool fromTimeout = false)
       : Activity("Sleep", renderer, mappedInput), fromTimeout(fromTimeout) {}
   void onEnter() override;
+  // Timer-wake maintenance path: rotate only an existing /.sleep wallpaper.
+  // Returns false without repainting when no valid wallpaper is available.
+  bool renderTimedSleepScreen() const;
 
  private:
   void renderDefaultSleepScreen() const;

@@ -27,6 +27,18 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     TRANSPARENT_CUSTOM = 7,
     SLEEP_SCREEN_MODE_COUNT
   };
+  enum TIMED_SLEEP_SCREEN_REFRESH {
+    TIMED_SLEEP_REFRESH_OFF = 0,
+    TIMED_SLEEP_REFRESH_1_MIN,
+    TIMED_SLEEP_REFRESH_15_MIN,
+    TIMED_SLEEP_REFRESH_30_MIN,
+    TIMED_SLEEP_REFRESH_1_HOUR,
+    TIMED_SLEEP_REFRESH_3_HOURS,
+    TIMED_SLEEP_REFRESH_6_HOURS,
+    TIMED_SLEEP_REFRESH_12_HOURS,
+    TIMED_SLEEP_REFRESH_24_HOURS,
+    TIMED_SLEEP_SCREEN_REFRESH_COUNT
+  };
   enum SLEEP_SCREEN_COVER_MODE { FIT = 0, CROP = 1, SLEEP_SCREEN_COVER_MODE_COUNT };
   enum SLEEP_SCREEN_COVER_FILTER {
     NO_FILTER = 0,
@@ -225,6 +237,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
 
   // Sleep screen settings
   uint8_t sleepScreen = DARK;
+  // Optional timer-driven refresh for Custom sleep-screen wallpapers. Off by default.
+  uint8_t timedSleepScreenRefresh = TIMED_SLEEP_REFRESH_OFF;
   // Night mode: inverted output polarity, applied to every activity per
   // render by ActivityManager. The sleep screen opts out itself.
   uint8_t screenInverted = 0;
@@ -402,6 +416,17 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint16_t getPowerButtonDuration() const {
     return (shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP) ? 10 : 400;
   }
+  uint64_t getTimedSleepScreenRefreshUs() const {
+#if FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_METALIO_EINK4
+    return 0;
+#else
+    static constexpr uint32_t SECONDS[] = {0,           60,          15 * 60,      30 * 60,     60 * 60,
+                                           3 * 60 * 60, 6 * 60 * 60, 12 * 60 * 60, 24 * 60 * 60};
+    if (timedSleepScreenRefresh >= TIMED_SLEEP_SCREEN_REFRESH_COUNT) return 0;
+    return static_cast<uint64_t>(SECONDS[timedSleepScreenRefresh]) * 1000000ULL;
+#endif
+  }
+
   int getReaderFontId() const;
 
   // Drop the SD font selection and fall back to the built-in family. The reader

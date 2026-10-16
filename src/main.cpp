@@ -34,6 +34,7 @@
 #include "WifiCredentialStore.h"
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
+#include "activities/boot_sleep/SleepActivity.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -333,6 +334,11 @@ static void deliverSleepPluginEvents() {
   }
 }
 
+uint64_t timedSleepScreenRefreshUs() {
+  if (SETTINGS.sleepScreen != CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM) return 0;
+  return SETTINGS.getTimedSleepScreenRefreshUs();
+}
+
 // Enter deep sleep mode
 void enterDeepSleep(bool fromTimeout = false) {
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
@@ -373,12 +379,13 @@ void enterDeepSleep(bool fromTimeout = false) {
     WiFi.mode(WIFI_OFF);
   }
 
+  const uint64_t timerWakeUs = isQuickResumeSleep ? 0 : timedSleepScreenRefreshUs();
   halTiltSensor.deepSleep();
   display.deepSleep();
   Storage.prepareForDeepSleep();
   LOG_DBG("MAIN", "Entering deep sleep");
 
-  powerManager.startDeepSleep(gpio);
+  powerManager.startDeepSleep(gpio, timerWakeUs);
 }
 
 void setupDisplayAndFonts(bool seamless = false) {
@@ -489,6 +496,13 @@ void setup() {
   // We need 6 open files concurrently when parsing a new chapter
   if (!Storage.begin()) {
     LOG_ERR("MAIN", "SD card initialization failed");
+    if (wakeupReason == HalGPIO::WakeupReason::Timer) {
+      // An unattended maintenance wake must never strand the reader awake.
+      // Settings live on SD, so do not re-arm a timer we can no longer verify.
+      halTiltSensor.deepSleep();
+      powerManager.startDeepSleep(gpio);
+      return;
+    }
     setupDisplayAndFonts(isSilentReboot);
     activityManager.goToFullScreenMessage("SD card error", EpdFontFamily::BOLD);
     return;
@@ -531,11 +545,28 @@ void setup() {
   // light off unless Restore Light on Wake is enabled; silent maintenance
   // reboots replay the live state captured at restart, so they neither go dark
   // nor light up against the user's wake preference.
-  const bool restoreLightOn =
-      isSilentReboot ? silentRebootLightOn : (SETTINGS.frontlightOn != 0 && SETTINGS.frontlightRestoreOnWake != 0);
+  const bool restoreLightOn = wakeupReason == HalGPIO::WakeupReason::Timer ? false
+                              : isSilentReboot                             ? silentRebootLightOn
+                                               : (SETTINGS.frontlightOn != 0 && SETTINGS.frontlightRestoreOnWake != 0);
   Frontlight.begin(SETTINGS.frontlightBrightness, SETTINGS.frontlightWarmth, restoreLightOn);
 
   switch (wakeupReason) {
+    case HalGPIO::WakeupReason::Timer: {
+      const uint64_t timerWakeUs = timedSleepScreenRefreshUs();
+      LOG_DBG("MAIN", "Wakeup reason: Timer; timed sleep refresh interval=%llu us",
+              static_cast<unsigned long long>(timerWakeUs));
+      if (timerWakeUs > 0) {
+        setupDisplayAndFonts(/*seamless=*/true);
+        display.setInverted(false);
+        SleepActivity timedSleep(renderer, mappedInputManager);
+        timedSleep.renderTimedSleepScreen();
+        display.deepSleep();
+      }
+      halTiltSensor.deepSleep();
+      Storage.prepareForDeepSleep();
+      powerManager.startDeepSleep(gpio, timerWakeUs);
+      break;
+    }
     case HalGPIO::WakeupReason::PowerButton:
       // With Short Power Button Press = Sleep, a single click wakes on any
       // device; otherwise the button must still be held (ghost-wake debounce).
