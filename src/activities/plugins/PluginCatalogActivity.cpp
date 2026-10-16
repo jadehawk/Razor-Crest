@@ -7,6 +7,7 @@
 #include <HalStorage.h>
 #include <I18n.h>
 #include <JsonListParser.h>
+#include <LibraryBuilder.h>
 #include <Logging.h>
 #include <MD5Builder.h>
 #include <Memory.h>
@@ -119,6 +120,16 @@ std::string htmlEscape(const std::string& value) {
   }
   return escaped;
 }
+
+// JsonListParser has six generic field slots. The compatibility and details
+// passes store other fields in the slots they do not need.
+constexpr auto COMPAT_FAMILY = JsonListParser::F_AUTHOR;
+constexpr auto COMPAT_API_MIN = JsonListParser::F_ID;
+constexpr auto COMPAT_REQUIRES = JsonListParser::F_URL;
+constexpr auto DETAIL_DESCRIPTION = JsonListParser::F_URL;
+constexpr auto DETAIL_REPOSITORY = JsonListParser::F_BASE;
+constexpr auto DETAIL_PAGE_URL = JsonListParser::F_URL;
+constexpr auto DETAIL_PAGE_FORMAT = JsonListParser::F_BASE;
 
 std::string md5Hex(const std::string& text) {
   MD5Builder md5;
@@ -360,15 +371,6 @@ std::vector<PluginRef> discoverPlugins() {
     return titleOrder != 0 ? titleOrder < 0 : strcasecmp(lhs.name.c_str(), rhs.name.c_str()) < 0;
   });
   return plugins;
-}
-
-bool anyPluginInstalled() {
-  // manifest.json alone means web-card metadata only; plugin.js or device.json
-  // is what makes an installed plugin worth the home screen's library slot.
-  for (const auto& e : PluginLocations::scanPlugins()) {
-    if (e.hasPluginJs || e.hasDevice) return true;
-  }
-  return false;
 }
 
 bool PluginCatalogActivity::loadManifest() {
@@ -1061,6 +1063,35 @@ void PluginCatalogActivity::resetBrowse() {
   releaseRows();
   nav.reset();
   for (auto& tabNav : pluginTabNavs) tabNav.reset();
+}
+
+// Shows the list's notice first when it has one. Declining stays on the
+// picker, or leaves the catalog when this list is the only one.
+void PluginCatalogActivity::openList(const int index) {
+  const auto& list = manifest.browseLists[index];
+  if (!list.hasNotice()) {
+    currentList = index;
+    startBrowse();
+    return;
+  }
+  const std::string heading = substituted(list.noticeTitle.empty() ? list.title : list.noticeTitle, nullptr);
+  const std::string message = substituted(list.noticeMessage, nullptr);
+  const std::string cancel = substituted(list.noticeCancel, nullptr);
+  const std::string confirm = substituted(list.noticeConfirm, nullptr);
+  auto confirmation = makeUniqueNoThrow<ConfirmationActivity>(renderer, mappedInput, heading, message, cancel, confirm);
+  if (!confirmation) {
+    LOG_ERR("PCAT", "OOM: browse-list notice");
+    if (manifest.browseLists.size() == 1) exitCatalog();
+    return;
+  }
+  startActivityForResult(std::move(confirmation), [this, index](const ActivityResult& result) {
+    if (result.isCancelled) {
+      if (manifest.browseLists.size() == 1) exitCatalog();
+      return;
+    }
+    currentList = index;
+    startBrowse();
+  });
 }
 
 bool PluginCatalogActivity::wantsListPicker() const {
@@ -2702,6 +2733,7 @@ bool PluginCatalogActivity::downloadDestination(const Item& item, std::string& d
 
 HttpDownloader::DownloadError PluginCatalogActivity::finalizeDownloadedFile(const Item& item, const std::string& dest) {
   clearBookCache(dest);
+  if (library::isLibraryBookFile(dest)) library::markLibraryIndexDirty();
 
   // Optional per-book sidecar (e.g. a service book id keyed by the file's
   // path hash) so a later sync stage can associate the file with the service.
@@ -3196,6 +3228,7 @@ void PluginCatalogActivity::onBackButton() {
     // Leave the results and return to the pre-search view (picker or page 1).
     searchActive = false;
     searchQuery.clear();
+    if (manifest.browseLists.size() == 1) currentList = 0;  // its notice was already accepted
     startBrowse();
     return;
   }

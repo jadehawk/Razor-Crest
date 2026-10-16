@@ -34,9 +34,6 @@ struct PluginRef {
 // Rescan plugin roots on demand; metadata is owned by the picker.
 std::vector<PluginRef> discoverPlugins();
 
-// True if a plugin.js or device.json is installed; reads no manifests.
-bool anyPluginInstalled();
-
 // Manifest-driven picker, catalog, download, and sign-in screens.
 // See docs/sd-plugins.md for the device.json schema.
 class PluginCatalogActivity final : public CatalogActivity {
@@ -273,6 +270,7 @@ class PluginCatalogActivity final : public CatalogActivity {
   void resetBrowse();
   // JSON catalog with named lists and none picked yet.
   bool wantsListPicker() const;
+  void openList(int index);
   bool loadManifest();
   bool loadBrowseListIndex();
   bool loadToken();
