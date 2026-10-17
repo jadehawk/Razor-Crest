@@ -188,8 +188,13 @@ jobs:
           ~/.platformio/penv/bin/pio --version
 
       - name: Build firmware
+        env:
+          RAZOR_CREST_LCP_RELEASE_KEY: ${{ secrets.RAZOR_CREST_LCP_RELEASE_KEY }}
         run: |
           set -euo pipefail
+          if [ -n "$RAZOR_CREST_LCP_RELEASE_KEY" ]; then
+            export PLATFORMIO_BUILD_FLAGS="-DRAZOR_CREST_LCP_RELEASE_KEY=\\\"$RAZOR_CREST_LCP_RELEASE_KEY\\\""
+          fi
           pio run -e "${{ matrix.pio_env }}" -j1 | tee pio.log
 
       - name: Prepare firmware asset
