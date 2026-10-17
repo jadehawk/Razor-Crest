@@ -33,6 +33,7 @@
 #include "activities/settings/PluginHubInstallActivity.h"
 #include "activities/util/BmpViewerActivity.h"
 #include "activities/util/ConfirmationActivity.h"
+#include "activities/util/DetailsActivity.h"
 #include "components/CatalogScreens.h"
 #include "components/UIScale.h"
 #include "components/UITheme.h"
@@ -91,34 +92,6 @@ constexpr int64_t MIN_VALID_UNIX_TIME = 1609459200LL;  // 2021-01-01
 int64_t currentUnixTime() {
   const int64_t now = static_cast<int64_t>(time(nullptr));
   return now >= MIN_VALID_UNIX_TIME ? now : 0;
-}
-
-std::string htmlEscape(const std::string& value) {
-  std::string escaped;
-  escaped.reserve(value.size());
-  for (const char ch : value) {
-    switch (ch) {
-      case '&':
-        escaped += "&amp;";
-        break;
-      case '<':
-        escaped += "&lt;";
-        break;
-      case '>':
-        escaped += "&gt;";
-        break;
-      case '"':
-        escaped += "&quot;";
-        break;
-      case 0x27:
-        escaped += "&#39;";
-        break;
-      default:
-        escaped += ch;
-        break;
-    }
-  }
-  return escaped;
 }
 
 // JsonListParser has six generic field slots. The compatibility and details
@@ -445,6 +418,23 @@ bool PluginCatalogActivity::loadManifest() {
   if (manifest.cacheRefreshTpl.empty()) manifest.cacheRefreshTpl = "7d";
   manifest.cacheLimitMbTpl = variantToString(cache["limit_mb"]);
   if (manifest.cacheLimitMbTpl.empty()) manifest.cacheLimitMbTpl = "32";
+  manifest.cacheNamespaceTpl = variantToString(cache["namespace"]);
+  manifest.cacheGenerationTpl = variantToString(cache["generation"]);
+  manifest.cacheStaleFallback = cache["stale_fallback"] | true;
+  const char* manualScope = cache["manual_refresh"]["scope"] | "catalog";
+  if (strcasecmp(manualScope, "current") == 0)
+    manifest.cacheManualRefreshScope = Manifest::CacheRefreshScope::Current;
+  else if (strcasecmp(manualScope, "plugin") == 0)
+    manifest.cacheManualRefreshScope = Manifest::CacheRefreshScope::Plugin;
+  else
+    manifest.cacheManualRefreshScope = Manifest::CacheRefreshScope::Catalog;
+  const char* detailsPolicy = cache["resources"]["details"] | "off";
+  if (strcasecmp(detailsPolicy, "ttl") == 0)
+    manifest.cacheDetailsPolicy = Manifest::CacheResourcePolicy::Ttl;
+  else if (strcasecmp(detailsPolicy, "immutable") == 0)
+    manifest.cacheDetailsPolicy = Manifest::CacheResourcePolicy::Immutable;
+  else
+    manifest.cacheDetailsPolicy = Manifest::CacheResourcePolicy::Disabled;
   manifest.cacheSeedUrl = cache["seed"]["url"] | "";
   pluginhttp::readRequest(browse["image"], "GET", manifest.imageReq);
   const char* imageFormat = browse["image"]["format"] | "jpeg";
@@ -655,6 +645,9 @@ void PluginCatalogActivity::resolvePresentation() {
   }
   const int limit = atoi(substituted(manifest.cacheLimitMbTpl, nullptr).c_str());
   manifest.cacheLimitMb = static_cast<uint16_t>(std::clamp(limit > 0 ? limit : 32, 8, 128));
+  manifest.cacheNamespace = substituted(manifest.cacheNamespaceTpl, nullptr);
+  manifest.cacheGeneration =
+      remoteCacheGeneration.empty() ? substituted(manifest.cacheGenerationTpl, nullptr) : remoteCacheGeneration;
 }
 
 void PluginCatalogActivity::loadConfig() {
@@ -829,6 +822,7 @@ void PluginCatalogActivity::enterPluginPicker() {
 
   manifestPath.clear();
   manifest = Manifest{};
+  remoteCacheGeneration.clear();
   manifestLoaded = false;
   activePluginTab = -1;
   pluginTabNavs.clear();
@@ -1056,6 +1050,7 @@ void PluginCatalogActivity::resetBrowse() {
   browseViewportItems.store(1);
   pendingNetworkPage = 0;
   pendingItemActivation = -1;
+  pendingItemDownload = -1;
   pendingCacheSeedInstall = false;
   pendingPreviewFill = false;
   cacheSettingsExpanded = false;
@@ -1115,6 +1110,12 @@ bool PluginCatalogActivity::loadBrowseListIndex() {
     LOG_ERR("PCAT", "browse list index parse failed: %s", url.c_str());
     return false;
   }
+
+  std::string generation = variantToString(doc["generation"]);
+  if (generation.size() > 96) generation.resize(96);
+  remoteCacheGeneration = std::move(generation);
+  manifest.cacheGeneration =
+      remoteCacheGeneration.empty() ? substituted(manifest.cacheGenerationTpl, nullptr) : remoteCacheGeneration;
 
   JsonArrayConst lists = doc["lists"].as<JsonArrayConst>();
   if (lists.isNull()) lists = doc["catalogs"].as<JsonArrayConst>();
@@ -1178,6 +1179,21 @@ void PluginCatalogActivity::startBrowse() {
     requestUpdate();
     return;
   }
+  if (pendingItemDownload >= 0) {
+    if (!wifiConnected()) {
+      launchWifiSelection();
+      return;
+    }
+    const int itemIndex = pendingItemDownload;
+    pendingItemDownload = -1;
+    state = State::BROWSING;
+    if (itemIndex < 0 || itemIndex >= static_cast<int>(items.size())) {
+      requestUpdate();
+      return;
+    }
+    downloadItem(itemIndex);
+    return;
+  }
   if (pendingItemActivation >= 0) {
     if (!wifiConnected()) {
       launchWifiSelection();
@@ -1185,6 +1201,7 @@ void PluginCatalogActivity::startBrowse() {
     }
     const int itemIndex = pendingItemActivation;
     pendingItemActivation = -1;
+    state = State::BROWSING;
     activateItem(itemIndex);
     return;
   }
@@ -1476,6 +1493,28 @@ std::string PluginCatalogActivity::cacheSubstituted(std::string tpl, const Item*
   return tpl;
 }
 
+std::string PluginCatalogActivity::cacheCatalogKey() const {
+  if (!cacheUsable()) return "";
+  std::string key = "catalog-v1|" + manifest.browseReq.method + "|" + cacheSubstituted(activeBrowseUrl(), nullptr, 1) +
+                    "|" + cacheSubstituted(activeBrowseBody(), nullptr, 1) + "|" + std::to_string(currentList) + "|" +
+                    std::to_string(manifest.pageSize) + "|" + manifest.itemsPath + "|" + manifest.titlePath + "|" +
+                    manifest.authorPath + "|" + manifest.idPath + "|" + manifest.urlPath + "|" + manifest.versionPath;
+  if (!manifest.cacheNamespace.empty()) key += "|namespace|" + manifest.cacheNamespace;
+  if (manifest.cacheTokenScoped) key += "|token|" + md5Hex(token);
+  return key;
+}
+
+std::string PluginCatalogActivity::cacheRequestKey(const pluginhttp::RequestSpec& request, const Item* item,
+                                                   const std::string& identity) const {
+  if (!cacheUsable()) return "";
+  std::string key = identity + "|" + request.method + "|" + cacheSubstituted(request.url, item) + "|" +
+                    cacheSubstituted(request.body, item);
+  for (const auto& header : request.headers) key += "|h|" + header.first + "|" + cacheSubstituted(header.second, item);
+  if (!manifest.cacheNamespace.empty()) key += "|namespace|" + manifest.cacheNamespace;
+  if (manifest.cacheTokenScoped) key += "|token|" + md5Hex(token);
+  return key;
+}
+
 std::string PluginCatalogActivity::cachePagePath(const int requestedPage) const {
   if (!cacheUsable()) return "";
   std::string key =
@@ -1483,6 +1522,7 @@ std::string PluginCatalogActivity::cachePagePath(const int requestedPage) const 
       cacheSubstituted(activeBrowseBody(), nullptr, requestedPage) + "|" + std::to_string(currentList) + "|" +
       std::to_string(manifest.pageSize) + "|" + manifest.itemsPath + "|" + manifest.titlePath + "|" +
       manifest.authorPath + "|" + manifest.idPath + "|" + manifest.urlPath + "|" + manifest.versionPath;
+  if (!manifest.cacheNamespace.empty()) key += "|namespace|" + manifest.cacheNamespace;
   if (manifest.cacheTokenScoped) key += "|token|" + md5Hex(token);
   return cacheDir() + "/p_" + md5Hex(key) + ".json";
 }
@@ -1493,13 +1533,46 @@ std::string PluginCatalogActivity::cachePageMetaPath(const int requestedPage) co
   return path;
 }
 
+std::string PluginCatalogActivity::cacheResourcePath(const pluginhttp::RequestSpec& request, const Item* item,
+                                                     const std::string& identity, const char* prefix,
+                                                     const char* extension) const {
+  const std::string key = cacheRequestKey(request, item, identity);
+  if (key.empty()) return "";
+  return cacheDir() + "/" + (prefix ? prefix : "r_") + md5Hex(key) + (extension ? extension : ".dat");
+}
+
+std::string PluginCatalogActivity::cacheResourceMetaPath(const std::string& resourcePath) const {
+  if (resourcePath.empty()) return "";
+  std::string path = resourcePath;
+  const size_t slash = path.rfind('/');
+  const size_t dot = path.rfind('.');
+  if (dot != std::string::npos && (slash == std::string::npos || dot > slash))
+    path.replace(dot, std::string::npos, ".meta");
+  else
+    path += ".meta";
+  return path;
+}
+
 std::string PluginCatalogActivity::cacheImagePath(const Item& item) const {
   if (!cacheUsable() || !manifest.hasImages()) return "";
+  // Preserve the legacy image-v1 identity for existing caches/seeds. Namespace
+  // is the explicit opt-in boundary for a plugin that intentionally changes it.
   std::string key = "image-v1|200x300|" + std::to_string(static_cast<int>(manifest.imageFormat)) + "|" +
                     manifest.imageReq.method + "|" + cacheSubstituted(manifest.imageReq.url, &item) + "|" +
                     cacheSubstituted(manifest.imageReq.body, &item);
+  if (!manifest.cacheNamespace.empty()) key += "|namespace|" + manifest.cacheNamespace;
   if (manifest.cacheTokenScoped) key += "|token|" + md5Hex(token);
   return cacheDir() + "/i_" + md5Hex(key) + ".bmp";
+}
+
+std::string PluginCatalogActivity::cachePluginEpochPath() const {
+  const std::string dir = cacheDir();
+  return dir.empty() ? "" : dir + "/e_plugin.meta";
+}
+
+std::string PluginCatalogActivity::cacheCatalogEpochPath() const {
+  const std::string key = cacheCatalogKey();
+  return key.empty() ? "" : cacheDir() + "/e_" + md5Hex(key) + ".meta";
 }
 
 bool PluginCatalogActivity::ensureCacheDir() {
@@ -1507,20 +1580,24 @@ bool PluginCatalogActivity::ensureCacheDir() {
   return !dir.empty() && Storage.ensureDirectoryExists(dir.c_str());
 }
 
-bool PluginCatalogActivity::readCacheTimestamp(const std::string& path, int64_t& timestamp) const {
-  timestamp = 0;
+bool PluginCatalogActivity::readCacheMetadata(const std::string& path, CacheMetadata& metadata) const {
+  metadata = {};
   std::string raw;
-  if (path.empty() || !Storage.readFileToString("PCAT", path, 256, raw)) return false;
+  if (path.empty() || !Storage.readFileToString("PCAT", path, 512, raw)) return false;
   JsonDocument doc;
   if (deserializeJson(doc, raw) != DeserializationError::Ok) return false;
-  timestamp = doc["captured_at"] | static_cast<int64_t>(0);
+  metadata.capturedAt = doc["captured_at"] | static_cast<int64_t>(0);
+  metadata.epoch = doc["epoch"] | static_cast<uint32_t>(0);
+  metadata.generation = variantToString(doc["generation"]);
   return true;
 }
 
-bool PluginCatalogActivity::writeCacheTimestamp(const std::string& path, const int64_t timestamp) {
+bool PluginCatalogActivity::writeCacheMetadata(const std::string& path, const CacheMetadata& metadata) {
   if (path.empty()) return false;
   JsonDocument doc;
-  doc["captured_at"] = timestamp;
+  doc["captured_at"] = metadata.capturedAt;
+  if (metadata.epoch > 0) doc["epoch"] = metadata.epoch;
+  if (!metadata.generation.empty()) doc["generation"] = metadata.generation;
   std::string raw;
   serializeJson(doc, raw);
   const std::string tmp = path + ".tmp";
@@ -1528,7 +1605,58 @@ bool PluginCatalogActivity::writeCacheTimestamp(const std::string& path, const i
   return Storage.replaceFile(tmp.c_str(), path.c_str());
 }
 
-bool PluginCatalogActivity::cachePageFresh(const int64_t capturedAt) const {
+bool PluginCatalogActivity::readCacheEpoch(const std::string& path, uint32_t& epoch) const {
+  epoch = 0;
+  if (path.empty() || !Storage.exists(path.c_str())) return true;
+  std::string raw;
+  if (!Storage.readFileToString("PCAT", path, 128, raw)) return false;
+  JsonDocument doc;
+  if (deserializeJson(doc, raw) != DeserializationError::Ok) return false;
+  epoch = doc["epoch"] | static_cast<uint32_t>(0);
+  return true;
+}
+
+bool PluginCatalogActivity::writeCacheEpoch(const std::string& path, const uint32_t epoch) {
+  if (path.empty()) return false;
+  JsonDocument doc;
+  doc["epoch"] = epoch;
+  std::string raw;
+  serializeJson(doc, raw);
+  const std::string tmp = path + ".tmp";
+  if (!Storage.writeFile(tmp.c_str(), String(raw.c_str()))) return false;
+  return Storage.replaceFile(tmp.c_str(), path.c_str());
+}
+
+uint32_t PluginCatalogActivity::requiredCacheEpoch() const {
+  uint32_t pluginEpoch = 0;
+  uint32_t catalogEpoch = 0;
+  readCacheEpoch(cachePluginEpochPath(), pluginEpoch);
+  readCacheEpoch(cacheCatalogEpochPath(), catalogEpoch);
+  return std::max(pluginEpoch, catalogEpoch);
+}
+
+bool PluginCatalogActivity::bumpCacheEpoch(const Manifest::CacheRefreshScope scope) {
+  if (scope == Manifest::CacheRefreshScope::Current) return true;
+  if (!cacheUsable() || !ensureCacheDir()) return false;
+
+  const std::string clockPath = cacheDir() + "/e_clock.meta";
+  uint32_t clock = 0;
+  uint32_t pluginEpoch = 0;
+  uint32_t catalogEpoch = 0;
+  readCacheEpoch(clockPath, clock);
+  readCacheEpoch(cachePluginEpochPath(), pluginEpoch);
+  readCacheEpoch(cacheCatalogEpochPath(), catalogEpoch);
+  clock = std::max(clock, std::max(pluginEpoch, catalogEpoch));
+  if (clock == 0xFFFFFFFFu) return false;
+
+  const uint32_t next = clock + 1;
+  if (!writeCacheEpoch(clockPath, next)) return false;
+  const std::string target =
+      scope == Manifest::CacheRefreshScope::Plugin ? cachePluginEpochPath() : cacheCatalogEpochPath();
+  return !target.empty() && writeCacheEpoch(target, next);
+}
+
+bool PluginCatalogActivity::cacheTimestampFresh(const int64_t capturedAt) const {
   if (!cacheUsable() || manifest.cacheRefreshDays == 0) return false;
   const int64_t now = currentUnixTime();
   if (now == 0) return true;
@@ -1536,14 +1664,23 @@ bool PluginCatalogActivity::cachePageFresh(const int64_t capturedAt) const {
   return now - capturedAt < static_cast<int64_t>(manifest.cacheRefreshDays) * 24 * 60 * 60;
 }
 
+bool PluginCatalogActivity::cacheEntryFresh(const CacheMetadata& metadata, const bool applyTtl) const {
+  if (metadata.epoch < requiredCacheEpoch()) return false;
+  if (!manifest.cacheGeneration.empty() && metadata.generation != manifest.cacheGeneration) return false;
+  return !applyTtl || cacheTimestampFresh(metadata.capturedAt);
+}
+
 bool PluginCatalogActivity::tryLoadCachedPage(const int requestedPage, const bool allowStale) {
   if (!cacheUsable()) return false;
   const std::string path = cachePagePath(requestedPage);
   if (path.empty() || !Storage.exists(path.c_str())) return false;
-  if (!allowStale && !manifest.cacheTokenScoped) {
-    int64_t capturedAt = 0;
-    readCacheTimestamp(cachePageMetaPath(requestedPage), capturedAt);
-    if (!cachePageFresh(capturedAt)) return false;
+  if (!allowStale) {
+    CacheMetadata metadata;
+    const bool hasMetadata = readCacheMetadata(cachePageMetaPath(requestedPage), metadata);
+    const bool needsMetadata =
+        !manifest.cacheTokenScoped || requiredCacheEpoch() > 0 || !manifest.cacheGeneration.empty();
+    if ((!hasMetadata && needsMetadata) || (hasMetadata && !cacheEntryFresh(metadata, !manifest.cacheTokenScoped)))
+      return false;
   }
   page = requestedPage;
   browseSourcePath = path;
@@ -1557,7 +1694,47 @@ bool PluginCatalogActivity::storeFetchedPage(const int requestedPage) {
   if (path.empty() || !Storage.replaceFile(BROWSE_TMP_PATH, path.c_str())) return false;
   browseSourcePath = path;
   browseLoadedFromCache = false;
-  writeCacheTimestamp(cachePageMetaPath(requestedPage), currentUnixTime());
+  writeCacheMetadata(cachePageMetaPath(requestedPage),
+                     CacheMetadata{currentUnixTime(), requiredCacheEpoch(), manifest.cacheGeneration});
+  cacheStatsDirty = true;
+  return true;
+}
+
+bool PluginCatalogActivity::tryLoadCachedTextResource(const std::string& path,
+                                                      const Manifest::CacheResourcePolicy policy, const bool allowStale,
+                                                      std::string& out) const {
+  out.clear();
+  if (!cacheUsable() || policy == Manifest::CacheResourcePolicy::Disabled || path.empty() ||
+      !Storage.exists(path.c_str()))
+    return false;
+  if (!allowStale) {
+    CacheMetadata metadata;
+    if (!readCacheMetadata(cacheResourceMetaPath(path), metadata)) return false;
+    const bool applyTtl = policy == Manifest::CacheResourcePolicy::Ttl && !manifest.cacheTokenScoped;
+    if (!cacheEntryFresh(metadata, applyTtl)) return false;
+  }
+  return Storage.readFileToString("PCAT", path, MAX_ITEM_DETAILS_RESPONSE, out);
+}
+
+bool PluginCatalogActivity::storeCachedTextResource(const std::string& path, const std::string& body) {
+  if (!cacheUsable() || path.empty() || body.empty() || !ensureCacheDir()) return false;
+  const std::string tmp = path + ".tmp";
+  HalFile file;
+  if (!Storage.openFileForWrite("PCAT", tmp, file)) return false;
+  const size_t written = file.write(body.data(), body.size());
+  file.flush();
+  const bool closed = file.close();
+  if (written != body.size() || !closed) {
+    Storage.remove(tmp.c_str());
+    return false;
+  }
+  if (!Storage.replaceFile(tmp.c_str(), path.c_str())) {
+    Storage.remove(tmp.c_str());
+    return false;
+  }
+  if (!writeCacheMetadata(cacheResourceMetaPath(path),
+                          CacheMetadata{currentUnixTime(), requiredCacheEpoch(), manifest.cacheGeneration}))
+    return false;
   cacheStatsDirty = true;
   return true;
 }
@@ -1599,14 +1776,15 @@ void PluginCatalogActivity::refreshCacheStats() {
       if (!isFile) continue;
 
       cacheStats.bytes += size;
-      if (fileName.rfind("i_", 0) == 0 && endsWith(fileName, ".bmp")) {
+      if ((fileName.rfind("i_", 0) == 0 && endsWith(fileName, ".bmp")) ||
+          (fileName.rfind("r_", 0) == 0 && endsWith(fileName, ".dat"))) {
         ++cacheStats.images;
       } else if (fileName.rfind("p_", 0) == 0 && endsWith(fileName, ".json")) {
         ++cacheStats.pages;
-      } else if (fileName.rfind("p_", 0) == 0 && endsWith(fileName, ".meta")) {
-        int64_t captured = 0;
-        if (readCacheTimestamp(dirPath + "/" + fileName, captured))
-          cacheStats.lastRefreshAt = std::max(cacheStats.lastRefreshAt, captured);
+      } else if ((fileName.rfind("p_", 0) == 0 || fileName.rfind("r_", 0) == 0) && endsWith(fileName, ".meta")) {
+        CacheMetadata metadata;
+        if (readCacheMetadata(dirPath + "/" + fileName, metadata))
+          cacheStats.lastRefreshAt = std::max(cacheStats.lastRefreshAt, metadata.capturedAt);
       }
     }
   }
@@ -1681,7 +1859,8 @@ void PluginCatalogActivity::enforceCacheLimit() {
       entry.getName(name, sizeof(name));
       const std::string fileName(name);
       const std::string path = dirPath + "/" + fileName;
-      const bool wanted = images ? (fileName.rfind("i_", 0) == 0 && endsWith(fileName, ".bmp"))
+      const bool wanted = images ? ((fileName.rfind("i_", 0) == 0 && endsWith(fileName, ".bmp")) ||
+                                    (fileName.rfind("r_", 0) == 0 && endsWith(fileName, ".dat")))
                                  : (fileName.rfind("p_", 0) == 0 && endsWith(fileName, ".json"));
       const bool protectedFile =
           images ? std::find(protectedImages.begin(), protectedImages.end(), path) != protectedImages.end()
@@ -1722,6 +1901,12 @@ void PluginCatalogActivity::enforceCacheLimit() {
         std::string meta = candidate.path;
         if (meta.size() >= 5) meta.replace(meta.size() - 5, 5, ".meta");
         Storage.remove(meta.c_str());
+      } else {
+        const std::string resourcePrefix = dirPath + "/r_";
+        if (candidate.path.rfind(resourcePrefix, 0) == 0) {
+          const std::string meta = cacheResourceMetaPath(candidate.path);
+          Storage.remove(meta.c_str());
+        }
       }
       refreshCacheStats();
     }
@@ -1795,6 +1980,7 @@ void PluginCatalogActivity::clearCatalogCache() {
 
 void PluginCatalogActivity::refreshCacheNow() {
   if (!cacheUsable()) return;
+  if (!bumpCacheEpoch(manifest.cacheManualRefreshScope)) LOG_ERR("PCAT", "failed to advance cache refresh epoch");
   forceCacheRefresh = true;
   const int requestedPage = std::max(1, page);
   beginLoading();
@@ -2347,7 +2533,7 @@ void PluginCatalogActivity::fetchPage(const int newPage) {
   const bool authFailed = state == State::NO_TOKEN;
   if (!fetched) {
     forceCacheRefresh = false;
-    if (!authFailed && canCache && tryLoadCachedPage(newPage, true)) {
+    if (!authFailed && canCache && manifest.cacheStaleFallback && tryLoadCachedPage(newPage, true)) {
       if (!parseBrowseResponse()) return;
       if (!preparePreviews()) return;
       state = State::BROWSING;
@@ -3396,13 +3582,13 @@ void PluginCatalogActivity::activateItem(const int itemIndex) {
     fetchPage(page);
     return;
   }
+  if (!manifest.isXmlList() && manifest.hasItemDetails()) {
+    showItemDetails(itemIndex);
+    return;
+  }
   if (!wifiConnected()) {
     pendingItemActivation = itemIndex;
     launchWifiSelection();
-    return;
-  }
-  if (!manifest.isXmlList() && manifest.hasItemDetails()) {
-    showItemDetails(itemIndex);
     return;
   }
   if (manifest.previewOnSelect) {
@@ -3466,70 +3652,76 @@ void PluginCatalogActivity::showItemDetails(const int itemIndex) {
   std::string body;
   bool htmlDefinition = false;
   if (!details.detailsUrl.empty()) {
-    String response;
-    const std::string url = substituted(details.detailsUrl, &item);
-    const int status = pluginhttp::request(session.get(), url, "GET", "", {}, response, MAX_ITEM_DETAILS_RESPONSE);
-    if (status >= 200 && status < 300 && response.length() > 0) {
-      if (details.detailsFormat == "html") {
-        body.assign(response.c_str(), response.length());
-        htmlDefinition = true;
-      } else if (details.detailsFormat.empty() || details.detailsFormat == "text") {
-        body.assign(response.c_str(), response.length());
-      } else {
-        LOG_INF("PCAT", "unsupported item details format: %s", details.detailsFormat.c_str());
-      }
+    const bool supportedFormat =
+        details.detailsFormat.empty() || details.detailsFormat == "text" || details.detailsFormat == "html";
+    if (!supportedFormat) {
+      LOG_INF("PCAT", "unsupported item details format: %s", details.detailsFormat.c_str());
     } else {
-      LOG_INF("PCAT", "item details fetch failed: HTTP %d", status);
+      pluginhttp::RequestSpec detailsReq;
+      detailsReq.url = details.detailsUrl;
+      detailsReq.method = "GET";
+      const std::string identity = "details-v1|" + details.detailsFormat;
+      const std::string cachePath = cacheResourcePath(detailsReq, &item, identity, "r_", ".dat");
+      const bool cached = tryLoadCachedTextResource(cachePath, manifest.cacheDetailsPolicy, false, body);
+      if (!cached && !wifiConnected()) {
+        if (!manifest.cacheStaleFallback ||
+            !tryLoadCachedTextResource(cachePath, manifest.cacheDetailsPolicy, true, body)) {
+          pendingItemActivation = itemIndex;
+          launchWifiSelection();
+          return;
+        }
+      }
+      if (!cached && body.empty()) {
+        const auto req = substitutedRequest(detailsReq, &item);
+        String response;
+        const int status = pluginhttp::request(session.get(), req.url, req.method, req.body, req.headers, response,
+                                               MAX_ITEM_DETAILS_RESPONSE);
+        if (status >= 200 && status < 300 && response.length() > 0) {
+          body.assign(response.c_str(), response.length());
+          if (manifest.cacheDetailsPolicy != Manifest::CacheResourcePolicy::Disabled &&
+              storeCachedTextResource(cachePath, body))
+            enforceCacheLimit();
+        } else {
+          LOG_INF("PCAT", "item details fetch failed: HTTP %d", status);
+          if (manifest.cacheStaleFallback)
+            tryLoadCachedTextResource(cachePath, manifest.cacheDetailsPolicy, true, body);
+        }
+      }
+      htmlDefinition = details.detailsFormat == "html" && !body.empty();
     }
   }
 
   if (body.empty()) body = details.description;
-  if (htmlDefinition) {
-    const auto appendHtmlField = [&](const StrId label, const std::string& value) {
-      if (value.empty()) return;
-      body += "<p><strong>";
-      body += htmlEscape(I18N.get(label));
-      body += ":</strong> ";
-      body += htmlEscape(value);
-      body += "</p>";
-    };
-    appendHtmlField(StrId::STR_AUTHOR, details.author);
-    appendHtmlField(StrId::STR_VERSION, item.version);
-    appendHtmlField(StrId::STR_REPOSITORY, details.repository);
-    if (item.status == tr(STR_INSTALLED) || item.status == tr(STR_UPDATE_AVAILABLE)) {
-      body += "<p><strong>";
-      body += htmlEscape(item.status);
-      body += "</strong></p>";
-    }
-  } else {
-    const auto appendField = [&](const StrId label, const std::string& value) {
-      if (value.empty()) return;
-      if (!body.empty()) body += "\n\n";
-      body += I18N.get(label);
-      body += ": ";
-      body += value;
-    };
-    appendField(StrId::STR_AUTHOR, details.author);
-    appendField(StrId::STR_VERSION, item.version);
-    appendField(StrId::STR_REPOSITORY, details.repository);
-    if (item.status == tr(STR_INSTALLED) || item.status == tr(STR_UPDATE_AVAILABLE)) {
-      if (!body.empty()) body += "\n\n";
-      body += item.status;
-    }
-  }
-  if (body.empty()) body = item.title;
+
+  DetailsSpec spec;
+  spec.header = catalogTitle;
+  spec.title = item.title;
+  if (!details.author.empty()) spec.author = std::string(tr(STR_AUTHOR)) + ": " + details.author;
+  if (!details.repository.empty()) spec.source = std::string(tr(STR_REPOSITORY)) + ": " + details.repository;
+  const auto addFact = [&](const std::string& fact) {
+    if (fact.empty()) return;
+    if (!spec.metadata.empty()) spec.metadata += " · ";
+    spec.metadata += fact;
+  };
+  if (!item.version.empty()) addFact(std::string(tr(STR_VERSION)) + " " + item.version);
+  if (item.status == tr(STR_INSTALLED) || item.status == tr(STR_UPDATE_AVAILABLE)) addFact(item.status);
+  spec.description = std::move(body);
+  spec.descriptionHtml = htmlDefinition;
 
   const bool updateAvailable = item.status == tr(STR_UPDATE_AVAILABLE);
-  const char* actionLabel =
-      updateAvailable ? tr(STR_UPDATE) : (manifest.tracksInstalls() ? tr(STR_INSTALL) : tr(STR_FETCH));
-  auto detailsActivity = makeUniqueNoThrow<DictionaryDefinitionActivity>(
-      renderer, mappedInput, item.title, std::move(body), htmlDefinition, actionLabel, CrossPointSettings::LEFT_ALIGN);
+  spec.actionLabel = updateAvailable ? tr(STR_UPDATE) : (manifest.tracksInstalls() ? tr(STR_INSTALL) : tr(STR_FETCH));
+  auto detailsActivity = makeUniqueNoThrow<DetailsActivity>(renderer, mappedInput, std::move(spec));
   if (!detailsActivity) {
     LOG_ERR("PCAT", "OOM: item details");
     return;
   }
   startActivityForResult(std::move(detailsActivity), [this, itemIndex](const ActivityResult& result) {
     if (result.isCancelled || itemIndex < 0 || itemIndex >= static_cast<int>(items.size())) return;
+    if (!wifiConnected()) {
+      pendingItemDownload = itemIndex;
+      launchWifiSelection();
+      return;
+    }
     downloadItem(itemIndex);
   });
 }
@@ -4121,7 +4313,7 @@ void PluginCatalogActivity::rebuildRowItems() {
     if (cacheStatsDirty) refreshCacheStats();
     addRow(tr(STR_PLUGIN_CACHE_LAST_REFRESH), nullptr, cacheLastRefreshValue.c_str());
     addRow(tr(STR_PLUGIN_CACHE_PAGES), nullptr, cachePagesValue.c_str());
-    addRow(tr(STR_PLUGIN_CACHE_IMAGES), nullptr, cacheImagesValue.c_str());
+    addRow(tr(STR_PLUGIN_CACHE_RESOURCES), nullptr, cacheImagesValue.c_str());
     addRow(tr(STR_PLUGIN_CACHE_STORAGE), nullptr, cacheStorageValue.c_str());
     if (manifest.hasCacheSeed()) {
       addRow(tr(STR_PLUGIN_CACHE_SEED), nullptr, cacheSeedValue.c_str());
@@ -4157,7 +4349,7 @@ void PluginCatalogActivity::rebuildRowItems() {
         if (settingVisible(setting) && isCacheSetting(setting)) addSettingRow(setting);
       addRow(tr(STR_PLUGIN_CACHE_LAST_REFRESH), nullptr, cacheLastRefreshValue.c_str());
       addRow(tr(STR_PLUGIN_CACHE_PAGES), nullptr, cachePagesValue.c_str());
-      addRow(tr(STR_PLUGIN_CACHE_IMAGES), nullptr, cacheImagesValue.c_str());
+      addRow(tr(STR_PLUGIN_CACHE_RESOURCES), nullptr, cacheImagesValue.c_str());
       addRow(tr(STR_PLUGIN_CACHE_STORAGE), nullptr, cacheStorageValue.c_str());
       if (manifest.hasCacheSeed()) {
         addRow(tr(STR_PLUGIN_CACHE_SEED), nullptr, cacheSeedValue.c_str());
