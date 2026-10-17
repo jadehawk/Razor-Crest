@@ -28,18 +28,21 @@ class EncryptionManifestProbe : public Print {
   }
 
   bool finish() { return parser && XML_Parse(parser, "", 0, XML_TRUE) == XML_STATUS_OK; }
-  bool needsProtectionCheck() const { return aes128; }
+  bool needsProtectionCheck() const { return supportedAesCbc; }
 
  private:
   XML_Parser parser = nullptr;
-  bool aes128 = false;
+  bool supportedAesCbc = false;
 
   static void XMLCALL onStartElement(void* context, const XML_Char* name, const XML_Char** attributes) {
     if (!xmlLocalNameEquals(name, "EncryptionMethod")) return;
     for (size_t i = 0; attributes[i]; i += 2) {
-      // Match the SDK's supported algorithm; it validates resource references.
-      if (xmlLocalNameEquals(attributes[i], "Algorithm") && std::strstr(attributes[i + 1], "aes128-cbc")) {
-        static_cast<EncryptionManifestProbe*>(context)->aes128 = true;
+      // Match the content-protection SDK's supported CBC algorithms. LCP basic
+      // profile uses AES-128-CBC, while production profiles such as EDRLab's
+      // profile 2.1 fixtures use AES-256-CBC.
+      if (xmlLocalNameEquals(attributes[i], "Algorithm") &&
+          (std::strstr(attributes[i + 1], "aes128-cbc") || std::strstr(attributes[i + 1], "aes256-cbc"))) {
+        static_cast<EncryptionManifestProbe*>(context)->supportedAesCbc = true;
       }
     }
   }
