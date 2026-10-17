@@ -13,20 +13,16 @@
 #include <cstring>
 
 #include "network/HttpDownloader.h"
+#include "network/LcpServiceConfig.h"
 
-// Injected from CI secrets into official release builds; self-compiled
-// firmware carries the empty default and does everything except LCP.
-// Deliberately a plain constant: this is effort asymmetry with per-release
-// rotation, not a trust boundary (see /enroll on the service side).
-#ifndef FREEINK_LCP_RELEASE_KEY
-#define FREEINK_LCP_RELEASE_KEY ""
-#endif
+// Release builds inject the enrollment key through LcpServiceConfig; local builds
+// keep the empty default and retain every feature except fresh LCP enrollment.
 
 namespace lcpdevice {
 
 namespace {
 
-constexpr const char* LCP_ENROLL_URL = "https://lcp.freeink.org/enroll";
+constexpr const char* LCP_ENROLL_URL = lcpservice::ENROLL_URL;
 
 // One enrolled identity per device, persisted like the other credential
 // stores: the private key obfuscated with the device key, the id plain.
@@ -116,8 +112,7 @@ bool ensureEnrolled(std::string& deviceId, bool& notEnrollable) {
     deviceId = LCP_DEVICE.deviceId;
     return true;
   }
-  static constexpr char RELEASE_KEY[] = FREEINK_LCP_RELEASE_KEY;
-  if (RELEASE_KEY[0] == '\0') {
+  if (lcpservice::RELEASE_KEY[0] == '\0') {
     notEnrollable = true;
     return false;
   }
@@ -131,7 +126,7 @@ bool ensureEnrolled(std::string& deviceId, bool& notEnrollable) {
   }
 
   std::string request = "{\"release_key\":\"";
-  request += RELEASE_KEY;
+  request += lcpservice::RELEASE_KEY;
   request += "\",\"pubkey\":\"";
   request += base64::encode(pub, sizeof(pub)).c_str();
   request += "\"}";

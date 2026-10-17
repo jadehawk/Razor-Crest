@@ -30,6 +30,7 @@
 #include "components/icons/opdsIcons.h"
 #include "network/HttpDownloader.h"
 #include "network/LcpDevice.h"
+#include "network/LcpServiceConfig.h"
 #include "util/BookCacheUtils.h"
 #include "util/OpdsFeedError.h"
 #include "util/OpdsFilename.h"
@@ -603,9 +604,9 @@ void OpdsBookBrowserActivity::downloadLcpBook(const OpdsEntry& book) {
     fail(StrId::STR_OPDS_NOT_A_BOOK);
     return;
   }
-  // No profile gate here: key derivation is entirely server-side (the
-  // /unlock endpoint answers 422 for profiles it cannot serve), so this
-  // firmware works unchanged when the service gains the production profile.
+  // No profile gate here: key derivation is entirely server-side. The
+  // /unlock endpoint answers 422 only for profiles the configured service
+  // cannot serve, so firmware behavior stays profile-agnostic.
 
   const std::string filename = downloadDestination(book);
   LOG_DBG("OPDS", "LCP fulfill: %s -> %s", licenseUrl.c_str(), filename.c_str());
@@ -613,7 +614,7 @@ void OpdsBookBrowserActivity::downloadLcpBook(const OpdsEntry& book) {
   // Reclaim the catalog while TLS owns its record buffers, as for a plain
   // download; downloadFile() gates the heap and pumps cancel input.
   releaseEntries();
-  const auto result = downloadFile(freeink::content::LCP_FULFILL_URL, filename, "", "", {}, &licenseText,
+  const auto result = downloadFile(lcpservice::FULFILL_URL, filename, "", "", {}, &licenseText,
                                    "application/vnd.readium.lcp.license.v1.0+json");
   if (result != HttpDownloader::OK) {
     finishDownload(result);
@@ -655,7 +656,7 @@ OpdsBookBrowserActivity::LcpUnlock OpdsBookBrowserActivity::requestLcpUnlock(con
 
     std::string response;
     int status = 0;
-    const bool ok = HttpDownloader::postForm(freeink::content::LCP_UNLOCK_URL, request, response, &status);
+    const bool ok = HttpDownloader::postForm(lcpservice::UNLOCK_URL, request, response, &status);
     if (status == 401 && attempt == 0) {
       lcpdevice::forget();
       if (!lcpdevice::ensureEnrolled(deviceId, notEnrollable)) break;
@@ -722,9 +723,9 @@ void OpdsBookBrowserActivity::promptLcpPassphrase(const bool retry) {
       return;
     }
     const std::string pass = std::get<KeyboardResult>(result.data).text;
-    // The device only hashes the passphrase; profile key derivation (and the
-    // production profile's confidential transform, once certified) lives in
-    // the LCP service. The hash travels over TLS to our own endpoint — the
+    // The device only hashes the passphrase; profile-specific key derivation
+    // lives in the Razor-Crest LCP service. The hash travels over TLS to our
+    // own endpoint — the
     // same material LCP license servers receive at provisioning time.
     freeink::content::WolfsslCrypto crypto;
     uint8_t userKey[32];
