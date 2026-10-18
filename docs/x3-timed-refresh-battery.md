@@ -113,6 +113,7 @@ interval. Selecting Off needs no warning and restores normal sleep.
   handoff and T2 PaperMono adaptations, with exact patch/commit links
   in the PaperMono document and a `Co-authored-by` trailer on commit
   `b6f10648`. The upstream timer primitive is attributed there to
-  **Michael Kazakov**; Jadehawk authored Razor-Crest's local wallpaper
+  **Michael Kazakov (`@kivarum`, upstream PR #3820)**;
+  Jadehawk authored Razor-Crest's local wallpaper
   cycle and X3 rail handling. These credits must be retained when
   merging into `razor-crest`.

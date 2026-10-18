@@ -23,7 +23,8 @@ These integrations are adapted from his original MIT-licensed source:
   The PaperMono HAL timer adapter, settings gates and `test/papermono_timer/`
   tests adapt this contribution.
 
-Michael Kazakov authored the upstream timer-wake primitive. Jadehawk
+Michael Kazakov (GitHub `@kivarum`, author of upstream PR #3820)
+authored the neutral ESP32 timer-wake primitive. Jadehawk
 authored Razor-Crest's local wallpaper rotation and X3 SD-rail handling.
 Both source bundles include CrossPoint's MIT license:
 [T1 license](https://github.com/fiedoruk/crosspoint-reader/blob/3529a9dadea4a93cb9e6e9ef87712331c750d7db/contrib/timed-power-handoff/LICENSE)
