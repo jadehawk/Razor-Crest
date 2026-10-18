@@ -1,12 +1,19 @@
 """Check the production interval gate, including the disabled Metalio target."""
 from pathlib import Path
+import argparse
 import subprocess
 import tempfile
 
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--negative-control", action="store_true",
+                    help="also check the historical baseline (requires local Git history)")
+args = parser.parse_args()
 root = Path(__file__).resolve().parents[2]
 base = "59555361aef55608cc56fdb5a9fccc167c37db34"
-sources = [("original", subprocess.check_output(["git", "show", base + ":src/CrossPointSettings.h"], cwd=root, text=True)),
-           ("candidate", (root / "src/CrossPointSettings.h").read_text())]
+sources = [("candidate", (root / "src/CrossPointSettings.h").read_text())]
+if args.negative_control:
+    sources.insert(0, ("original", subprocess.check_output(
+        ["git", "show", base + ":src/CrossPointSettings.h"], cwd=root, text=True)))
 with tempfile.TemporaryDirectory(prefix="papermono-interval-") as temporary:
     temp = Path(temporary)
     for name, source in sources:
@@ -33,4 +40,6 @@ with tempfile.TemporaryDirectory(prefix="papermono-interval-") as temporary:
                             str(file), "-o", str(exe)], check=True)
             result = subprocess.run([str(exe)])
             assert result.returncode == (42 if name == "original" else 0)
-print("Interval: baseline negative42, PaperMono/ESP enabled, Metalio disabled, Off/invalid PASS")
+if args.negative_control:
+    print("Interval: baseline negative42 PASS")
+print("Interval: PaperMono/ESP enabled, Metalio disabled, Off/invalid PASS")
