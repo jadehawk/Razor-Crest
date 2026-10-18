@@ -18,6 +18,8 @@
 
 #if FREEINK_DEVICE_PAPERMONO
 #include <M5Pm1.h>
+
+#include "PaperMonoTimer.h"
 #endif
 
 HalPowerManager powerManager;  // Singleton instance
@@ -75,21 +77,29 @@ void HalPowerManager::setPowerSaving(bool enabled) {
   xSemaphoreGive(modeMutex);
 }
 
-void HalPowerManager::startDeepSleep(HalGPIO& gpio, uint64_t timerWakeUs) const {
-  bool timerWakeArmed = false;
+void HalPowerManager::startDeepSleep(HalGPIO& gpio, uint64_t timerWakeUs, bool fromTimerWake) const {
+  if (fromTimerWake && gpio.powerWakeRequest() != HalGPIO::PowerWakeRequest::None) return;
+#if !FREEINK_DEVICE_PAPERMONO
+  const auto clearTimer = [] {
+    const auto disabled = esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
+    if (disabled != ESP_OK && disabled != ESP_ERR_INVALID_STATE) {
+      LOG_ERR("PWR", "Timer wake disable failed: %d; restarting", static_cast<int>(disabled));
+      esp_restart();
+    }
+  };
+  [[maybe_unused]] bool timerWakeArmed = false;
   if (timerWakeUs > 0) {
     const auto result = esp_sleep_enable_timer_wakeup(timerWakeUs);
     if (result == ESP_OK) {
       timerWakeArmed = true;
     } else {
       LOG_ERR("PWR", "Timer wake arming failed: %d", static_cast<int>(result));
-      const auto disabled = esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
-      if (disabled != ESP_OK && disabled != ESP_ERR_INVALID_STATE) {
-        LOG_ERR("PWR", "Timer wake disable failed: %d; restarting", static_cast<int>(disabled));
-        esp_restart();
-      }
+      clearTimer();
     }
+  } else {
+    clearTimer();
   }
+#endif
 #if FREEINK_DEVICE_EEGO_A4
   // LM3630A and GSL share I2C; turn the light off before touch releases the bus.
   Frontlight.setOn(false);
@@ -165,12 +175,31 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio, uint64_t timerWakeUs) const 
 #endif
 
 #if FREEINK_DEVICE_PAPERMONO
-  // Its power button is behind the M5PM1 PMIC rather than an ESP GPIO, so
-  // normal GPIO deep sleep would have no wake source. Ask the PMIC to shut the
-  // device down; a button click then restarts it through a cold boot.
-  if (freeink::m5pm1::requestShutdown()) {
-    delay(1000);  // allow the PMIC firmware time to drop power
+  if (!papermonotimer::arm(timerWakeUs)) {
+    LOG_ERR("PWR", "RTC arming failed; requesting button-only sleep");
+    if (!papermonotimer::cancel()) {
+      LOG_ERR("PWR", "RTC state unknown; restarting without shutdown");
+      esp_restart();
+      return;
+    }
   }
+  if (fromTimerWake && gpio.powerWakeRequest() != HalGPIO::PowerWakeRequest::None) {
+    if (!papermonotimer::cancel()) LOG_ERR("PWR", "RTC cleanup failed during Power handoff");
+    return;
+  }
+  bool (*shouldAbort)(void*) = nullptr;
+  if (fromTimerWake) {
+    shouldAbort = [](void* context) {
+      return static_cast<HalGPIO*>(context)->powerWakeRequest() != HalGPIO::PowerWakeRequest::None;
+    };
+  }
+  if (freeink::m5pm1::requestShutdown(shouldAbort, &gpio)) delay(1000);
+  if (!papermonotimer::cancel()) LOG_ERR("PWR", "RTC cleanup failed after returned shutdown");
+  if (fromTimerWake && gpio.powerWakeRequest() != HalGPIO::PowerWakeRequest::None) return;
+  // ESP-only sleep has no PaperMono Power-button wake source.
+  LOG_ERR("PWR", "PMIC shutdown returned; restarting to restore the reader");
+  esp_restart();
+  return;
 #endif
 #if FREEINK_DEVICE_METALIO_EINK4
   // Deep sleep leaves the board, 4G modem and audio module powered, so cut
@@ -178,9 +207,15 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio, uint64_t timerWakeUs) const 
   freeink::metalio::powerOff();
 #endif
 
-  // Waits for the power button to be physically released (so holding it doesn't
-  // immediately wake the device again), then arms the wake source and sleeps.
-  freeink::PowerManager::deepSleepUntilPowerButton();
+  if (fromTimerWake) {
+    if (gpio.powerWakeRequest() != HalGPIO::PowerWakeRequest::None) return;
+    // A press arriving during teardown must wake the reader, not be consumed.
+    freeink::PowerManager::armPowerButtonWakeup();
+    if (gpio.powerWakeRequest() != HalGPIO::PowerWakeRequest::None) return;
+    freeink::PowerManager::deepSleep();
+  } else {
+    freeink::PowerManager::deepSleepUntilPowerButton();
+  }
 }
 
 uint16_t HalPowerManager::getBatteryPercentage() const {

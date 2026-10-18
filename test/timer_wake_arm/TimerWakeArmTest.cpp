@@ -8,7 +8,8 @@
 #define ENABLE_SERIAL_LOG
 constexpr int ESP_OK = 0, ESP_ERR_INVALID_STATE = 1, ESP_ERR_INVALID_ARG = 2;
 constexpr int ESP_SLEEP_WAKEUP_TIMER = 4, GPIO_NUM_13 = 13;
-constexpr int GPIO_MODE_OUTPUT = 1, OUTPUT = 1, LOW = 0, HIGH = 1;
+[[maybe_unused]] constexpr int GPIO_MODE_OUTPUT = 1;
+constexpr int OUTPUT = 1, LOW = 0, HIGH = 1;
 using gpio_num_t = int;
 static constexpr gpio_num_t XTEINK_C3_GPIO13 = GPIO_NUM_13;
 static int armResult = ESP_OK, clearResult = ESP_OK, armCalls = 0, clearCalls = 0, latchWrites = 0;
@@ -50,10 +51,17 @@ struct Serial {
   }
 } logSerial;
 struct HalGPIO {
+  enum class PowerWakeRequest { None, Verified };
+  static inline PowerWakeRequest request = PowerWakeRequest::None;
+  PowerWakeRequest powerWakeRequest() const { return request; }
   bool isXteinkDevice() const { return true; }
 };
 struct HalPowerManager {
+#if HAS_TIMED_POWER
+  void startDeepSleep(HalGPIO&, uint64_t = 0, bool = false) const;
+#else
   void startDeepSleep(HalGPIO&, uint64_t = 0) const;
+#endif
 };
 namespace BoardConfig {
 enum class Board { XteinkX4, XteinkX3, XteinkX3Uc8279 };
@@ -75,15 +83,26 @@ void gpio_hold_en(gpio_num_t) {}
 void pinMode(int, int) {}
 void digitalWrite(int, int) {}
 namespace freeink {
+static bool pressDuringTeardown = false;
+static bool pressDuringArm = false;
 struct PowerManager {
   static void powerDownRailsForSleep() {
     trace.push_back("rails-down");
+    if (pressDuringTeardown) HalGPIO::request = HalGPIO::PowerWakeRequest::Verified;
     if (BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX3 ||
         BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX3Uc8279) {
       // Model the production X3 SD-rail shutdown so the test proves the HAL
       // reasserts GPIO13 after the generic rail policy runs.
       latchLevel = LOW;
     }
+  }
+  static void armPowerButtonWakeup() {
+    trace.push_back("power-arm");
+    if (pressDuringArm) HalGPIO::request = HalGPIO::PowerWakeRequest::Verified;
+  }
+  [[noreturn]] static void deepSleep() {
+    trace.push_back("direct-sleep");
+    throw Slept{};
   }
   [[noreturn]] static void deepSleepUntilPowerButton() {
     trace.push_back("sleep");
@@ -101,6 +120,9 @@ static void reset() {
   BoardConfig::ACTIVE.board = BoardConfig::Board::XteinkX4;
   errors.clear();
   trace.clear();
+  HalGPIO::request = HalGPIO::PowerWakeRequest::None;
+  freeink::pressDuringTeardown = false;
+  freeink::pressDuringArm = false;
 }
 static bool sleep(uint64_t interval) {
   HalGPIO gpio;
@@ -122,8 +144,9 @@ static bool rejectedRequest() {
 int main(int argc, char**) {
   if (argc > 1) return rejectedRequest() ? 0 : 42;
   reset();
-  assert(sleep(0) && armCalls == 0 && clearCalls == 0 && errors.empty());
-  assert(trace == std::vector<std::string>({"serial-end", "rails-down", "sleep"}));
+  timerArmed = true;
+  assert(sleep(0) && armCalls == 0 && clearCalls == 1 && !timerArmed && errors.empty());
+  assert(trace == std::vector<std::string>({"clear", "serial-end", "rails-down", "sleep"}));
   assert(latchWrites == (SOC_PM_SUPPORT_EXT1_WAKEUP ? 0 : 1));
   assert(SOC_PM_SUPPORT_EXT1_WAKEUP || latchLevel == LOW);
   reset();
@@ -138,7 +161,7 @@ int main(int argc, char**) {
   assert(SOC_PM_SUPPORT_EXT1_WAKEUP || latchLevel == HIGH);
   reset();
   BoardConfig::ACTIVE.board = BoardConfig::Board::XteinkX3;
-  assert(sleep(0) && !timerArmed && armCalls == 0 && clearCalls == 0 && errors.empty());
+  assert(sleep(0) && !timerArmed && armCalls == 0 && clearCalls == 1 && errors.empty());
   assert(latchWrites == (SOC_PM_SUPPORT_EXT1_WAKEUP ? 0 : 1));
   assert(SOC_PM_SUPPORT_EXT1_WAKEUP || latchLevel == LOW);
   reset();
@@ -169,5 +192,27 @@ int main(int argc, char**) {
   }
   assert(errors == std::vector<int>({ESP_ERR_INVALID_ARG, 9}));
   assert(!serialEnded && latchWrites == 0 && trace.back() == "restart");
-  std::cout << "Timer arm failure/cleanup, C3 latch, and EXT1 paths passed\n";
+#if HAS_TIMED_POWER
+  reset();
+  HalGPIO gpio;
+  HalGPIO::request = HalGPIO::PowerWakeRequest::Verified;
+  HalPowerManager{}.startDeepSleep(gpio, 60000000, true);
+  assert(trace.empty());
+  reset();
+  freeink::pressDuringTeardown = true;
+  HalPowerManager{}.startDeepSleep(gpio, 60000000, true);
+  assert(trace.back() == "rails-down");
+  reset();
+  freeink::pressDuringArm = true;
+  HalPowerManager{}.startDeepSleep(gpio, 60000000, true);
+  assert(trace.back() == "power-arm");
+  reset();
+  try {
+    HalPowerManager{}.startDeepSleep(gpio, 60000000, true);
+    assert(false);
+  } catch (const Slept&) {
+  }
+  assert(trace[trace.size() - 2] == "power-arm" && trace.back() == "direct-sleep");
+#endif
+  std::cout << "Timer arm/zero cleanup, C3 rails, Power teardown and EXT1 paths passed\n";
 }

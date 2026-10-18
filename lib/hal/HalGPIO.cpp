@@ -5,7 +5,14 @@
 #include <Preferences.h>
 #include <SPI.h>
 #include <XteinkDetect.h>
+#include <driver/gpio.h>
 #include <esp_sleep.h>
+#include <esp_timer.h>
+#include <hal/gpio_ll.h>
+
+#if FREEINK_DEVICE_PAPERMONO
+#include "PaperMonoTimer.h"
+#endif
 
 // Global HalGPIO instance
 HalGPIO gpio;
@@ -197,6 +204,130 @@ bool HalGPIO::isXteinkDevice() const {
          BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX4;
 }
 
+// Power handoff adapted from Tomek Fiedoruk (@fiedoruk), T1 source 3529a9da.
+void IRAM_ATTR HalGPIO::recordPowerWake(const bool pressed, const uint32_t nowUs) {
+  if (pressed && !powerCaptureDown) {
+    if (powerCaptureRequest == PowerWakeRequest::None) powerCaptureRequest = PowerWakeRequest::Pressed;
+    powerCaptureStartUs = nowUs;
+  } else if (pressed && powerCaptureDown && nowUs - powerCaptureStartUs >= POWER_WAKE_STABILITY_MS * 1000U) {
+    powerCaptureRequest = PowerWakeRequest::Verified;
+  }
+  powerCaptureDown = pressed;
+}
+
+void IRAM_ATTR HalGPIO::capturePowerWake(void* context) {
+  auto* self = static_cast<HalGPIO*>(context);
+  portENTER_CRITICAL_ISR(&self->powerCaptureMux);
+  if (self->powerCapturePin >= 0) {
+    // Retain an edge even if press/release coalesced before this ISR ran.
+    if (self->powerCaptureRequest == PowerWakeRequest::None) self->powerCaptureRequest = PowerWakeRequest::Pressed;
+    const bool pressed = gpio_ll_get_level(&GPIO, self->powerCapturePin) == self->powerCaptureLevel;
+    if (pressed) self->powerCaptureDown = false;  // A queued edge may include an intervening release.
+    self->recordPowerWake(pressed, static_cast<uint32_t>(esp_timer_get_time()));
+  }
+  portEXIT_CRITICAL_ISR(&self->powerCaptureMux);
+}
+
+void HalGPIO::verifyPowerWake(TimerHandle_t timer) {
+  static_cast<HalGPIO*>(pvTimerGetTimerID(timer))->powerWakeRequest();
+}
+
+bool HalGPIO::beginPowerWakeCapture() {
+  endPowerWakeCapture();
+#if FREEINK_DEVICE_PAPERMONO
+  uint8_t status = 0;
+  if (!freeink::papermono::ensureBooted() || !freeink::m5pm1::readButtonStatus(&status)) {
+    LOG_ERR("GPIO", "PMIC Power capture unavailable");
+    return false;
+  }
+  powerCapturePmic = true;
+  // PaperMono accepts the PMIC click; it has no GPIO hold-verification policy.
+  if (status & (freeink::m5pm1::BTN_EVENT | freeink::m5pm1::BTN_PRESSED))
+    powerCaptureRequest = PowerWakeRequest::Verified;
+  return true;
+#endif
+  const int8_t pin = BoardConfig::ACTIVE.input.power;
+  if (pin < 0) return false;
+  if (!powerVerifyTimer) {
+    constexpr TickType_t pollTicks = pdMS_TO_TICKS(POWER_WAKE_STABILITY_MS / 2);
+    powerVerifyTimer =
+        xTimerCreateStatic("PowerWake", pollTicks ? pollTicks : 1, pdTRUE, this, verifyPowerWake, &powerVerifyStorage);
+    if (!powerVerifyTimer) {
+      LOG_ERR("GPIO", "Power verification timer unavailable");
+      return false;
+    }
+  }
+  const auto installed = gpio_install_isr_service(0);
+  if (installed != ESP_OK && installed != ESP_ERR_INVALID_STATE) {
+    LOG_ERR("GPIO", "Power capture service failed: %d", static_cast<int>(installed));
+    return false;
+  }
+  const auto configured = gpio_set_intr_type(static_cast<gpio_num_t>(pin), GPIO_INTR_ANYEDGE);
+  if (configured != ESP_OK) {
+    LOG_ERR("GPIO", "Power capture edge failed: %d", static_cast<int>(configured));
+    return false;
+  }
+  powerCapturePin = pin;
+  powerCaptureLevel = BoardConfig::ACTIVE.input.powerActiveHigh ? HIGH : LOW;
+  const auto attached = gpio_isr_handler_add(static_cast<gpio_num_t>(pin), capturePowerWake, this);
+  if (attached != ESP_OK) {
+    LOG_ERR("GPIO", "Power capture handler failed: %d", static_cast<int>(attached));
+    gpio_intr_disable(static_cast<gpio_num_t>(pin));
+    powerCapturePin = -1;
+    return false;
+  }
+  powerWakeRequest();  // Include a button already down when capture starts.
+  // The existing timer daemon samples a held level while main is blocked in I/O.
+  if (xTimerStart(powerVerifyTimer, 0) != pdPASS) {
+    LOG_ERR("GPIO", "Power verification timer start failed");
+    endPowerWakeCapture();
+    return false;
+  }
+  return true;
+}
+
+HalGPIO::PowerWakeRequest HalGPIO::powerWakeRequest() {
+#if FREEINK_DEVICE_PAPERMONO
+  if (powerCapturePmic) {
+    if (powerCaptureRequest != PowerWakeRequest::None) return powerCaptureRequest;
+    uint8_t status = 0;
+    if (!freeink::m5pm1::readButtonStatus(&status)) {
+      LOG_ERR("GPIO", "PMIC Power read failed; leaving timer operation");
+      powerCaptureRequest = PowerWakeRequest::Verified;
+    } else if (status & (freeink::m5pm1::BTN_EVENT | freeink::m5pm1::BTN_PRESSED)) {
+      // The read-clear event survives a released click during blocking I/O.
+      powerCaptureRequest = PowerWakeRequest::Verified;
+    }
+    return powerCaptureRequest;
+  }
+#endif
+  portENTER_CRITICAL(&powerCaptureMux);
+  if (powerCapturePin >= 0) {
+    recordPowerWake(gpio_ll_get_level(&GPIO, powerCapturePin) == powerCaptureLevel,
+                    static_cast<uint32_t>(esp_timer_get_time()));
+  }
+  const auto request = powerCaptureRequest;
+  portEXIT_CRITICAL(&powerCaptureMux);
+  return request;
+}
+
+void HalGPIO::endPowerWakeCapture() {
+#if FREEINK_DEVICE_PAPERMONO
+  powerCapturePmic = false;
+#endif
+  // A queued callback is harmless after the pin is cleared; storage lives with gpio.
+  if (powerVerifyTimer) xTimerStop(powerVerifyTimer, 0);
+  if (powerCapturePin >= 0) {
+    gpio_intr_disable(static_cast<gpio_num_t>(powerCapturePin));
+    gpio_isr_handler_remove(static_cast<gpio_num_t>(powerCapturePin));
+  }
+  portENTER_CRITICAL(&powerCaptureMux);
+  powerCapturePin = -1;
+  powerCaptureRequest = PowerWakeRequest::None;
+  powerCaptureDown = false;
+  portEXIT_CRITICAL(&powerCaptureMux);
+}
+
 bool HalGPIO::verifyPowerButtonWakeup() {
   // M5Paper v1.1: the classic ESP32's reset-to-setup() latency exceeds a normal
   // wheel click, so a click wake is always released before this samples and
@@ -206,7 +337,6 @@ bool HalGPIO::verifyPowerButtonWakeup() {
     return true;
   }
 
-  constexpr unsigned long POWER_WAKE_STABILITY_MS = 10;
   const bool heldAtFirstSample = inputMgr.isPowerButtonPhysicallyPressed();
   const unsigned long sampleStart = millis();
   inputMgr.update();
@@ -256,6 +386,19 @@ static_assert(ESP_RST_SW == wakeup::RST_SW, "reset-reason values drifted from Wa
 static_assert(ESP_RST_DEEPSLEEP == wakeup::RST_DEEPSLEEP, "reset-reason values drifted from WakeupClassify.h");
 
 HalGPIO::WakeupReason HalGPIO::getWakeupReason() const {
+#if FREEINK_DEVICE_PAPERMONO
+  static const bool rtcTimerWake = [] {
+    bool fired = false;
+    if (!papermonotimer::takeWake(fired)) {
+      LOG_ERR("GPIO", "RTC wake state unavailable or cleanup failed");
+      return false;
+    }
+    return fired;
+  }();
+  if (rtcTimerWake && esp_reset_reason() == ESP_RST_POWERON &&
+      esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_UNDEFINED)
+    return WakeupReason::Timer;
+#endif
   return wakeup::classify(esp_sleep_get_wakeup_cause(), esp_reset_reason(), isUsbConnected(),
                           coldBootImpliesPowerButton());
 }

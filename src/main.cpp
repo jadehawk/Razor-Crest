@@ -483,6 +483,33 @@ void setupDisplayAndFonts(bool seamless = false) {
   LOG_DBG("MAIN", "Fonts setup");
 }
 
+RTC_NOINIT_ATTR uint32_t timedPowerWakeStamp;
+static constexpr uint32_t TIMED_POWER_PRESS = 0x54505750;
+static constexpr uint32_t TIMED_POWER_VERIFIED = 0x54505756;
+
+static HalGPIO::PowerWakeRequest consumeTimedPowerWake() {
+  const uint32_t stamp = timedPowerWakeStamp;
+  timedPowerWakeStamp = 0;
+  if (esp_reset_reason() != ESP_RST_SW) return HalGPIO::PowerWakeRequest::None;
+  if (stamp == TIMED_POWER_VERIFIED) return HalGPIO::PowerWakeRequest::Verified;
+  if (stamp == TIMED_POWER_PRESS) return HalGPIO::PowerWakeRequest::Pressed;
+  return HalGPIO::PowerWakeRequest::None;
+}
+
+static void restartForTimerPower() {
+  auto request = gpio.powerWakeRequest();
+  if (request == HalGPIO::PowerWakeRequest::None) return;
+  // Finish the normal 10 ms stability check if the press arrived at teardown.
+  const uint32_t started = millis();
+  while (request == HalGPIO::PowerWakeRequest::Pressed && millis() - started < HalGPIO::POWER_WAKE_STABILITY_MS) {
+    delay(1);
+    request = gpio.powerWakeRequest();
+  }
+  timedPowerWakeStamp = request == HalGPIO::PowerWakeRequest::Verified ? TIMED_POWER_VERIFIED : TIMED_POWER_PRESS;
+  gpio.endPowerWakeCapture();
+  ESP.restart();  // Peripherals may already be down; resume through ordinary boot.
+}
+
 void setup() {
   BoardConfig::holdPowerRails();
 
@@ -527,13 +554,19 @@ void setup() {
     WiFi.onEvent(applyTxCap, ARDUINO_EVENT_WIFI_AP_START);
   }
 
-  const auto wakeupReason = gpio.getWakeupReason();
+  const auto resumedTimerPower = consumeTimedPowerWake();
+  // Consume PaperMono RTC wake state even after a Power handoff.
+  const auto detectedWakeupReason = gpio.getWakeupReason();
+  const auto wakeupReason =
+      resumedTimerPower != HalGPIO::PowerWakeRequest::None ? HalGPIO::WakeupReason::PowerButton : detectedWakeupReason;
+  const bool timerPowerCaptureReady = wakeupReason != HalGPIO::WakeupReason::Timer || gpio.beginPowerWakeCapture();
   // Sample the wake hold now — a click wake is released within milliseconds of
   // boot — but defer the sleep-or-boot decision until SETTINGS is loaded below:
   // click-to-wake is a setting, and an X4 battery power-off cuts all power, so
   // only SD state survives to the next boot.
   // The Metalio boots after the button is released, so it skips the check.
-  const bool wakeHoldVerified = wakeupReason != HalGPIO::WakeupReason::PowerButton || BoardConfig::isMetalioEInk4() ||
+  const bool wakeHoldVerified = resumedTimerPower == HalGPIO::PowerWakeRequest::Verified ||
+                                wakeupReason != HalGPIO::WakeupReason::PowerButton || BoardConfig::isMetalioEInk4() ||
                                 gpio.verifyPowerButtonWakeup();
 
   // X4 Pro and X4 Classic both map BTN_UP to GPIO0 — an ESP32-S3 boot strap — so
@@ -560,7 +593,9 @@ void setup() {
       // An unattended maintenance wake must never strand the reader awake.
       // Settings live on SD, so do not re-arm a timer we can no longer verify.
       halTiltSensor.deepSleep();
-      powerManager.startDeepSleep(gpio);
+      powerManager.startDeepSleep(gpio, 0, true);
+      restartForTimerPower();
+      ESP.restart();
       return;
     }
     setupDisplayAndFonts(isSilentReboot);
@@ -627,19 +662,25 @@ void setup() {
 
   switch (wakeupReason) {
     case HalGPIO::WakeupReason::Timer: {
-      const uint64_t timerWakeUs = timedSleepScreenRefreshUs();
+      restartForTimerPower();
+      const uint64_t timerWakeUs =
+          timerPowerCaptureReady && !isSilentReboot && !rebootedFromPanic ? timedSleepScreenRefreshUs() : 0;
       LOG_DBG("MAIN", "Wakeup reason: Timer; timed sleep refresh interval=%llu us",
               static_cast<unsigned long long>(timerWakeUs));
       if (timerWakeUs > 0) {
         setupDisplayAndFonts(/*seamless=*/true);
         display.setInverted(false);
+        restartForTimerPower();
         SleepActivity timedSleep(renderer, mappedInputManager);
         timedSleep.renderTimedSleepScreen();
+        restartForTimerPower();
         display.deepSleep();
       }
       halTiltSensor.deepSleep();
       Storage.prepareForDeepSleep();
-      powerManager.startDeepSleep(gpio, timerWakeUs);
+      powerManager.startDeepSleep(gpio, timerWakeUs, true);
+      restartForTimerPower();
+      ESP.restart();
       break;
     }
     case HalGPIO::WakeupReason::PowerButton:
@@ -648,7 +689,9 @@ void setup() {
       if (!wakeHoldVerified && SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::SLEEP) {
         LOG_DBG("MAIN", "Power-button wake not held through verification, sleeping");
         Storage.prepareForDeepSleep();
-        powerManager.startDeepSleep(gpio);
+        const uint64_t timerWakeUs =
+            resumedTimerPower != HalGPIO::PowerWakeRequest::None ? timedSleepScreenRefreshUs() : 0;
+        powerManager.startDeepSleep(gpio, timerWakeUs);
       }
       wakePowerReleasePending = true;
       break;

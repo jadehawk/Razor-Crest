@@ -40,9 +40,9 @@ class HalPowerManager {
 
   // Setup wake up GPIO and enter deep sleep
   // Should be called inside main loop() to handle the currentLockMode
-  // timerWakeUs requests an ESP-IDF one-shot timer in microseconds; zero adds
-  // no timer. Existing button-wake behavior remains the default.
-  void startDeepSleep(HalGPIO& gpio, uint64_t timerWakeUs = 0) const;
+  // timerWakeUs requests a one-shot timer; zero cancels the timer route.
+  // PaperMono uses RTC/PMIC whole seconds; other boards use the ESP-IDF timer.
+  void startDeepSleep(HalGPIO& gpio, uint64_t timerWakeUs = 0, bool fromTimerWake = false) const;
 
   // Get battery percentage (range 0-100)
   uint16_t getBatteryPercentage() const;

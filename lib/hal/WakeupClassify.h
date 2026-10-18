@@ -12,7 +12,7 @@ namespace wakeup {
 enum class Reason : uint8_t {
   PowerButton,    // Deep-sleep GPIO/ext1 wake (the power button), or a button-
                   // implied cold boot on button-latched boards
-  Timer,          // Deep-sleep wake armed through the sleep timer
+  Timer,          // ESP deep-sleep timer or a qualified board RTC wake
   AfterFlash,     // Post-flash warm boot over USB
   AfterUSBPower,  // Cold boot on USB power
   Other           // Undefined causes, panics, watchdogs, brownouts

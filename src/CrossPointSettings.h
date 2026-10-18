@@ -423,7 +423,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     return (shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP) ? 10 : 400;
   }
   uint64_t getTimedSleepScreenRefreshUs() const {
-#if FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_METALIO_EINK4
+#if FREEINK_DEVICE_METALIO_EINK4
     return 0;
 #else
     static constexpr uint32_t SECONDS[] = {0,           60,          15 * 60,      30 * 60,     60 * 60,

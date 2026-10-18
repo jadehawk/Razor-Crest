@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <InputManager.h>
+#include <freertos/timers.h>
 
 #include "WakeupClassify.h"
 
@@ -41,6 +42,11 @@
 #define QMI8658_WHO_AM_I_VALUE 0x05  // WHO_AM_I expected value
 
 class HalGPIO {
+ public:
+  enum class PowerWakeRequest { None, Pressed, Verified };
+  static constexpr uint32_t POWER_WAKE_STABILITY_MS = 10;
+
+ private:
 #if CROSSPOINT_EMULATED == 0
   InputManager inputMgr;
 #endif
@@ -49,6 +55,20 @@ class HalGPIO {
   bool usbStateChanged = false;
   uint8_t previousCapacitivePageButtons = 0;
   bool capacitivePagePressed = false;
+  portMUX_TYPE powerCaptureMux = portMUX_INITIALIZER_UNLOCKED;
+  int8_t powerCapturePin = -1;
+  uint8_t powerCaptureLevel = 0;
+  PowerWakeRequest powerCaptureRequest = PowerWakeRequest::None;
+  bool powerCaptureDown = false;
+#if FREEINK_DEVICE_PAPERMONO
+  bool powerCapturePmic = false;
+#endif
+  uint32_t powerCaptureStartUs = 0;
+  StaticTimer_t powerVerifyStorage{};
+  TimerHandle_t powerVerifyTimer = nullptr;
+  void IRAM_ATTR recordPowerWake(bool pressed, uint32_t nowUs);
+  static void IRAM_ATTR capturePowerWake(void* context);
+  static void verifyPowerWake(TimerHandle_t timer);
 
  public:
   enum class DeviceType : uint8_t { X4, X3 };
@@ -123,6 +143,11 @@ class HalGPIO {
   // Returns true if verification succeeded, false if device should return to sleep.
   // Should only be called when wakeup reason is PowerButton.
   bool verifyPowerButtonWakeup();
+
+  // Retain Power edges while a timer wake is blocked in SD or panel I/O.
+  bool beginPowerWakeCapture();
+  PowerWakeRequest powerWakeRequest();
+  void endPowerWakeCapture();
 
   // Check if USB is connected
   bool isUsbConnected() const;

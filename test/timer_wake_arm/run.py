@@ -36,6 +36,7 @@ with tempfile.TemporaryDirectory(prefix="timer-wake-arm-") as temporary:
             subprocess.run(
                 [os.environ.get("CXX", "c++"), "-std=c++20", "-O0", "-Wall", "-Wextra",
                  "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
+                 "-DHAS_TIMED_POWER=" + str(int("bool fromTimerWake" in function(source))),
                  "-DSOC_PM_SUPPORT_EXT1_WAKEUP=" + str(ext1), "-I", str(temp),
                  str(here / "TimerWakeArmTest.cpp"), "-o", str(executable)], check=True
             )

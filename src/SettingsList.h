@@ -291,7 +291,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         // --- Display ---
         SettingInfo::Enum(StrId::STR_SLEEP_SCREEN, &CrossPointSettings::sleepScreen, std::move(sleepScreenValues),
                           "sleepScreen", StrId::STR_CAT_DISPLAY),
-#if !FREEINK_DEVICE_PAPERMONO && !FREEINK_DEVICE_METALIO_EINK4
+#if !FREEINK_DEVICE_METALIO_EINK4
         SettingInfo::Enum(
             StrId::STR_TIMED_SLEEP_SCREEN_REFRESH, &CrossPointSettings::timedSleepScreenRefresh,
             {StrId::STR_STATE_OFF, StrId::STR_1_MINUTE, StrId::STR_15_MINUTES, StrId::STR_30_MINUTES, StrId::STR_1_HOUR,

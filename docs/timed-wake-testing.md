@@ -33,7 +33,53 @@ For each device under test:
 
 Please report the exact device, panel/controller variant when known, whether the test was battery-only, the selected interval, and which steps passed or failed.
 
-## Current validation status
+## Power during a timed refresh
+
+The expected behavior is to retain Power while SD or panel I/O blocks the main
+task; confirm this on the device being tested. The panel transfer may finish
+before the reader resumes. A software restart restores the ordinary wake path,
+so partly shut-down peripherals are initialized normally. No reader position is
+written by this handoff.
+
+On X3/X4 and other GPIO-button boards, the GPIO capture retains a request;
+one static software timer on the existing
+FreeRTOS timer daemon samples the held level while main is blocked. A press is
+verified only while still held after at least 10 ms. A delayed release ISR alone
+cannot establish its physical duration. An unverified contact follows the saved **Short Power Button Press** preference:
+**Sleep** permits the click; otherwise it returns to the configured timer cadence.
+This is separate from the long-press duration used to put an awake reader to sleep.
+
+Test Power before refresh, during panel transfer and just as the device returns
+to sleep, with both short-press settings. Confirm the same book position resumes
+and the release does not immediately put it back to sleep. Also check timer Off,
+ordinary button-only wake and the four orientations. The change adds no touch or
+remapping behavior. Capture setup failure stops periodic refresh rather than
+running a maintenance cycle without Power capture.
+
+Host regression checks:
+
+```sh
+python3 test/timed_power_wake/run.py --baseline 59555361aef55608cc56fdb5a9fccc167c37db34
+python3 test/timer_wake_arm/run.py
+```
+
+The first command checks the patched handoff and production capture methods and
+requires the unpatched timer branch to reproduce the lost press (exit 42),
+with simulated GPIO, clock and restart boundaries. The tests do not qualify the
+physical input controller or panel timing.
+The last capture check follows Power-wake arming. Pulses completed wholly inside
+the subsequent SDK sleep-entry operation remain a hardware timing boundary;
+these host checks do not establish a no-loss guarantee there.
+
+## Baseline validation status
+
+The [PaperMono candidate](papermono-timer.md) enables this existing local refresh
+with RTC/PMIC wake and Power handoff. Build and device evidence must identify
+the exact candidate; the r1 observations below remain historical.
+
+The X3 observations below belong to timedwake-r1 (`5955536`); the Paper Mono
+row describes the newly integrated host-tested adaptation. Earlier observations do not qualify
+the later Power handoff; repeat the relevant device checks on the actual candidate.
 
 | Device | Build path | Battery-only timed rotation | Off disables timer | Normal wake | Status |
 | --- | --- | --- | --- | --- | --- |
@@ -42,7 +88,7 @@ Please report the exact device, panel/controller variant when known, whether the
 | Seeed reTerminal Sticky | dedicated build | Not yet independently reported | Not yet independently reported | Existing non-timed wake path retained | Testing requested |
 | X4 Pro | dedicated build | Not yet independently reported | Not yet independently reported | Existing non-timed wake path retained | Testing requested |
 | X4 Classic | dedicated build | Not yet independently reported | Not yet independently reported | Existing non-timed wake path retained | Testing requested |
-| Paper Mono | dedicated build | Not exposed | Not exposed | Existing sleep path retained | Timer-refresh setting intentionally unavailable |
+| Paper Mono | dedicated build | Not yet tested on this branch | Not yet tested on this branch | RTC/PMIC timer and Power handoff added | Host tested; physical device verification required |
 | MetalIO EInk4 | dedicated build | Not exposed | Not exposed | Existing sleep path retained | Timer-refresh setting intentionally unavailable |
 | EEGO A4 | dedicated build | Not yet independently reported | Not yet independently reported | Existing non-timed wake path retained | Testing requested |
 
