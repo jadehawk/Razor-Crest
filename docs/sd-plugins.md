@@ -76,7 +76,7 @@ it clears only the hidden preference; installed and sideloaded plugins are not
 restarted or changed.
 
 For users who prefer manual installation, Plugin Hub can be downloaded directly
-from <https://github.com/jadehawk/PluginHub.crosspoint-plugin/releases>. Copy or
+from <https://github.com/crosspoint-reader/crosspoint-plugin-hub/releases>. Copy or
 extract the `pluginhub` folder so it ends up at one of these supported locations:
 `/.crosspoint/plugins/pluginhub/`, `/plugins/pluginhub/`, or
 `/.plugins/pluginhub/`.
@@ -285,11 +285,16 @@ JSON catalogs may also map `description`, `detail_author`, and `repository` for 
       { "id": "settings", "title": "Settings", "type": "settings" }
     ]
   },
-  "cache": {                                // optional progressive JSON catalog/image cache
+  "cache": {                                // optional bounded cache for re-fetchable plugin data
     "enabled": true,
     "scope": "shared",                         // shared (default) or token (auth-token cache identity)
     "refresh": "{cfg.cache_refresh}",          // always, 3d, 7d, 14d; default 7d
     "limit_mb": "{cfg.cache_limit_mb}",        // bounded by firmware to 8..128 MB; default 32
+    "namespace": "catalog-v1",                 // optional key-compatibility namespace; bump after request semantics change
+    "generation": "2026-10-17",               // optional snapshot id; mismatch lazily revalidates affected entries
+    "stale_fallback": true,                    // default true: stale entries remain usable if refresh fails
+    "manual_refresh": { "scope": "catalog" }, // current, catalog (default), or plugin
+    "resources": { "details": "off" },        // off (default), ttl, or immutable; thumbnails are request-keyed automatically
     "seed": { "url": "https://.../thumbnail-cache.zip" } // optional user-triggered cache seed
   },
 
@@ -474,34 +479,52 @@ JSON catalogs may also map `description`, `detail_author`, and `repository` for 
   boundaries at the first/last viewport, so hidden pagination never disables paging.
   When pagination is shown, unavailable directions remain visible but disabled, and D-pad focus moves
   through the footer actions after the content items.
-- **Progressive cache** (json): an optional top-level `cache` block keeps each
-  fetched catalog page and its converted display-ready thumbnails under that
-  plugin's own `.cache` directory. A fresh cached page opens directly from SD
-  without requiring Wi-Fi. Browsing beyond the cached frontier fetches only the
-  missing page and adds it to the existing cache; there is no prefetch or bulk
-  catalog download. `refresh` controls catalog-page freshness (`always`, `3d`,
-  `7d`, or `14d`; default `7d`). Cached images are keyed independently by their
-  resolved request and remain reusable across catalog refreshes, so an unchanged
-  image URL is not downloaded again. Cache scope defaults to shared. Token scope adds
-  the currently loaded plugin token to the hashed page and image cache identity and is
-  inactive until a token is loaded. Token-scoped pages remain reusable for normal
-  pagination and non-empty tab re-entry regardless of refresh age. The native Refresh
-  action is the explicit network bypass and remains available on an empty enhanced
-  browse surface. Entering a different empty browse tab also bypasses the cached empty
-  page and fetches page 1 so newly available items can appear. For named browse lists,
-  backing out of an empty list and selecting a list again likewise forces one page-1
-  network check instead of accepting the cached empty response. Reusing the same token
-  reuses the same namespace, while services
-  that issue a fresh token per session get session isolation. If a network refresh
-  fails, an existing
-  stale page is used when available. `limit_mb` is clamped to 8..128 MB (default
-  32 MB); when the limit is exceeded, old image entries are evicted before old
-  catalog pages while the page currently on screen and its images are protected.
-  Cache-enabled plugins may expose those controls inside the native Settings tab: the top-level
-  Settings list gets an expandable Cache section containing cache-bound settings, last refresh,
-  page/image counts, storage usage, seed controls, Refresh now, and Clear cache. The legacy
-  `cache` tab remains supported for existing manifests. Manual refresh updates the current catalog
-  progressively rather than downloading every page. Search results are not cached.
+- **Progressive cache** (json): an optional top-level `cache` block keeps disposable,
+  re-fetchable plugin data under that plugin's own `.cache` directory. Catalog pages
+  remain the primary cached resource; converted thumbnails and opt-in rich item details
+  use the same bounded request-key infrastructure. Persistent user downloads are never
+  managed as cache entries. A fresh cached page opens directly from SD without requiring
+  Wi-Fi. Browsing beyond the cached frontier fetches only the missing page and adds it to
+  the existing cache; there is no prefetch or bulk catalog download. `refresh` controls
+  TTL freshness (`always`, `3d`, `7d`, or `14d`; default `7d`). Cache scope
+  defaults to shared. Token scope adds the currently loaded plugin token to cache
+  identity and is inactive until a token is loaded; token-scoped resources remain
+  reusable across normal navigation regardless of TTL age.
+
+  Cache invalidation is policy-driven. `manual_refresh.scope` accepts `current`,
+  `catalog` (default), or `plugin`. Settings **Refresh now** always fetches the
+  currently displayed page immediately. `current` preserves the legacy one-page
+  behavior. `catalog` advances a lightweight epoch for the active catalog, while
+  `plugin` advances an epoch shared by all of that plugin's catalogs. Epoch invalidation
+  is lazy: other cached pages/resources are marked stale logically and are re-fetched
+  only when visited, so Refresh now never crawls the whole catalog. With
+  `stale_fallback: true` (default), stale data remains available if the network fetch
+  fails.
+
+  `namespace` is an optional cache-key compatibility string; changing it intentionally
+  creates a new cache namespace after a plugin changes request or pagination semantics.
+  `generation` is an optional snapshot identifier. A cached page or metadata resource
+  whose stored generation differs is treated as stale even if its TTL has not expired.
+  A dynamic `browse.lists_url` response may publish a non-empty top-level
+  `generation`; when observed it overrides the manifest generation for that hosted
+  catalog snapshot. Generation invalidation takes effect when firmware next fetches
+  the dynamic list index and sees the changed value, without forcing a plugin update.
+
+  Request-keyed binary resources such as thumbnails remain reusable when their request
+  identity is unchanged, so catalog refresh does not purge image data.
+  `resources.details` may opt rich item-detail text/HTML into the generic resource
+  cache as `ttl` or `immutable` (default `off`); both still obey manual epochs and
+  generation changes, while `ttl` also obeys the configured refresh age. `limit_mb`
+  is clamped to 8..128 MB (default 32 MB); when exceeded, old cached resources are
+  evicted before old catalog pages while the page currently on screen and its thumbnails
+  are protected. Cache-enabled plugins may expose these controls inside the native
+  Settings tab: the top-level Settings list gets an expandable Cache section containing
+  cache-bound settings, last refresh, page/resource counts, storage usage, seed controls,
+  Refresh now, and Clear cache. The legacy `cache` tab remains supported for existing
+  manifests. Search results are not cached.
+
+  `browse.refresh: true` is separate from cache policy: it exposes a footer Refresh
+  action that explicitly re-fetches only the current browse page.
 - **Lists** (json): with `browse.lists`, opening the catalog shows a picker
   of the named entries first; each entry browses with its own url/body
   overrides (server-side categories, shelves, sort orders). A list with
@@ -542,6 +565,10 @@ JSON catalogs may also map `description`, `detail_author`, and `repository` for 
 - **After download**: the book's layout cache is invalidated and the optional
   sidecar is written. Use the `{dest}.meta.json` convention so the fields ride
   KOSync progress uploads and event handlers (see `plugin-events.md`).
+  Downloading a book file (`.epub`, `.txt`, `.md`, `.xtc`) also marks the
+  Library index stale, so the book appears the next time the Library opens.
+  Hidden files and folders (names that start with `.`) don't mark it, because
+  the Library never lists them.
 
 ### Heap budget (ESP32-C3, ~380KB total)
 

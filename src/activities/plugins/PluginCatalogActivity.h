@@ -34,9 +34,6 @@ struct PluginRef {
 // Rescan plugin roots on demand; metadata is owned by the picker.
 std::vector<PluginRef> discoverPlugins();
 
-// True if a plugin.js or device.json is installed; reads no manifests.
-bool anyPluginInstalled();
-
 // Manifest-driven picker, catalog, download, and sign-in screens.
 // See docs/sd-plugins.md for the device.json schema.
 class PluginCatalogActivity final : public CatalogActivity {
@@ -86,6 +83,8 @@ class PluginCatalogActivity final : public CatalogActivity {
     }
     enum class ImageFormat : uint8_t { Bmp, Jpeg, Png, Auto };
     enum class SelectionStyle : uint8_t { Theme, Light, Dark, Outline };
+    enum class CacheRefreshScope : uint8_t { Current, Catalog, Plugin };
+    enum class CacheResourcePolicy : uint8_t { Disabled, Ttl, Immutable };
     pluginhttp::RequestSpec imageReq;
     ImageFormat imageFormat = ImageFormat::Jpeg;
     // Presentation values accept literals or existing {cfg.KEY} templates.
@@ -93,6 +92,7 @@ class PluginCatalogActivity final : public CatalogActivity {
     std::string gridPageSizeTpl = "6", listPageSizeTpl = "10";
     std::string selectionStyleTpl = "theme", coverRadiusTpl = "0";
     std::string cacheRefreshTpl = "7d", cacheLimitMbTpl = "32";
+    std::string cacheNamespaceTpl, cacheGenerationTpl;
     std::string hidePaginationTpl = "false";
     bool gridView = false;
     uint8_t gridColumns = 4;
@@ -104,9 +104,12 @@ class PluginCatalogActivity final : public CatalogActivity {
     SelectionStyle selectionStyle = SelectionStyle::Theme;
     bool cacheEnabled = false;
     bool cacheTokenScoped = false;
+    bool cacheStaleFallback = true;
+    CacheRefreshScope cacheManualRefreshScope = CacheRefreshScope::Catalog;
+    CacheResourcePolicy cacheDetailsPolicy = CacheResourcePolicy::Disabled;
     uint16_t cacheRefreshDays = 7;  // 0 = always refresh from the network
     uint16_t cacheLimitMb = 32;
-    std::string cacheSeedUrl;
+    std::string cacheNamespace, cacheGeneration, cacheSeedUrl;
     bool hasImages() const { return !imageReq.url.empty(); }
     bool hasCacheSeed() const { return cacheEnabled && !cacheSeedUrl.empty(); }
     int pageSize = 8;
@@ -247,9 +250,17 @@ class PluginCatalogActivity final : public CatalogActivity {
   bool forceCacheRefresh = false;
   int pendingNetworkPage = 0;
   int pendingItemActivation = -1;
+  int pendingItemDownload = -1;
   bool pendingCacheSeedInstall = false;
   bool pendingPreviewFill = false;
   std::string browseSourcePath;
+  std::string remoteCacheGeneration;
+
+  struct CacheMetadata {
+    int64_t capturedAt = 0;
+    uint32_t epoch = 0;
+    std::string generation;
+  };
 
   struct CacheStats {
     uint32_t pages = 0;
@@ -273,6 +284,7 @@ class PluginCatalogActivity final : public CatalogActivity {
   void resetBrowse();
   // JSON catalog with named lists and none picked yet.
   bool wantsListPicker() const;
+  void openList(int index);
   bool loadManifest();
   bool loadBrowseListIndex();
   bool loadToken();
@@ -354,15 +366,31 @@ class PluginCatalogActivity final : public CatalogActivity {
   bool cacheUsable() const;
   std::string cacheDir() const;
   std::string cacheSubstituted(std::string tpl, const Item* item = nullptr, int requestedPage = -1) const;
+  std::string cacheCatalogKey() const;
+  std::string cacheRequestKey(const pluginhttp::RequestSpec& request, const Item* item,
+                              const std::string& identity) const;
   std::string cachePagePath(int requestedPage) const;
   std::string cachePageMetaPath(int requestedPage) const;
+  std::string cacheResourcePath(const pluginhttp::RequestSpec& request, const Item* item, const std::string& identity,
+                                const char* prefix, const char* extension) const;
+  std::string cacheResourceMetaPath(const std::string& resourcePath) const;
   std::string cacheImagePath(const Item& item) const;
+  std::string cachePluginEpochPath() const;
+  std::string cacheCatalogEpochPath() const;
   bool ensureCacheDir();
-  bool cachePageFresh(int64_t capturedAt) const;
+  bool readCacheMetadata(const std::string& path, CacheMetadata& metadata) const;
+  bool writeCacheMetadata(const std::string& path, const CacheMetadata& metadata);
+  bool readCacheEpoch(const std::string& path, uint32_t& epoch) const;
+  bool writeCacheEpoch(const std::string& path, uint32_t epoch);
+  uint32_t requiredCacheEpoch() const;
+  bool bumpCacheEpoch(Manifest::CacheRefreshScope scope);
+  bool cacheTimestampFresh(int64_t capturedAt) const;
+  bool cacheEntryFresh(const CacheMetadata& metadata, bool applyTtl) const;
   bool tryLoadCachedPage(int requestedPage, bool allowStale);
   bool storeFetchedPage(int requestedPage);
-  bool readCacheTimestamp(const std::string& path, int64_t& timestamp) const;
-  bool writeCacheTimestamp(const std::string& path, int64_t timestamp);
+  bool tryLoadCachedTextResource(const std::string& path, Manifest::CacheResourcePolicy policy, bool allowStale,
+                                 std::string& out) const;
+  bool storeCachedTextResource(const std::string& path, const std::string& body);
   void noteCacheRefresh();
   void refreshCacheStats();
   void enforceCacheLimit();

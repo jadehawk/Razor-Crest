@@ -25,11 +25,27 @@ TEST(EncryptionManifestProbe, FontOnlyAndEmptyManifestsDoNotNeedProtection) {
   }
 }
 
-TEST(EncryptionManifestProbe, AesStillRequiresSdkValidation) {
+TEST(EncryptionManifestProbe, SupportedAesCbcRequiresSdkValidation) {
+  for (const std::string algorithm : {"aes128-cbc", "aes256-cbc"}) {
+    EncryptionManifestProbe probe;
+    ASSERT_TRUE(probe.setup());
+    const std::string xml =
+        "<encryption xmlns:e=\"http://www.w3.org/2001/04/xmlenc#\"><e:EncryptedData>"
+        "<e:EncryptionMethod Algorithm=\"http://www.w3.org/2001/04/xmlenc#" +
+        algorithm +
+        "\"/><e:CipherData><e:CipherReference URI=\"chapter.xhtml\"/></e:CipherData>"
+        "</e:EncryptedData></encryption>";
+    for (const unsigned char byte : xml) ASSERT_EQ(probe.write(byte), 1u);
+    ASSERT_TRUE(probe.finish());
+    EXPECT_TRUE(probe.needsProtectionCheck()) << algorithm;
+  }
+}
+
+TEST(EncryptionManifestProbe, Aes256StillRequiresSdkValidation) {
   EncryptionManifestProbe probe;
   ASSERT_TRUE(probe.setup());
   const std::string xml = R"(<encryption xmlns:e="http://www.w3.org/2001/04/xmlenc#"><e:EncryptedData>
-    <e:EncryptionMethod Algorithm = 'http://www.w3.org/2001/04/xmlenc#aes128-cbc'/>
+    <e:EncryptionMethod Algorithm = 'http://www.w3.org/2001/04/xmlenc#aes256-cbc'/>
     <e:CipherData><e:CipherReference URI="chapter.xhtml"/></e:CipherData></e:EncryptedData></encryption>)";
   for (const unsigned char byte : xml) ASSERT_EQ(probe.write(byte), 1u);
   ASSERT_TRUE(probe.finish());
