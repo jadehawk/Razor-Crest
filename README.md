@@ -23,7 +23,7 @@ Release assets use names such as `razor-crest-1.6.5-r1-x3-x4.bin`. Use only the 
 
 These are Razor-Crest fork builds, not official CrossPoint releases.
 
-Experimental timed-wake builds are published separately as GitHub prereleases from the `Razor-Crest-TimedWakeup` branch. Their tags use `razor-crest-timedwake-v<upstream-version>-r<revision>` and their asset names begin with `razor-crest-timedwake-`, so they cannot be confused with the normal Razor-Crest release channel. See [Timed wake testing](docs/timed-wake-testing.md) before flashing one of these test builds.
+Timed Sleep-Screen Refresh is now part of the standard `razor-crest` firmware and release channel; it no longer requires a separate experimental branch or timed-wake release workflow. On X3, enabling a new timed wallpaper interval displays a warning with the estimated **full-battery, wallpaper-only** runtime; it does **not** include reading or other daily use. See [Timed wake testing](docs/timed-wake-testing.md) and the [X3 battery drain measurements](docs/x3-timed-refresh-battery.md).
 
 ## Current Razor-Crest-only additions
 

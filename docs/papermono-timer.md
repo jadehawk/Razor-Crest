@@ -1,7 +1,7 @@
 # PaperMono timer wake
 
 This integrates the contributed PaperMono adapter into the current
-Razor-Crest-TimedWakeup branch, including the
+standard `razor-crest` branch, including the
 Power handoff prerequisite. The pinned SDK `084fdfb2` descends from
 `7fcd3b34` and includes FreeInk PR #138; no SDK
 revision or RTC driver is changed.
