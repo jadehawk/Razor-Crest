@@ -29,8 +29,8 @@ authored Razor-Crest's local wallpaper rotation and X3 SD-rail handling.
 Both source bundles include CrossPoint's MIT license:
 [T1 license](https://github.com/fiedoruk/crosspoint-reader/blob/3529a9dadea4a93cb9e6e9ef87712331c750d7db/contrib/timed-power-handoff/LICENSE)
 and [T2 license](https://github.com/fiedoruk/crosspoint-reader/blob/5a4a99c9e509fc8da6f622a2c4b72ddf136a3ff7/contrib/papermono-local-timed/LICENSE).
-The source contributor's physical PaperMono results do not validate a binary
-built from this newer Razor-Crest branch.
+The earlier T2 hardware results alone do not validate every newer Razor-Crest binary;
+a separately scoped test of the published r7 binary is recorded below.
 
 ## Implementation
 
@@ -84,3 +84,36 @@ click during panel work returning to the same book, Off after an armed cycle,
 and the returned-shutdown path on USB when reachable. Keep brownout detection
 enabled. Record the firmware hash and scoped results with the contribution;
 earlier adapter results do not qualify a new binary.
+
+## Published Razor-Crest 1.6.5-r7: scoped PaperMono device report
+
+[@fiedoruk](https://github.com/fiedoruk) tested the
+[published Razor-Crest 1.6.5-r7 release](https://github.com/jadehawk/crosspoint-reader/releases/tag/razor-crest-v1.6.5-r7)
+on a PaperMono, using its published firmware binary (reported identifier
+`9058164b…`) and USB control. This is a **USB-observed device test of r7**,
+separate from the earlier T2 validation; it does not establish battery-only,
+physical Power-button or on-screen image results.
+
+- With a one-minute interval, the device completed **three autonomous
+  boot/refresh/sleep cycles**, about **63.2 seconds apart**. Each cycle mounted
+  the SD card, read the RTC and completed the SSD1677 refresh operations.
+- Only the expected wallpaper-history fields changed in saved application
+  state. The **book path and resume flags were preserved** across the cycles.
+  This verifies saved-state preservation, **not** a physical same-page return.
+- A subsequent ordinary boot reported **8 MiB PSRAM** and returned the complete
+  **48,000-byte framebuffer** over USB.
+- Test files were removed, the original saved settings/application state
+  restored and the **r7 firmware binary left unchanged**.
+- With the original **ten-minute idle timeout** and timed refresh set back to
+  **Off**, USB disconnected after approximately ten minutes and did not
+  reappear during the next **155 seconds**, exceeding two earlier refresh
+  intervals. No further USB-observed timed-refresh cycles occurred.
+- An **IMU probe failure** also appeared on startup; the reporter saw the
+  same message in the earlier T2 neutral log and did **not** classify it as an
+  r7 regression.
+
+**Not verified in this r7 run:** battery-only periodic refresh; physical
+Power press during refresh or same-page resume on the display; physical touch;
+visible A/B wallpaper changes; or display image quality (no camera was
+attached). Keep these checks open rather than treating the USB log as evidence
+of successful visual refresh or Power-button handoff.

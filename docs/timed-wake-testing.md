@@ -85,13 +85,15 @@ these host checks do not establish a no-loss guarantee there.
 
 ## Baseline validation status
 
-The [PaperMono candidate](papermono-timer.md) enables this existing local refresh
-with RTC/PMIC wake and Power handoff. Build and device evidence must identify
-the exact candidate; the r1 observations below remain historical.
+The [PaperMono integration](papermono-timer.md) enables this existing local refresh
+with RTC/PMIC wake and Power handoff. A scoped
+[published r7 USB hardware report](papermono-timer.md#published-razor-crest-165-r7-scoped-papermono-device-report)
+is now recorded; device evidence must identify
+the exact release and test scope; the r1 observations remain historical.
 
-The X3 observations below belong to timedwake-r1 (`5955536`); the Paper Mono
-row describes the newly integrated host-tested adaptation. Earlier observations do not qualify
-the later Power handoff; repeat the relevant device checks on the actual candidate.
+The original X3 observations belong to timedwake-r1 (`5955536`); the Paper Mono
+row now includes a separate published r7 USB test. That USB test does not qualify
+physical PaperMono Power handoff or battery-only behavior; these still need checks.
 
 | Device | Build path | Battery-only timed rotation | Off disables timer | Normal wake | Status |
 | --- | --- | --- | --- | --- | --- |
@@ -100,7 +102,7 @@ the later Power handoff; repeat the relevant device checks on the actual candida
 | Seeed reTerminal Sticky | dedicated build | Not yet independently reported | Not yet independently reported | Existing non-timed wake path retained | Testing requested |
 | X4 Pro | dedicated build | Not yet independently reported | Not yet independently reported | Existing non-timed wake path retained | Testing requested |
 | X4 Classic | dedicated build | Not yet independently reported | Not yet independently reported | Existing non-timed wake path retained | Testing requested |
-| Paper Mono | dedicated build | Not yet tested on this branch | Not yet tested on this branch | RTC/PMIC timer and Power handoff added | Host tested; physical device verification required |
+| Paper Mono | dedicated build | Not tested on battery; three USB-observed r7 cycles passed (~63.2 s) | USB-observed r7 Off test passed (155 s without reconnect) | Physical Power / same-page return not tested in r7 | [Published r7 USB report](papermono-timer.md#published-razor-crest-165-r7-scoped-papermono-device-report); panel appearance not verified |
 | MetalIO EInk4 | dedicated build | Not exposed | Not exposed | Existing sleep path retained | Timer-refresh setting intentionally unavailable |
 | EEGO A4 | dedicated build | Not yet independently reported | Not yet independently reported | Existing non-timed wake path retained | Testing requested |
 
