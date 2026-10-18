@@ -35,6 +35,7 @@
 #include "StatusBarSettingsActivity.h"
 #include "TextSettingsActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
+#include "activities/util/ConfirmationActivity.h"
 #include "activities/util/IntervalSelectionActivity.h"
 #include "components/UITheme.h"
 #include "components/UIThemeTokens.h"
@@ -83,6 +84,12 @@ SettingsSection sectionFor(const SettingInfo& setting) {
 
 // Device-only action rows added per section, beyond the shared list.
 constexpr size_t EXTRA_ROWS_PER_SECTION = 6;
+
+// Rough days of X3 wallpaper-only timed sleep from a full ~640 mAh battery.
+// 1/15-minute estimates use measured drain; longer intervals extrapolate
+// the two-measurement standby + per-refresh model. Not normal-use runtime.
+constexpr uint8_t X3_TIMED_SLEEP_ESTIMATED_DAYS[] = {0, 6, 15, 16, 16, 16, 17, 17, 17};
+static_assert(sizeof(X3_TIMED_SLEEP_ESTIMATED_DAYS) == CrossPointSettings::TIMED_SLEEP_SCREEN_REFRESH_COUNT);
 }  // namespace
 
 void SettingsActivity::rebuildSettings() {
@@ -233,14 +240,41 @@ void SettingsActivity::toggleSelectedSetting() {
     const auto enumLabels = setting.enumLabels();
     if (enumLabels.size() > 2) {
       const auto valuePtr = setting.valuePtr;
-      optionPopup.show(setting.nameId, enumLabels.data(), static_cast<int>(enumLabels.size()), currentValue,
-                       [this, valuePtr, sleepScreenChanged, quickResumeTimeoutChanged](int idx) {
-                         SETTINGS.*valuePtr = idx;
-                         syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
-                         SETTINGS.saveToFile();
-                         rebuildSettings();
-                         applyUiSettingChange(valuePtr);
-                       });
+      optionPopup.show(
+          setting.nameId, enumLabels.data(), static_cast<int>(enumLabels.size()), currentValue,
+          [this, valuePtr, sleepScreenChanged, quickResumeTimeoutChanged](int idx) {
+            const auto board = BoardConfig::ACTIVE.board;
+            const bool x3 = board == BoardConfig::Board::XteinkX3 || board == BoardConfig::Board::XteinkX3Uc8279;
+            if (valuePtr == &CrossPointSettings::timedSleepScreenRefresh && x3 && idx > 0 &&
+                idx != SETTINGS.timedSleepScreenRefresh &&
+                idx < static_cast<int>(sizeof(X3_TIMED_SLEEP_ESTIMATED_DAYS))) {
+              const auto intervalLabels = settings[nav.selected].enumLabels();
+              char message[256];
+              std::snprintf(message, sizeof(message), I18N.get(StrId::STR_X3_TIMED_WARNING_BODY),
+                            static_cast<unsigned>(X3_TIMED_SLEEP_ESTIMATED_DAYS[idx]), I18N.get(intervalLabels[idx]));
+              auto warning = makeUniqueNoThrow<ConfirmationActivity>(renderer, mappedInput,
+                                                                     I18N.get(StrId::STR_X3_TIMED_WARNING_TITLE),
+                                                                     message, std::string{}, std::string{}, true);
+              if (!warning) {
+                LOG_ERR("SETTINGS", "OOM: X3 timed sleep battery confirmation");
+                return;
+              }
+              startActivityForResult(std::move(warning), [this, idx](const ActivityResult& result) {
+                if (!result.isCancelled) {
+                  SETTINGS.timedSleepScreenRefresh = static_cast<uint8_t>(idx);
+                  SETTINGS.saveToFile();
+                  rebuildSettings();
+                }
+                requestUpdate();
+              });
+              return;
+            }
+            SETTINGS.*valuePtr = idx;
+            syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
+            SETTINGS.saveToFile();
+            rebuildSettings();
+            applyUiSettingChange(valuePtr);
+          });
       requestUpdate();
       return;
     }

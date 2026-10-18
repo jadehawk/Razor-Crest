@@ -7,29 +7,35 @@
 
 ConfirmationActivity::ConfirmationActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                            const std::string& heading, const std::string& body,
-                                           const std::string& cancelLabel, const std::string& confirmLabel)
+                                           const std::string& cancelLabel, const std::string& confirmLabel,
+                                           bool useMessageLayout)
     : Activity("Confirmation", renderer, mappedInput),
       heading(heading),
       body(body),
       cancelLabel(cancelLabel),
-      confirmLabel(confirmLabel) {}
+      confirmLabel(confirmLabel),
+      useMessageLayout(useMessageLayout) {}
 
 void ConfirmationActivity::onEnter() {
   Activity::onEnter();
 
-  // Both texts live inside the dialog: the heading as its caption and the
-  // subject (a book title) as the wrapping headline beneath it. No
-  // pre-truncation — the dialog wraps both to its own width.
+  // Ordinary confirmations wrap their subject as a short headline. The
+  // battery warning uses the longer message layout without changing them.
   const char* options[] = {
       cancelLabel.empty() ? I18N.get(StrId::STR_CANCEL) : cancelLabel.c_str(),
       confirmLabel.empty() ? I18N.get(StrId::STR_CONFIRM) : confirmLabel.c_str(),
   };
-  confirmPopup.show(heading.c_str(), body.c_str(), options, 2, 0, [this](int idx) {
+  auto onSelect = [this](int idx) {
     ActivityResult res;
     res.isCancelled = (idx != 1);
     setResult(std::move(res));
     finish();
-  });
+  };
+  if (useMessageLayout) {
+    confirmPopup.showMessage(heading.c_str(), body.c_str(), options, 2, 0, std::move(onSelect));
+  } else {
+    confirmPopup.show(heading.c_str(), body.c_str(), options, 2, 0, std::move(onSelect));
+  }
 
   requestUpdate(true);
 }

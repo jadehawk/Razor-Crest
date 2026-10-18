@@ -12,7 +12,19 @@ During initial testing, timed wallpaper rotation worked on X3 only while USB/pog
 
 This correction has been hardware-tested on X3: one-minute Custom wallpaper rotation continues on battery power, manual power-button wake still works, and setting Timed Sleep-Screen Refresh back to Off stops the periodic wake/rotation behavior.
 
-Keeping the X3 SD rail powered during timed sleep may increase standby current. Battery-consumption measurement is still in progress, so X3 timed refresh should be treated as experimental until that cost is quantified.
+Keeping the X3 SD rail powered during timed sleep increases standby consumption.
+See the [X3 battery measurement report](x3-timed-refresh-battery.md) for the
+recorded 1-minute and 15-minute tests (elapsed time, wake counts, mAh consumed,
+state of charge), calculated daily drain, full-charge endurance projections and
+the failed battery-only rail-off experiment. The projected days shown in the
+warning are **wallpaper-only estimates from a FULL battery**. They exclude
+normal reading, Wi-Fi and other day-to-day use; actual runtime may be shorter.
+
+When the X3 user selects a new non-Off interval, Settings displays the
+full-battery estimate and requires confirmation **before saving**. The warning
+explicitly excludes reading, Wi-Fi and other day-to-day device use, and says
+actual battery life may be shorter. Cancel/Back preserves the old interval;
+Off applies immediately. X4 and other models do not display this X3 warning.
 
 ## Test procedure
 

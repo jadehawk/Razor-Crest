@@ -14,11 +14,12 @@ class ConfirmationActivity : public Activity {
   std::string confirmLabel;
 
   OptionPopup confirmPopup;
+  bool useMessageLayout = false;
 
  public:
   ConfirmationActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& heading,
                        const std::string& body, const std::string& cancelLabel = {},
-                       const std::string& confirmLabel = {});
+                       const std::string& confirmLabel = {}, bool useMessageLayout = false);
 
   void onEnter() override;
   void loop() override;
