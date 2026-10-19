@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <initializer_list>
 
+#define FREEINK_DEVICE_PICCO 0
 #define RTC_NOINIT_ATTR
 #define LOG_DBG(...)
 constexpr int ESP_RST_SW = 3;
@@ -22,6 +23,7 @@ struct HalGPIO {
   PowerWakeRequest request = PowerWakeRequest::None;
   int captureEnds = 0;
   PowerWakeRequest powerWakeRequest() { return request; }
+  bool isUsbConnected() const { return false; }
   void endPowerWakeCapture() { ++captureEnds; }
 } gpio;
 static void inject(Phase at) {

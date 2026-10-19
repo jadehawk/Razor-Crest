@@ -1,14 +1,18 @@
 #pragma once
 
 #include <Epub/Page.h>
+#include <I18n.h>
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "ClipSelectionActivity.h"
 #include "activities/Activity.h"
 #include "util/ButtonNavigator.h"
+#include "util/Dictionary.h"
 
 // Paged viewer for one dictionary definition. HTML definitions are laid out
 // through the EPUB chapter parser into styled Pages; anything else (plain
@@ -20,11 +24,12 @@ class DictionaryDefinitionActivity final : public Activity {
                                         std::string definition, bool htmlDefinition = false,
                                         std::string confirmLabel = {}, uint8_t paragraphAlignmentOverride = 0xff)
       : Activity("DictionaryDefinition", renderer, mappedInput),
-        headword(std::move(headword)),
-        definition(std::move(definition)),
+        content{.headword = std::move(headword), .text = std::move(definition)},
         htmlDefinition(htmlDefinition),
         confirmLabel(std::move(confirmLabel)),
         paragraphAlignmentOverride(paragraphAlignmentOverride) {}
+
+  bool enableLookup(Dictionary& dictionary, DictLocation location);
 
   void onEnter() override;
   void onExit() override;
@@ -34,6 +39,8 @@ class DictionaryDefinitionActivity final : public Activity {
  private:
   // One wrapped display line: a byte span of `definition`. Wrapping keeps
   // lines under the screen width, so uint16_t length is ample.
+  struct PlainSelectionLine;
+
   struct Line {
     uint32_t start;
     uint16_t len;
@@ -56,25 +63,64 @@ class DictionaryDefinitionActivity final : public Activity {
 
   BodyArea bodyArea() const;
   ActionArea actionArea() const;
-  bool layoutHtmlPages();
-  void wrapText();
-  int measureSpan(int fontId, const char* text, size_t len) const;
-  void drawBody(int fontId, int x, int startY) const;
+  struct Definition {
+    std::string headword;
+    std::string text;
+    std::vector<std::unique_ptr<Page>> pages;
+    std::vector<Line> lines;
+    int currentPage = 0;
+    int totalPages = 1;
+    int linesPerPage = 1;
+    int selectionPage = 0;
+    ClipSelectionActivity::Selection selection;
 
-  const std::string headword;
-  // Not const: onEnter() normalizes embedded NULs (StarDict multi-type
-  // separators) to newlines so C-string APIs see the whole text.
-  std::string definition;
+    void releasePayload() {
+      std::string{}.swap(text);
+      std::vector<std::unique_ptr<Page>>{}.swap(pages);
+      std::vector<Line>{}.swap(lines);
+    }
+  };
+
+  struct HistoryEntry {
+    std::string headword;
+    DictLocation location;
+    int page = 0;
+    int selectionPage = 0;
+    ClipSelectionActivity::Selection selection;
+    bool styled = false;
+  };
+
+  struct LookupState {
+    explicit LookupState(Dictionary& dictionary, DictLocation location) : dictionary(dictionary), location(location) {}
+    Dictionary& dictionary;  // Owned by the retained DictionaryWordSelectActivity parent.
+    DictLocation location;
+    std::array<HistoryEntry, 16> history;
+    size_t depth = 0;
+    std::string pendingWord;
+    std::vector<std::unique_ptr<Page>> selectionPages;
+  };
+
+  bool prepareDefinition(Definition& next, bool forcePlain = false);
+  bool layoutHtmlPages(Definition& next);
+  bool wrapText(Definition& next);
+  bool reserveLines(Definition& next, size_t count);
+  int measureSpan(int fontId, const char* text, size_t len) const;
+  void drawBody(int fontId, int x, int startY, int currentPage) const;
+  void startSelection(int x = -1, int y = -1);
+  bool buildPlainSelectionPages();
+  void navigateDefinition(bool back);
+  bool restoreCurrentDefinition(bool styled);
+  void showMessage(StrId message);
+
+  Definition content;
   const bool htmlDefinition;
   const std::string confirmLabel;
   // 0xff preserves the normal dictionary behavior of following Reader settings.
   const uint8_t paragraphAlignmentOverride;
-  // Styled path: reader-identical Pages laid out from the HTML definition.
-  // Empty means the plain-text span path below is active.
-  std::vector<std::unique_ptr<Page>> pages;
-  std::vector<Line> lines;
-  int currentPage = 0;
-  int totalPages = 1;
-  int linesPerPage = 1;
+  std::unique_ptr<LookupState> lookup;
+  StrId message = StrId::STR_DICT_NOT_FOUND;
+  unsigned long messageTime = 0;
+  bool messageVisible = false;
+  bool initialLayoutFailed = false;
   ButtonNavigator buttonNavigator;
 };

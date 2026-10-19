@@ -132,8 +132,9 @@ These capabilities are implemented as **plugin-agnostic firmware features**. Plu
 CrossPoint is open-source e-reader firmware - community-built, fully hackable, free forever. It's maintained by a growing community of developers and readers who believe your device should do what you want - not what a manufacturer decided for you.
 
 ### Now running on:
+
 - **ESP32C3-based** Xteink X4 and X3.
-- **ESP32S3-based** Xteink X4Pro and X4Classic, Seeed reTerminal Sticky, M5PaperMono
+- **ESP32S3-based** Xteink X4Pro and X4Classic, Seeed reTerminal Sticky, M5PaperMono, Metalio E-Ink 4, EEGOREAD A4 and Boox Picco.
 
 Check [our Devices page](https://crosspointreader.com/devices) for the full list.
 
@@ -149,11 +150,15 @@ Check [our Devices page](https://crosspointreader.com/devices) for the full list
 
 - **Touch reading**: follow EPUB links and look up words in the dictionary on touch-enabled devices.
 
+- Highlights and clippings: highlight text in EPUBs and save excerpts as clippings. Use the reader menu on button devices, or hold a word and drag the selection handles on touch devices. Look up selected words or phrases in the dictionary. Enable Sync Clippings to sync saved excerpts through a compatible CrossPoint Sync server. See [Clippings and Highlights](USER_GUIDE.md#53-clippings-and-highlights).
+
 - **Screenshots.**
 
 - **Custom fonts**: install your favorite fonts on the SD card.
 
 - **Tilt page turn (X3 and Sticky)**.
+
+- Bluetooth page turners: pair a remote under Settings → Connectivity → Bluetooth Page Turner. Map short and long presses to page turns, chapter navigation, the reader menu, or clipping selection.
 
 - **USB Drive mode (X4Pro)**: access the SD card as USB mass storage.
 
@@ -175,13 +180,15 @@ Check [our Devices page](https://crosspointreader.com/devices) for the full list
 
 - **Localization**: 34 UI languages and counting, including CJK font fallback and RTL support.
 
+
 - **SD-card plugins**: Optional plugin support can be enabled from **Settings → System → Advanced → Plugin System**. Sideloaded plugins work independently of Plugin Hub; a hidden Hub installer can be restored from Advanced settings. See the [User Guide](USER_GUIDE.md) and [SD-card plugin documentation](docs/sd-plugins.md).
+
+- On-device plugins use firmware-provided screens and operations. Browser-side JavaScript plugins require their browser page to remain open; see the [reading-focused scope](SCOPE.md#out-of-scope).
+
 
 ### Coming soon:
 
 - More themes.
-
-- Bluetooth pageturner.
 
 - Much more! stay tuned.
 

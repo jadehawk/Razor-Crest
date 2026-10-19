@@ -42,7 +42,15 @@ class HalPowerManager {
   // Should be called inside main loop() to handle the currentLockMode
   // timerWakeUs requests a one-shot timer; zero cancels the timer route.
   // PaperMono uses RTC/PMIC whole seconds; other boards use the ESP-IDF timer.
+  // Picco USB-held Power is handed off to a reader/home restart before deep sleep.
   void startDeepSleep(HalGPIO& gpio, uint64_t timerWakeUs = 0, bool fromTimerWake = false) const;
+
+#if FREEINK_DEVICE_PICCO
+  // While USB powers the device, light-sleep instead of deep sleep (deep sleep
+  // cannot observe the charger), calling onStatus whenever charging state or
+  // percentage changes. Returns true when Power ends the hold.
+  bool holdWhileUsbPowered(HalGPIO& gpio, void (*onStatus)(bool charging, uint16_t percent)) const;
+#endif
 
   // Get battery percentage (range 0-100)
   uint16_t getBatteryPercentage() const;
