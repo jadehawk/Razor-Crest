@@ -1,0 +1,62 @@
+name: Mirror Upstream Develop
+
+# Keep this fork's develop branch an exact mirror of upstream CrossPoint.
+# Razor-Crest is the default branch; merges into it remain manual/tested.
+# Requires the FORK_DEVELOP_MIRROR_TOKEN repository secret, authorized for
+# Contents and Workflows write on this fork.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 7 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mirror-upstream-develop
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    if: github.repository == 'jadehawk/crosspoint-reader'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require a token authorized to update workflow files
+        env:
+          MIRROR_TOKEN: ${{ secrets.FORK_DEVELOP_MIRROR_TOKEN }}
+        run: |
+          if [ -z "$MIRROR_TOKEN" ]; then
+            echo 'Configure FORK_DEVELOP_MIRROR_TOKEN with Contents and Workflows write permission.' >&2
+            exit 1
+          fi
+
+      - name: Check out the fork
+        uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.FORK_DEVELOP_MIRROR_TOKEN }}
+
+      - name: Fast-forward fork develop from upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags https://github.com/crosspoint-reader/crosspoint-reader.git \
+            refs/heads/develop:refs/remotes/upstream/develop
+          upstream_sha="$(git rev-parse refs/remotes/upstream/develop)"
+          fork_sha="$(git ls-remote origin refs/heads/develop | awk '{print $1}')"
+          if [ -z "$fork_sha" ]; then
+            echo 'Fork develop branch is missing; refusing to create it implicitly.' >&2
+            exit 1
+          fi
+          if [ "$upstream_sha" = "$fork_sha" ]; then
+            echo 'Fork develop already matches upstream.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # No force pushes or merge commits. A diverged develop fails visibly
+          # rather than silently overwriting someone else's work.
+          git push origin "$upstream_sha:refs/heads/develop"
+          {
+            echo '## Upstream develop mirror'
+            echo "Updated fork develop to upstream commit \`$upstream_sha\`."
+            echo 'Razor-Crest branch was not modified.'
+          } >> "$GITHUB_STEP_SUMMARY"

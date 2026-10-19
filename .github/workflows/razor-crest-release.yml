@@ -2,7 +2,8 @@ name: Build Razor-Crest Release
 
 # Public Razor-Crest firmware releases. Tags must point at a Razor-Crest commit
 # and follow: razor-crest-v<upstream-version>-r<revision>
-# Example: razor-crest-v1.6.5-r1
+# Example: razor-crest-v2.0.0-r1
+# The full release workflow runs from the fork's default razor-crest branch.
 on:
   push:
     tags:
@@ -10,12 +11,18 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Razor-Crest version (example: 1.6.5-r1)'
-        required: true
+        description: 'Optional version; leave blank for automatic next base-rN'
+        required: false
         type: string
 
 permissions:
   contents: read
+
+# Serialize manual releases so two clicks cannot pick the same revision.
+concurrency:
+  # Tags are independent; automatic manual releases share a single slot.
+  group: ${{ github.event_name == 'push' && github.ref || 'razor-crest-manual-release' }}
+  cancel-in-progress: false
 
 jobs:
   prepare:
@@ -52,8 +59,24 @@ jobs:
               echo "Unexpected Razor-Crest tag: $tag" >&2
               exit 1
             fi
-          else
+          elif [ -n "$DISPATCH_VERSION" ]; then
             version="$DISPATCH_VERSION"
+          else
+            # Follow the firmware's current base version and numeric tag suffix.
+            prefix="refs/tags/razor-crest-v${base_version}-r"
+            latest=0
+            # Never treat a failed lookup as an empty tag list: r1 may exist.
+            tag_refs="$(git ls-remote --refs --tags origin "${prefix}*")"
+            while read -r object ref; do
+              [[ "$ref" == "$prefix"* ]] || continue
+              revision="${ref#"$prefix"}"
+              [[ "$revision" =~ ^[0-9]+$ ]] || continue
+              current=$((10#$revision))
+              if (( current > latest )); then latest="$current"; fi
+            done <<< "$tag_refs"
+            version="${base_version}-r$((latest + 1))"
+          fi
+          if [ "$EVENT_NAME" != 'push' ]; then
             tag="razor-crest-v${version}"
           fi
 
