@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 
 #include "Epub/Section.h"
 #include "EpubReaderUtils.h"
@@ -34,6 +35,87 @@ namespace {
 // and the upload button (NO_REMOTE_PROGRESS) never coexist, so state
 // disambiguates them in the handler.
 constexpr fui::ActionId ACTION_ROW = 1;
+
+// Comparison-card layout adapted from Julia Nguyen's CrossInk (MIT license).
+// Source: https://github.com/uxjulia/CrossInk, commit 1b1156027.
+// CrossInk license notice: docs/attribution/crossink-koreader-sync.md.
+constexpr int CARD_PADDING = 12;
+constexpr int CARD_GAP = 6;
+constexpr int BAR_HEIGHT = 10;
+constexpr int BADGE_PADDING = 6;
+
+struct SyncProgressCard {
+  const char* title;
+  const char* device;
+  const char* page;
+  const char* chapter;
+  float percentage;
+  bool ahead;
+};
+
+long displayedTenths(const float percentage) { return std::lround(percentage * 1000.0f); }
+
+int syncCardHeight(const GfxRenderer& renderer) {
+  return CARD_PADDING * 2 + renderer.getLineHeight(UI_10_FONT_ID) + CARD_GAP + renderer.getLineHeight(UI_12_FONT_ID) +
+         CARD_GAP + BAR_HEIGHT + CARD_GAP + renderer.getLineHeight(UI_10_FONT_ID);
+}
+
+void syncBaselineText(const GfxRenderer& renderer, int font, int x, int y, int rowFont, const char* text) {
+  renderer.drawText(font, x, y + renderer.getFontAscenderSize(rowFont) - renderer.getFontAscenderSize(font), text);
+}
+
+void drawSyncProgressCard(const GfxRenderer& renderer, const Rect& card, const SyncProgressCard& info) {
+  renderer.drawRect(card.x, card.y, card.width, card.height, true);
+  const int x = card.x + CARD_PADDING;
+  const int contentWidth = std::max(1, card.width - CARD_PADDING * 2);
+  const int right = x + contentWidth;
+  const int gap = CARD_GAP * 2;
+  int y = card.y + CARD_PADDING;
+
+  int titleRight = right;
+  if (info.ahead) {
+    const char* badge = tr(STR_SYNC_AHEAD);
+    const int badgeWidth = renderer.getTextWidth(SMALL_FONT_ID, badge) + BADGE_PADDING * 2;
+    const int badgeX = right - badgeWidth;
+    const int titleHeight = renderer.getLineHeight(UI_10_FONT_ID);
+    renderer.fillRect(badgeX, y, badgeWidth, titleHeight, true);
+    renderer.drawText(SMALL_FONT_ID, badgeX + BADGE_PADDING,
+                      y + (titleHeight - renderer.getLineHeight(SMALL_FONT_ID)) / 2, badge, false);
+    titleRight = badgeX - gap;
+  }
+
+  const std::string title =
+      renderer.truncatedText(UI_10_FONT_ID, info.title, std::max(1, titleRight - x), EpdFontFamily::BOLD);
+  renderer.drawText(UI_10_FONT_ID, x, y, title.c_str(), true, EpdFontFamily::BOLD);
+  if (info.device && info.device[0]) {
+    const int deviceX = x + renderer.getTextWidth(UI_10_FONT_ID, title.c_str(), EpdFontFamily::BOLD) + gap;
+    if (titleRight > deviceX) {
+      const std::string device = renderer.truncatedText(SMALL_FONT_ID, info.device, titleRight - deviceX);
+      syncBaselineText(renderer, SMALL_FONT_ID, deviceX, y, UI_10_FONT_ID, device.c_str());
+    }
+  }
+  y += renderer.getLineHeight(UI_10_FONT_ID) + CARD_GAP;
+
+  char percent[16];
+  snprintf(percent, sizeof(percent), "%.1f%%", info.percentage * 100.0f);
+  renderer.drawText(UI_12_FONT_ID, x, y, percent, true, EpdFontFamily::BOLD);
+  const int pctRight = x + renderer.getTextWidth(UI_12_FONT_ID, percent, EpdFontFamily::BOLD) + gap;
+  if (right > pctRight) {
+    const std::string page = renderer.truncatedText(UI_10_FONT_ID, info.page, right - pctRight);
+    const int pageX = right - renderer.getTextWidth(UI_10_FONT_ID, page.c_str());
+    syncBaselineText(renderer, UI_10_FONT_ID, pageX, y, UI_12_FONT_ID, page.c_str());
+  }
+  y += renderer.getLineHeight(UI_12_FONT_ID) + CARD_GAP;
+
+  renderer.drawRect(x, y, contentWidth, BAR_HEIGHT, true);
+  const float progress = std::min(1.0f, std::max(0.0f, info.percentage));
+  const int filled = static_cast<int>((contentWidth - 4) * progress);
+  if (filled > 0) renderer.fillRect(x + 2, y + 2, filled, BAR_HEIGHT - 4, true);
+  y += BAR_HEIGHT + CARD_GAP;
+
+  const std::string chapter = renderer.truncatedText(UI_10_FONT_ID, info.chapter, contentWidth);
+  renderer.drawText(UI_10_FONT_ID, x, y, chapter.c_str());
+}
 
 std::string calculateDocumentHashForMethod(const std::string& path, const DocumentMatchMethod method) {
   return method == DocumentMatchMethod::FILENAME ? KOReaderDocumentId::calculateFromFilename(path)
@@ -513,72 +595,8 @@ void KOReaderSyncActivity::buildResultScreen(UiScreen& screen) {
   screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 
   if (state == SHOWING_RESULT) {
-    // Chapter names (remote requires the lazily-loaded Epub; local was
-    // pre-computed before the Epub was released).
-    const int remoteTocIndex = epub->getTocIndexForSpineIndex(remotePosition.spineIndex);
-    const std::string remoteChapter =
-        (remoteTocIndex >= 0) ? epub->getTocItem(remoteTocIndex).title
-                              : (std::string(tr(STR_SECTION_PREFIX)) + std::to_string(remotePosition.spineIndex + 1));
-    char localChapterFallback[32];
-    const char* localChapter = localChapterName.c_str();
-    if (localChapterName.empty()) {
-      snprintf(localChapterFallback, sizeof(localChapterFallback), "%s%d", tr(STR_SECTION_PREFIX),
-               localPosition.spineIndex + 1);
-      localChapter = localChapterFallback;
-    }
-
-    char remoteVal[64];
-    snprintf(remoteVal, sizeof(remoteVal), tr(STR_PAGE_OVERALL_FORMAT), remotePosition.pageNumber + 1,
-             remoteProgress.percentage * 100);
-    char localVal[64];
-    snprintf(localVal, sizeof(localVal), tr(STR_PAGE_TOTAL_OVERALL_FORMAT), localPosition.pageNumber + 1,
-             localPosition.totalPages, localProgress.percentage * 100);
-    char deviceStr[80];
-    deviceStr[0] = '\0';
-    if (!remoteProgress.device.empty()) {
-      snprintf(deviceStr, sizeof(deviceStr), tr(STR_DEVICE_FROM_FORMAT), remoteProgress.device.c_str());
-    }
-
-    // Labeled, multi-line comparison flowing from the top. Indent everything to
-    // the list rows' content-left (the row inset + side padding the list adds
-    // below) so the "Remote"/"Local" labels sit directly above the row icons.
-    auto labelStyle = screen.theme().bodyText;
-    labelStyle.bold = true;
-    auto detailStyle = screen.theme().smallText;
-    const int16_t labelH = screen.target().lineHeight(labelStyle.font);
-    const int16_t detailH = screen.target().lineHeight(detailStyle.font);
-    const int16_t labelIndent = static_cast<int16_t>(screen.theme().listInset + screen.theme().listSidePadding);
-    const int16_t detailIndent = static_cast<int16_t>(labelIndent + screen.theme().spaceMd);
-    const auto textLine = [&](const char* text, const fui::TextStyle& style, int16_t height, int16_t indent,
-                              int16_t gap) {
-      fui::Rect r = screen.takeTop(height, gap);
-      r.x = static_cast<int16_t>(r.x + indent);
-      r.width = static_cast<int16_t>(r.width - indent);
-      screen.target().text(r, text, style);
-    };
-    const auto labelLine = [&](const char* text) {
-      textLine(text, labelStyle, labelH, labelIndent, screen.theme().spaceSm);
-    };
-    const auto detailLine = [&](const char* text) {
-      textLine(text, detailStyle, detailH, detailIndent, screen.theme().spaceXs);
-    };
-
-    labelLine(tr(STR_REMOTE_LABEL));
-    detailLine(remoteChapter.c_str());
-    detailLine(remoteVal);
-    if (deviceStr[0] != '\0') detailLine(deviceStr);
-    screen.spacer(screen.theme().spaceLg);
-    labelLine(tr(STR_LOCAL_LABEL));
-    detailLine(localChapter);
-    detailLine(localVal);
-
-    // Two themed action rows flowing directly below the labels (not anchored to
-    // the bottom). Rendered through the list component so they inherit the
-    // active theme's row radius, insets, and selection style, matching every
-    // other selectable list in the UI. Apply Remote pulls (download), Upload
-    // Local pushes (upload); the selected row highlights for physical-button
-    // users and tap works either way.
-    screen.spacer(screen.theme().spaceMd);
+    // Progress cards are rendered by GfxRenderer; FreeInkUI owns the
+    // actionable rows, keeping touch routing and button navigation intact.
     fui::ListItem actions[2];
     actions[0].label = tr(STR_APPLY_REMOTE);
     actions[0].icon = fui::bitmapFromIcon(icon_download_24);
@@ -591,23 +609,16 @@ void KOReaderSyncActivity::buildResultScreen(UiScreen& screen) {
     actionProps.count = 2;
     actionProps.selectedIndex = static_cast<int16_t>(selectedOption);
     actionProps.action = ACTION_ROW;
-    actionProps.inputMask = fui::InputTouch;  // physical buttons stay in loop()
-    actionProps.scrollIndicator = false;      // never scrolls; no indicator needed
-    // Non-touch hardware (X3/X4) keeps the original, denser row height instead
-    // of FreeInkUI's touch-target-sized default (see
-    // UiListActivity::syncListViewport); actionsBand must use the same value
-    // or the band and the rows it contains fall out of sync.
+    actionProps.inputMask = fui::InputTouch;
+    actionProps.scrollIndicator = false;
     int16_t actionRowHeight = screen.theme().rowHeight;
     if (!mappedInput.hasTouch()) {
-      actionRowHeight = static_cast<int16_t>(UITheme::getInstance().getMetrics().listRowHeight);
+      actionRowHeight = static_cast<int16_t>(metrics.listRowHeight);
       actionProps.rowHeight = actionRowHeight;
     }
-    // Keep the theme's row inset + side padding so the selected-row highlight has
-    // the same padding around its icon/label as every other list in the UI; the
-    // labels above are indented to match this content-left.
     const auto actionsBand =
         static_cast<int16_t>(actionRowHeight * 2 + screen.theme().listRowGap + screen.theme().spaceSm);
-    screen.list(actionProps, actionsBand);
+    screen.list(actionProps, actionsBand, fui::LayoutAnchor::Bottom);
     return;
   }
 
@@ -651,7 +662,7 @@ void KOReaderSyncActivity::render(RenderLock&&) {
   Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
 
   GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
-                 state == SHOWING_RESULT ? tr(STR_PROGRESS_FOUND) : tr(STR_KOREADER_SYNC));
+                 tr(STR_KOREADER_SYNC));
 
   int top = screen.y + screen.height / 2 - 40;
   if (state == NO_CREDENTIALS) {
@@ -673,9 +684,47 @@ void KOReaderSyncActivity::render(RenderLock&&) {
   }
 
   if (state == SHOWING_RESULT) {
-    // Comparison rows + option selection render through the FreeInkApp
-    // (themed rows, tap-flash); the header above shows "Progress Found".
-    renderUi();
+    // CrossInk-inspired progress cards are informational. The actions stay in
+    // the existing FreeInkUI list so touch and mapped buttons work unchanged.
+    renderUi();  // Paint the themed action surface before drawing the cards above it.
+    int cardTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+    renderer.drawCenteredText(UI_10_FONT_ID, cardTop, tr(STR_PROGRESS_FOUND), true, EpdFontFamily::BOLD);
+    cardTop += renderer.getLineHeight(UI_10_FONT_ID) + metrics.verticalSpacing;
+
+    const int remoteToc = epub->getTocIndexForSpineIndex(remotePosition.spineIndex);
+    const std::string remoteChapter =
+        remoteToc >= 0 ? epub->getTocItem(remoteToc).title
+                       : (std::string(tr(STR_SECTION_PREFIX)) + std::to_string(remotePosition.spineIndex + 1));
+    const std::string localChapter =
+        localChapterName.empty() ? (std::string(tr(STR_SECTION_PREFIX)) + std::to_string(localPosition.spineIndex + 1))
+                                 : localChapterName;
+
+    char remotePage[48];
+    snprintf(remotePage, sizeof(remotePage), tr(STR_SYNC_PAGE_FORMAT), remotePosition.pageNumber + 1);
+    char localPage[48];
+    snprintf(localPage, sizeof(localPage), tr(STR_SYNC_PAGE_TOTAL_FORMAT), localPosition.pageNumber + 1,
+             localPosition.totalPages);
+    const long remoteTenths = displayedTenths(remoteProgress.percentage);
+    const long localTenths = displayedTenths(localProgress.percentage);
+    const SyncProgressCard cards[] = {
+        {tr(STR_SYNC_REMOTE_TITLE), remoteProgress.device.c_str(), remotePage, remoteChapter.c_str(),
+         remoteProgress.percentage, remoteTenths > localTenths},
+        {tr(STR_SYNC_LOCAL_TITLE), nullptr, localPage, localChapter.c_str(), localProgress.percentage,
+         localTenths > remoteTenths},
+    };
+
+    const int cardX = screen.x + metrics.contentSidePadding;
+    const int cardWidth = std::max(1, screen.width - metrics.contentSidePadding * 2);
+    const int cardHeight = syncCardHeight(renderer);
+    const int gap = metrics.verticalSpacing;
+    if (screen.width > screen.height) {
+      const int half = std::max(1, (cardWidth - gap) / 2);
+      drawSyncProgressCard(renderer, Rect{cardX, cardTop, half, cardHeight}, cards[0]);
+      drawSyncProgressCard(renderer, Rect{cardX + cardWidth - half, cardTop, half, cardHeight}, cards[1]);
+    } else {
+      drawSyncProgressCard(renderer, Rect{cardX, cardTop, cardWidth, cardHeight}, cards[0]);
+      drawSyncProgressCard(renderer, Rect{cardX, cardTop + cardHeight + gap, cardWidth, cardHeight}, cards[1]);
+    }
 
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
