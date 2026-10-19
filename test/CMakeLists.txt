@@ -98,6 +98,7 @@ add_test(NAME TimerWakeArm COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_
 add_test(NAME TimedPowerWake COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/timed_power_wake/run.py)
 add_test(NAME PaperMonoTimer COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/papermono_timer/run.py)
 add_test(NAME PiccoUsbPowerHandoff COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_picco_usb_power_handoff.py)
+add_test(NAME RazorSettingsVisitor COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_razor_settings_visitor.py)
 
 add_test(NAME RemoteButtonInputIntegration COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_remote_button_input.py)
 add_test(NAME BleLearning COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_ble_learning.py)
