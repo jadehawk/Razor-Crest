@@ -5,9 +5,8 @@ The root `AGENTS.md` is the always-loaded policy and router. Detailed repository
 Inspect the relevant code and current behavior first. Use the root routing table
 to find guidance for changed decisions, then read only the relevant sections.
 Skill descriptions identify procedures, not an obligation to load every keyword
-match. Reuse instructions already in context. Firmware handoff is the only fixed
-multi-skill bundle; load it after implementation and main-agent self-review.
-Read-only inquiries and reviewers do not run implementation handoff.
+match. Reuse instructions already in context. Firmware handoff summarizes
+self-review and checks; it does not require reviewers or external agents.
 
 `CLAUDE.md` links to the root guide. Each skill lives in a directory containing
 `SKILL.md`, with a matching frontmatter `name`. Descriptions identify when an
@@ -28,15 +27,10 @@ home rather than restoring `.skills/` or duplicating the root policy.
 - `git-workflow.md`: repository context, branches, commits, and publication controls
 - `generated-files-cache.md`: generated sources, i18n, local artifacts, and cache formats
 
-## Mandatory firmware review
+## Firmware handoff
 
-`firmware-handoff` dispatches four independent read-only axes:
-
-- `review-correctness`
-- `review-architecture`
-- `review-embedded`
-- `review-i18n-docs`
-
-The [handoff skill](skills/firmware-handoff/SKILL.md) owns the workflow and
-completion criteria. Each reviewer task carries the inspection-only scope;
-the main agent owns test execution, builds, and diagnostic code.
+The [handoff skill](skills/firmware-handoff/SKILL.md) describes practical
+self-review, proportionate verification, and reporting. The four `review-*`
+skills are optional references, not a required workflow. Codex and independent
+review agents require explicit human authorization; they are never prerequisites
+for merging or committing.

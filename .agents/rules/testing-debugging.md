@@ -25,9 +25,10 @@ never invoke or probe raw `clang-format`. Run `pio check` when relevant.
 
 ### Testing and Verification Workflow
 
-[firmware-handoff](../skills/firmware-handoff/SKILL.md) owns firmware review rounds,
-final build ordering, and human acceptance. The main agent owns tests, builds,
-and diagnostic code. Reviewers inspect source and recorded results only.
+[firmware-handoff](../skills/firmware-handoff/SKILL.md) describes self-review,
+proportionate verification, and human handoff. The main agent owns tests,
+builds, and diagnostic code. External reviewers are optional and must not be
+invoked without explicit authorization.
 
 Run the smallest meaningful regression checks for the changed contract. Reuse
 green results until a change or failure invalidates them. Test-only, diagnostic,

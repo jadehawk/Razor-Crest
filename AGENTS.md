@@ -50,10 +50,9 @@ Repository-local skills live under `.agents/skills/`. Their descriptions identif
 
 A PR is a long-term maintenance commitment. Working code is not enough: prefer the simplest design that meets the real requirement, fits `SCOPE.md`, and can be understood and maintained by its human owner.
 
-Fully autonomous end-to-end agents are forbidden. Review subagents inspect code,
-diffs, history, and recorded checks only. The main agent owns verification:
-reviewers may not write files (including temporary diagnostics), run tests/builds,
-commit, publish, deploy, or flash.
+Do not invoke Codex, external agents, or independent review workflows unless
+the human explicitly requests them. The main agent owns code inspection and
+verification; the human owns firmware flashing and device testing.
 
 The human must write PR descriptions; agents may give concise factual notes and test
 results, never ready-to-paste PR prose. Creating/amending local commits requires
@@ -64,11 +63,15 @@ Repository-facing prose: use plain English for non-native readers and standard
 technical terms when clearest. Code comments must be short and useful after merge; follow the
 [comment rules](.agents/rules/coding-standards.md#comment-style).
 
-## Mandatory firmware handoff
+## Firmware verification and handoff
 
-For every logical change that can affect shipped firmware or its build—including C/C++, build configuration, partitions, code-generation sources, translations, and release scripts—the main agent must complete [firmware-handoff](.agents/skills/firmware-handoff/SKILL.md) before declaring the work ready or making an approved local commit. That skill owns the required checks, four independent reviews, bounded follow-up, and explicit human acceptance of behavior, architecture, and maintenance ownership.
-
-Read-only inquiries, audits, and reviewers do not run implementation handoff. Pure tests, diagnostics, documentation, and host-only Python scripts use a lighter review unless they alter firmware output or its build. Hardware testing remains the human's responsibility and is required before a PR is opened.
+For firmware changes, inspect the final diff, perform relevant checks, and follow
+[firmware-handoff](.agents/skills/firmware-handoff/SKILL.md) to report what changed
+and what remains unverified. Independent reviewers and Codex are never required.
+Reuse existing passing results and human-confirmed hardware tests; do not run
+additional builds or reviews merely to satisfy a checklist. Respect explicit
+instructions not to build firmware. Hardware testing remains the human's
+responsibility and is required before a PR is opened.
 
 ---
 
