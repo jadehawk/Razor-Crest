@@ -1,0 +1,55 @@
+{
+  "title": "Reading Statistics",
+  "description": "Local reading habits, daily activity, and page turns",
+  "dashboard": {
+    "source": "reading-stats.v1",
+    "pages": [
+      {
+        "title": "Your Reading",
+        "widgets": [
+          {"type": "metric", "label": "Reading Time", "field": "total_seconds"},
+          {"type": "metric", "label": "Sessions", "field": "sessions"},
+          {"type": "metric", "label": "Pages Read", "field": "qualified_turns"},
+          {"type": "metric", "label": "Per Page", "field": "seconds_per_turn"},
+          {"type": "metric", "label": "Reading Days", "field": "active_days"},
+          {"type": "metric", "label": "Recent 7 Days", "field": "last_7_seconds"}
+        ]
+      },
+      {
+        "title": "Your Week",
+        "widgets": [
+          {"type": "week_bars", "label": "Last 7 Recorded Days"},
+          {"type": "metric", "label": "Last Read Day", "field": "latest_day_seconds"}
+        ]
+      },
+      {
+        "title": "Activity Calendar",
+        "widgets": [
+          {"type": "heatmap_28", "label": "Latest 28 Recorded Days"},
+          {"type": "metric", "label": "Days With Reading", "field": "active_days"}
+        ]
+      },
+      {
+        "title": "All Books",
+        "widgets": [
+          {"type": "book_list", "label": "Browse Reading Books"}
+        ]
+      },
+      {
+        "title": "Current Book",
+        "widgets": [
+          {"type": "metric", "label": "Book Reading Time", "field": "total_seconds", "scope": "current-book"},
+          {"type": "metric", "label": "Book Sessions", "field": "sessions", "scope": "current-book"},
+          {"type": "metric", "label": "Book Pages Read", "field": "qualified_turns", "scope": "current-book"},
+          {"type": "metric", "label": "Book Read Days", "field": "active_days", "scope": "current-book"}
+        ]
+      },
+      {
+        "title": "Import Statistics",
+        "widgets": [
+          {"type": "legacy_import", "label": "Legacy data preview"}
+        ]
+      }
+    ]
+  }
+}
