@@ -36,7 +36,7 @@ std::vector<PluginRef> discoverPlugins();
 
 // Manifest-driven picker, catalog, download, and sign-in screens.
 // See docs/sd-plugins.md for the device.json schema.
-class PluginCatalogActivity final : public CatalogActivity {
+class PluginCatalogActivity : public CatalogActivity {
  public:
   // showOpds adds the OPDS row; rootMode returns Home instead of popping to Settings.
   // Out-of-line construction/destruction needs the complete SecureHttpClient type.
@@ -46,6 +46,17 @@ class PluginCatalogActivity final : public CatalogActivity {
 
   void onEnter() override;
   void onExit() override;
+
+ protected:
+  // Generic hosts can claim supported local plugin manifests while leaving all
+  // existing catalog, events, README, and install behavior unchanged.
+  std::string pickerManifestForRow(int index) const {
+    if (state != State::PLUGIN_PICKER) return {};
+    const int offset = (showOpds ? 1 : 0) + (showPluginHubInstallRow ? 1 : 0);
+    if (index < offset || index - offset >= static_cast<int>(installedPlugins.size())) return {};
+    return installedPlugins[index - offset].manifestPath;
+  }
+  void activateStandardPluginRow(int index) { PluginCatalogActivity::activateIndex(index); }
 
  private:
   static constexpr freeink::ui::ActionId ACTION_PLUGIN_TAB = ACTION_USER + 2;

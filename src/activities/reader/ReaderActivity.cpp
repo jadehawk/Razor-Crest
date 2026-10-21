@@ -19,6 +19,7 @@
 #include "SdCardFontSystem.h"
 #include "XtcReaderActivity.h"
 #include "util/PluginEvents.h"
+#include "util/ReadingStatsStore.h"
 
 ReaderActivity::ReaderActivity(const char* name, GfxRenderer& renderer, MappedInputManager& mappedInput,
                                std::string bookPath, const bool allowFastInitialRefresh)
@@ -126,6 +127,13 @@ void ReaderActivity::onExit() {
 void ReaderActivity::prepareForSleep() { flushReaderSession(); }
 
 void ReaderActivity::flushReaderSession() {
+  // Native BIN records are local and independent of plugin subscriptions.
+  if (readerSession.isTrackWorthy()) {
+    const std::string title = getBookTitle();
+    const std::string author = getBookAuthor();
+    readingstats::record(bookPath.c_str(), readerSession.trackedSeconds(), readerSession.qualifiedTurns(),
+                         readerSession.startTime(), title.c_str(), author.c_str());
+  }
   if (!readerSession.isEmitWorthy() || !pluginevents::anySubscriber(pluginevents::Event::ReaderSession)) {
     readerSession.reset();
     return;

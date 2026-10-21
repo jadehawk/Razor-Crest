@@ -26,6 +26,7 @@
 #include "network/CrossPointWebServerActivity.h"
 #include "network/UsbDriveActivity.h"
 #include "plugins/PluginCatalogActivity.h"
+#include "plugins/StatsDashboardPluginCatalogActivity.h"
 #include "reader/ReaderActivity.h"
 #include "reader/RemoteTurnGate.h"
 #include "settings/OpdsServerListActivity.h"
@@ -320,7 +321,8 @@ void ActivityManager::goToBrowser() {
 }
 
 void ActivityManager::goToPlugins(bool showOpds) {
-  replaceActivity(std::make_unique<PluginCatalogActivity>(renderer, mappedInput, showOpds, /*rootMode=*/true));
+  replaceActivity(std::make_unique<StatsDashboardPluginCatalogActivity>(renderer, mappedInput, showOpds,
+                                                                        /*rootMode=*/true));
 }
 
 void ActivityManager::goToReader(std::string path, const bool allowFastInitialRefresh) {

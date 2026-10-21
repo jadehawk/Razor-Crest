@@ -15,17 +15,21 @@ void ReaderSession::noteTurn(const bool forward, const bool succeeded) { pending
 
 void ReaderSession::onRenderComplete(const uint32_t monotonicMs, const int64_t trustedEpoch, const int progressBp) {
   const uint16_t progress = clampProgress(progressBp);
-  if (pendingForward && hasAnchor && anchorEpoch > 0) {
+  if (pendingForward && hasAnchor) {
     const uint32_t elapsedSeconds = (monotonicMs - anchorMs) / 1000;
     if (elapsedSeconds >= MIN_DWELL_SECONDS) {
+      if (turns != UINT32_MAX) ++turns;
       const uint32_t contribution = std::min(elapsedSeconds, MAX_DWELL_SECONDS);
-      if (duration == 0) {
-        startEpoch = anchorEpoch;
-        startProgress = anchorProgress;
-        endProgress = anchorProgress;
+      duration = contribution > UINT32_MAX - duration ? UINT32_MAX : duration + contribution;
+      if (anchorEpoch > 0) {
+        if (eventDuration == 0) {
+          startEpoch = anchorEpoch;
+          startProgress = anchorProgress;
+          endProgress = anchorProgress;
+        }
+        eventDuration = contribution > UINT32_MAX - eventDuration ? UINT32_MAX : eventDuration + contribution;
+        endProgress = std::max(endProgress, progress);
       }
-      duration += contribution;
-      endProgress = std::max(endProgress, progress);
     }
   }
 
@@ -41,6 +45,8 @@ void ReaderSession::reset() {
   anchorEpoch = 0;
   startEpoch = 0;
   duration = 0;
+  eventDuration = 0;
+  turns = 0;
   anchorProgress = 0;
   startProgress = 0;
   endProgress = 0;

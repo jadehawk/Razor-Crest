@@ -5,15 +5,13 @@
 
 #include <string>
 
-// Credential stores no web request (file manager, plugin endpoints) or plugin
-// manifest may read or write: their passwords are obfuscated with a device
-// key, so the files must stay on the device. Mirrors the getFilePath() of
-// WifiCredentialStore, OpdsServerStore and KOReaderCredentialStore. Prefix
-// match, so the stores' temp/backup siblings are covered too.
+// Private device data is not exposed through generic file-manager or plugin
+// endpoints. Credential stores and native reading history, including their
+// temporary and backup files, remain protected.
 namespace protectedpaths {
 
 inline constexpr const char* SENSITIVE_FILES[] = {"/.crosspoint/wifi.json", "/.crosspoint/opds.json",
-                                                  "/.crosspoint/koreader.json"};
+                                                  "/.crosspoint/koreader.json", "/.crosspoint/reading-stats"};
 
 // SdFat also opens a name by its generated 8.3 alias (".crosspoint" is
 // CROSSP~1), which no spelling check can map back to the long name.
