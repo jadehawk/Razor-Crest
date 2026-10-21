@@ -109,15 +109,19 @@ The firmware contains no particular dashboard design, cloud service,
 or plugin identity. Invalid manifest widget types/fields are rejected
 rather than executed.
 
-Sample SD plugin: `examples/reading-stats-dashboard/device.json`
-and its README. Copy these into a directory under a supported SD plugin root.
+The standalone installable dashboard lives in the sibling repository
+`../reading-statistics.crosspoint-plugin/reading-statistics.crosspoint-plugin/`.
+It includes `manifest.json`, `device.json`, `README.md` and `DETAILS.md`.
+Only the plugin repository controls the displayed page/metric layout.
 
 ## How to test the firmware
 
 1. Build from the current integration branch using
    `C:\XP-FW\build-fw.ps1`; the assistant does not run firmware builds.
-2. Copy `examples/reading-stats-dashboard/` to
-   `/.crosspoint/plugins/reading-stats-dashboard/` on the SD card.
+2. Install the payload from sibling repository
+   `../reading-statistics.crosspoint-plugin/reading-statistics.crosspoint-plugin/`
+   into `/.crosspoint/plugins/reading-statistics/` on the SD card.
+   Keep `manifest.json`, `device.json`, `README.md` and `DETAILS.md` together.
 3. Enable Plugin System in Settings > System > Advanced.
 4. Open Home > Plugins > Reading Statistics. Confirm six pages display,
    including All Books and Import Statistics. On All Books, Select opens the
