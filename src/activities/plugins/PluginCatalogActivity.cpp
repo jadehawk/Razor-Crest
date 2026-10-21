@@ -86,7 +86,6 @@ constexpr int MAX_PLUGIN_TABS = 4;
 constexpr int MAX_PLUGIN_SETTINGS = 12;
 constexpr int MAX_SETTING_OPTIONS = 6;
 constexpr int16_t TOUCH_TAB_BAR_HEIGHT = 50;
-constexpr int CACHE_INFO_ROWS = 6;
 constexpr int64_t MIN_VALID_UNIX_TIME = 1609459200LL;  // 2021-01-01
 
 int64_t currentUnixTime() {
@@ -300,6 +299,7 @@ void readPluginMetadata(const std::string& path, PluginRef& ref, const bool clas
   if (!Storage.readFileToString("PCAT", path, MAX_MANIFEST_SIZE, raw)) return;
   JsonDocument filter;
   filter["title"] = true;
+  filter["version"] = true;
   filter["description"] = true;
   if (classifyDevice) {
     filter["browse"]["url"] = true;
@@ -308,6 +308,13 @@ void readPluginMetadata(const std::string& path, PluginRef& ref, const bool clas
   JsonDocument doc;
   if (deserializeJson(doc, raw, DeserializationOption::Filter(filter)) != DeserializationError::Ok) return;
   if (doc["title"].is<const char*>()) ref.title = doc["title"].as<const char*>();
+  if (doc["version"].is<const char*>()) {
+    const char* version = doc["version"].as<const char*>();
+    if (version && *version) {
+      ref.version = version;
+      if (ref.version.front() != 'v' && ref.version.front() != 'V') ref.version.insert(ref.version.begin(), 'v');
+    }
+  }
   if (doc["description"].is<const char*>()) ref.description = doc["description"].as<const char*>();
   if (classifyDevice) {
     const char* browseUrl = doc["browse"]["url"] | "";
@@ -691,12 +698,15 @@ bool PluginCatalogActivity::saveSettingValue(const Manifest::Setting& setting, c
     break;
   }
   if (!found) config.emplace_back(setting.key, value);
+  const bool cacheLimitChanged = manifest.cacheLimitMbTpl == "{cfg." + setting.key + "}";
   resolvePresentation();
   clearPreviews();
   releaseRows();
   browseRefreshNeeded = true;
   cacheStatsDirty = true;
-  if (cacheUsable()) enforceCacheLimit();
+  // A seed-size, refresh-age, or UI preference change never needs a full
+  // directory scan. Only lowering/changing the storage cap can require eviction.
+  if (cacheUsable() && cacheLimitChanged) enforceCacheLimit();
   return true;
 }
 
@@ -984,7 +994,7 @@ void PluginCatalogActivity::switchPluginTab(const int index, const bool keepFocu
     target.selected = 1;
   releaseRows();
   if (cacheTabActive()) {
-    if (cacheStatsDirty) refreshCacheStats();
+    // Opening the Cache tab must not scan thousands of seed files.
     requestUpdate();
     return;
   }
@@ -1971,7 +1981,6 @@ void PluginCatalogActivity::clearCatalogCache() {
   if (!cancelDownload && !dirPath.empty() && Storage.exists(dirPath.c_str())) Storage.removeDir(dirPath.c_str());
   cacheStatsDirty = true;
   browseRefreshNeeded = true;
-  refreshCacheStats();
   releaseRows();
   state = State::BROWSING;
   downloadProgress = downloadTotal = 0;
@@ -2000,12 +2009,13 @@ void PluginCatalogActivity::confirmClearCache() {
 
 int PluginCatalogActivity::cacheRowCount() const {
   if (!cacheUsable()) return 0;
-  return CACHE_INFO_ROWS + (manifest.hasCacheSeed() ? 2 : 0);
+  // Seed status + download action, followed by Refresh and Clear.
+  return 2 + (manifest.hasCacheSeed() ? 2 : 0);
 }
 
 bool PluginCatalogActivity::isCacheSetting(const Manifest::Setting& setting) const {
   const std::string token = "{cfg." + setting.key + "}";
-  return manifest.cacheRefreshTpl == token || manifest.cacheLimitMbTpl == token;
+  return manifest.cacheRefreshTpl == token || manifest.cacheLimitMbTpl == token || manifest.cacheSeedUrl == token;
 }
 
 int PluginCatalogActivity::cacheSettingCount() const {
@@ -2040,6 +2050,32 @@ void PluginCatalogActivity::activateSetting(const int manifestIndex) {
   const auto& setting = manifest.settings[manifestIndex];
   if (!settingVisible(setting)) return;
   const std::string current = settingValue(setting);
+  // Choosing a cache-seed archive is intentional: do not silently cycle to
+  // the next (potentially much larger) download on a single tap.
+  if (setting.type == Manifest::Setting::Type::Choice && manifest.cacheSeedUrl == "{cfg." + setting.key + "}") {
+    const size_t count = std::min<size_t>(setting.options.size(), 16);
+    if (count == 0) return;
+    std::vector<const char*> labels;
+    labels.reserve(count);
+    int selected = 0;
+    for (size_t i = 0; i < count; ++i) {
+      labels.push_back(setting.options[i].title.c_str());
+      if (setting.options[i].value == current) selected = static_cast<int>(i);
+    }
+    app.clearTapFlash();
+    pluginHubPopup.showMessage(
+        setting.title.c_str(),
+        "Larger cache seeds take longer to install. Installation can take several minutes, not seconds.", labels.data(),
+        static_cast<int>(count), selected, [this, manifestIndex](const int choice) {
+          const auto& selectedSetting = manifest.settings[manifestIndex];
+          if (choice < 0 || choice >= static_cast<int>(selectedSetting.options.size())) return;
+          const std::string& value = selectedSetting.options[choice].value;
+          if (value != settingValue(selectedSetting) && !saveSettingValue(selectedSetting, value))
+            LOG_ERR("PCAT", "failed to save setting %s", selectedSetting.key.c_str());
+        });
+    requestUpdate();
+    return;
+  }
   std::string next;
   if (setting.type == Manifest::Setting::Type::Toggle) {
     next = (strcasecmp(current.c_str(), "true") == 0 || current == "1") ? "false" : "true";
@@ -2060,19 +2096,15 @@ void PluginCatalogActivity::activateSetting(const int manifestIndex) {
 
 void PluginCatalogActivity::activateCacheRow(const int index) {
   if (!cacheUsable()) return;
-  if (manifest.hasCacheSeed()) {
-    if (index == 5)
-      installCacheSeed();
-    else if (index == 6)
-      refreshCacheNow();
-    else if (index == 7)
-      confirmClearCache();
-  } else {
-    if (index == 4)
-      refreshCacheNow();
-    else if (index == 5)
-      confirmClearCache();
+  if (manifest.hasCacheSeed() && index == 1) {
+    installCacheSeed();
+    return;
   }
+  const int actionOffset = manifest.hasCacheSeed() ? 2 : 0;
+  if (index == actionOffset)
+    refreshCacheNow();
+  else if (index == actionOffset + 1)
+    confirmClearCache();
 }
 
 std::string PluginCatalogActivity::cacheSeedMarkerPath() const {
@@ -2173,6 +2205,14 @@ bool PluginCatalogActivity::extractCacheSeed(const std::string& archivePath) {
   downloadTotal = totalEntries;
   requestUpdateAndWait();
 
+  const auto checkCancelInput = [this] {
+    mappedInput.update(true);
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back) || mappedInput.wasHomeGesture())
+      cancelDownload = true;
+    routeTouch(mappedInput);
+    return cancelDownload;
+  };
+
   while (extractedCount < totalEntries) {
     std::vector<std::string> batch;
     batch.reserve(BATCH_SIZE);
@@ -2227,17 +2267,21 @@ bool PluginCatalogActivity::extractCacheSeed(const std::string& archivePath) {
         ++extractedCount;
         if (kind == SeedEntryKind::Image) ++extractedImages;
         if (kind == SeedEntryKind::Page) ++extractedPages;
+        if (checkCancelInput()) break;
+        yield();
       }
     }
 
+    if (cancelDownload) {
+      extractor.close();
+      return false;
+    }
     skip += batch.size();
     downloadProgress = extractedCount;
     downloadTotal = totalEntries;
     requestUpdateAndWait();
 
-    mappedInput.update(true);
-    if (mappedInput.wasReleased(MappedInputManager::Button::Back) || mappedInput.wasHomeGesture()) {
-      cancelDownload = true;
+    if (checkCancelInput()) {
       extractor.close();
       return false;
     }
@@ -2306,7 +2350,6 @@ void PluginCatalogActivity::installCacheSeed() {
 
   cacheStatsDirty = true;
   enforceCacheLimit();
-  refreshCacheStats();
   releaseRows();
   state = State::BROWSING;
   requestUpdate();
@@ -3456,7 +3499,6 @@ void PluginCatalogActivity::activateIndex(const int index) {
       if (settingVisible(setting) && !isCacheSetting(setting)) ++regularSettings;
     if (cacheUsable() && index == regularSettings) {
       cacheSettingsExpanded = true;
-      cacheStatsDirty = true;
       activeNav().selected = contentSelectionOffset();
       releaseRows();
       requestUpdate();
@@ -3909,9 +3951,7 @@ void PluginCatalogActivity::buildPluginTabBar(UiScreen& screen) {
   fui::TabItem tabs[MAX_PLUGIN_TABS];
   const int count = std::min<int>(MAX_PLUGIN_TABS, manifest.tabs.size());
   for (int i = 0; i < count; ++i) {
-    tabs[i].label = manifest.tabs[i].kind == Manifest::UiTab::Kind::Cache && !cacheTabLabel.empty()
-                        ? cacheTabLabel.c_str()
-                        : manifest.tabs[i].title.c_str();
+    tabs[i].label = manifest.tabs[i].title.c_str();
     tabs[i].value = static_cast<int16_t>(i);
     tabs[i].selected = i == activePluginTab;
   }
@@ -4006,13 +4046,7 @@ void PluginCatalogActivity::buildCatalogFooter(UiScreen& screen) {
   screen.footer(props);
 }
 
-void PluginCatalogActivity::buildCacheScreen(UiScreen& screen) {
-  if (cacheStatsDirty) {
-    refreshCacheStats();
-    releaseRows();
-  }
-  buildBrowsingScreen(screen);
-}
+void PluginCatalogActivity::buildCacheScreen(UiScreen& screen) { buildBrowsingScreen(screen); }
 
 void PluginCatalogActivity::buildPluginSettingsScreen(UiScreen& screen) { buildBrowsingScreen(screen); }
 
@@ -4287,42 +4321,46 @@ void PluginCatalogActivity::rebuildRowItems() {
     row.actionValue = static_cast<int16_t>(rowItems.size());
     rowItems.push_back(row);
   };
+  const auto addCacheActions = [&] {
+    // Only check the small seed marker: no per-file enumeration or metadata
+    // reads while opening the Cache screen.
+    if (manifest.hasCacheSeed()) {
+      const bool seeded = Storage.exists(cacheSeedMarkerPath().c_str());
+      addRow(tr(STR_PLUGIN_CACHE_SEED), nullptr, seeded ? tr(STR_INSTALLED) : tr(STR_PLUGIN_CACHE_SEED_NOT_INSTALLED));
+      addRow(seeded ? tr(STR_PLUGIN_CACHE_SEED_UPDATE) : tr(STR_PLUGIN_CACHE_SEED_DOWNLOAD), nullptr, ">");
+    }
+    addRow(tr(STR_PLUGIN_CACHE_REFRESH_NOW), nullptr, ">");
+    addRow(tr(STR_PLUGIN_CACHE_CLEAR), nullptr, ">");
+  };
   if (state == State::PLUGIN_PICKER) {
     if (showOpds) addRow(tr(STR_OPDS_BROWSER), tr(STR_OPDS_SERVERS));
     if (showPluginHubInstallRow) addRow(tr(STR_PLUGIN_HUB), tr(STR_PLUGIN_HUB_DESCRIPTION), ">");
     for (const auto& plugin : installedPlugins) {
-      //   None       -> web-only hint; chevron only with a readme
+      //   None       -> own description; web-only hint only if none supplied
       //   Catalog    -> browsable, own description, chevron
       //   Background -> events-only, own description, chevron only with a readme
       const char* subtitle = plugin.description.empty() ? nullptr : plugin.description.c_str();
+      // The FreeInkUI value column is right-aligned. Version comes from the
+      // installed manifest rather than requiring it in the plugin title.
+      const char* installedVersion = plugin.version.empty() ? nullptr : plugin.version.c_str();
       switch (plugin.deviceKind) {
         case PluginLocations::DeviceKind::None:
-          addRow(plugin.title.c_str(), tr(STR_PLUGIN_WEB_ONLY), plugin.readmePath.empty() ? nullptr : ">");
+          addRow(plugin.title.c_str(), subtitle ? subtitle : tr(STR_PLUGIN_WEB_ONLY),
+                 installedVersion ? installedVersion : (plugin.readmePath.empty() ? nullptr : ">"));
           break;
         case PluginLocations::DeviceKind::Catalog:
-          addRow(plugin.title.c_str(), subtitle, ">");
+          addRow(plugin.title.c_str(), subtitle, installedVersion ? installedVersion : ">");
           break;
         case PluginLocations::DeviceKind::Background:
-          addRow(plugin.title.c_str(), subtitle, plugin.readmePath.empty() ? nullptr : ">");
+          addRow(plugin.title.c_str(), subtitle,
+                 installedVersion ? installedVersion : (plugin.readmePath.empty() ? nullptr : ">"));
           break;
       }
     }
   } else if (state == State::LIST_PICKER) {
     for (const auto& list : manifest.browseLists) addRow(list.title.c_str());
   } else if (cacheTabActive()) {
-    if (cacheStatsDirty) refreshCacheStats();
-    addRow(tr(STR_PLUGIN_CACHE_LAST_REFRESH), nullptr, cacheLastRefreshValue.c_str());
-    addRow(tr(STR_PLUGIN_CACHE_PAGES), nullptr, cachePagesValue.c_str());
-    addRow(tr(STR_PLUGIN_CACHE_RESOURCES), nullptr, cacheImagesValue.c_str());
-    addRow(tr(STR_PLUGIN_CACHE_STORAGE), nullptr, cacheStorageValue.c_str());
-    if (manifest.hasCacheSeed()) {
-      addRow(tr(STR_PLUGIN_CACHE_SEED), nullptr, cacheSeedValue.c_str());
-      addRow(Storage.exists(cacheSeedMarkerPath().c_str()) ? tr(STR_PLUGIN_CACHE_SEED_UPDATE)
-                                                           : tr(STR_PLUGIN_CACHE_SEED_DOWNLOAD),
-             nullptr, ">");
-    }
-    addRow(tr(STR_PLUGIN_CACHE_REFRESH_NOW), nullptr, ">");
-    addRow(tr(STR_PLUGIN_CACHE_CLEAR), nullptr, ">");
+    addCacheActions();
   } else if (settingsTabActive()) {
     const auto addSettingRow = [&](const Manifest::Setting& setting) {
       fui::ListItem row;
@@ -4344,26 +4382,14 @@ void PluginCatalogActivity::rebuildRowItems() {
     };
 
     if (cacheSettingsExpanded) {
-      if (cacheStatsDirty) refreshCacheStats();
       for (const auto& setting : manifest.settings)
         if (settingVisible(setting) && isCacheSetting(setting)) addSettingRow(setting);
-      addRow(tr(STR_PLUGIN_CACHE_LAST_REFRESH), nullptr, cacheLastRefreshValue.c_str());
-      addRow(tr(STR_PLUGIN_CACHE_PAGES), nullptr, cachePagesValue.c_str());
-      addRow(tr(STR_PLUGIN_CACHE_RESOURCES), nullptr, cacheImagesValue.c_str());
-      addRow(tr(STR_PLUGIN_CACHE_STORAGE), nullptr, cacheStorageValue.c_str());
-      if (manifest.hasCacheSeed()) {
-        addRow(tr(STR_PLUGIN_CACHE_SEED), nullptr, cacheSeedValue.c_str());
-        addRow(Storage.exists(cacheSeedMarkerPath().c_str()) ? tr(STR_PLUGIN_CACHE_SEED_UPDATE)
-                                                             : tr(STR_PLUGIN_CACHE_SEED_DOWNLOAD),
-               nullptr, ">");
-      }
-      addRow(tr(STR_PLUGIN_CACHE_REFRESH_NOW), nullptr, ">");
-      addRow(tr(STR_PLUGIN_CACHE_CLEAR), nullptr, ">");
+      addCacheActions();
     } else {
       for (const auto& setting : manifest.settings)
         if (settingVisible(setting) && !isCacheSetting(setting)) addSettingRow(setting);
       if (cacheUsable()) {
-        addRow("Cache", cacheStatsDirty ? nullptr : cacheStorageValue.c_str(), ">");
+        addRow("Cache", nullptr, ">");
       }
     }
   } else {

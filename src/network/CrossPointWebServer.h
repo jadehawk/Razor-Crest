@@ -115,6 +115,7 @@ class CrossPointWebServer {
 
   // Settings handlers
   void handleSettingsPage() const;
+  void handlePluginsPage() const;
   void handleGetSettings() const;
   void handlePostSettings();
 
@@ -153,14 +154,15 @@ class CrossPointWebServer {
   bool readJsonBody(JsonDocument& out) const;
   void sendJson(const JsonDocument& doc) const;
   bool rejectIfPluginsDisabled() const;
-  void handlePluginList() const;  // GET  /api/plugins   -> discovered plugins
-  void handlePluginFile() const;  // GET  /plugin?name&file -> serve SD file
-  void handleRelay();             // POST /api/relay     -> device makes an HTTP(S) call
-  void handleCrypto();            // POST /api/crypto    -> generic crypto primitive (base64 I/O)
-  void handleFetch();             // POST /api/fetch     -> device downloads a URL to SD
-  void handleBookKey();           // POST /api/book-key  -> store a protected book's wrapped content key
-  void handlePluginFs();          // POST /api/plugin-fs -> plugin writes a small file to SD
-  void handlePluginFsUpload();    // its multipart file part, streamed to <path>.tmp
+  void handlePluginList() const;    // GET  /api/plugins        -> discovered plugins
+  void handlePluginRemove() const;  // POST /api/plugins/remove -> uninstall a known plugin
+  void handlePluginFile() const;    // GET  /plugin?name&file    -> serve SD file
+  void handleRelay();               // POST /api/relay     -> device makes an HTTP(S) call
+  void handleCrypto();              // POST /api/crypto    -> generic crypto primitive (base64 I/O)
+  void handleFetch();               // POST /api/fetch     -> device downloads a URL to SD
+  void handleBookKey();             // POST /api/book-key  -> store a protected book's wrapped content key
+  void handlePluginFs();            // POST /api/plugin-fs -> plugin writes a small file to SD
+  void handlePluginFsUpload();      // its multipart file part, streamed to <path>.tmp
 
   // One /api/plugin-fs write in flight: chunks land in `tmp`, which replaces
   // `path` only after a complete, non-empty body.

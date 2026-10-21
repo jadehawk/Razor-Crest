@@ -25,6 +25,7 @@ struct PluginRef {
   std::string name;          // folder name
   std::string dir;           // exact discovered <root>/<name> install directory
   std::string title;         // from device.json or manifest.json (falls back to name)
+  std::string version;       // installed manifest version, if supplied
   std::string description;   // one-line summary, if provided
   std::string manifestPath;  // device.json path, "" for a web-only plugin
   std::string readmePath;    // README.md path when present

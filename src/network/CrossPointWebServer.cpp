@@ -44,6 +44,7 @@
 #include "html/FilesPageHtml.generated.h"
 #include "html/FontsPageHtml.generated.h"
 #include "html/HomePageHtml.generated.h"
+#include "html/PluginsPageHtml.generated.h"
 #include "html/RunnerPageHtml.generated.h"
 #include "html/SettingsPageHtml.generated.h"
 #include "html/assets/crosspoint_iconSvg.generated.h"
@@ -53,6 +54,7 @@
 #include "util/BookCacheUtils.h"
 #include "util/DictionaryRegistry.h"
 #include "util/FirmwareIdentity.h"
+#include "util/PluginEvents.h"
 #include "util/PluginHttp.h"
 #include "util/PluginLocations.h"
 #include "util/TaskWatchdog.h"
@@ -239,6 +241,7 @@ void CrossPointWebServer::begin() {
 
   // Settings endpoints
   server->on("/settings", HTTP_GET, [this] { handleSettingsPage(); });
+  server->on("/plugins", HTTP_GET, [this] { handlePluginsPage(); });
   server->on("/api/settings", HTTP_GET, [this] { handleGetSettings(); });
   server->on("/api/settings", HTTP_POST, [this] { handlePostSettings(); });
 
@@ -255,6 +258,7 @@ void CrossPointWebServer::begin() {
 
   // Browser-side plugins (JS on the SD card) + their generic capabilities.
   server->on("/api/plugins", HTTP_GET, [this] { handlePluginList(); });
+  server->on("/api/plugins/remove", HTTP_POST, [this] { handlePluginRemove(); });
   server->on("/plugin", HTTP_GET, [this] { handlePluginFile(); });
   server->on("/plugins-run", HTTP_GET, [this] { handlePluginRunnerPage(); });
   server->on("/api/plugin-jobs", HTTP_POST, [this] { handlePluginJobSubmit(); });
@@ -1344,6 +1348,10 @@ void CrossPointWebServer::handleDelete() const {
   }
 }
 
+void CrossPointWebServer::handlePluginsPage() const {
+  sendStaticContent(server.get(), PluginsPageHtml, sizeof(PluginsPageHtml), PluginsPageHtmlETag, "text/html");
+}
+
 void CrossPointWebServer::handleSettingsPage() const {
   sendStaticContent(server.get(), SettingsPageHtml, sizeof(SettingsPageHtml), SettingsPageHtmlETag, "text/html");
   LOG_DBG("WEB", "Served settings page");
@@ -1894,31 +1902,72 @@ bool CrossPointWebServer::rejectIfPluginsDisabled() const {
   return true;
 }
 
-// GET /api/plugins -> [{ "name", "title", "mount" }, ...]. Only plugins with a
-// plugin.js are listed (the page loads it); optional manifest.json supplies the
-// title and mount point.
+// GET /api/plugins -> every installed plugin, not only those with plugin.js.
+// Native-only plugins still need a card for their name, version, author and
+// management actions. Read lightweight metadata from manifest.json first;
+// device.json overrides it, as in the on-reader Plugins picker.
 void CrossPointWebServer::handlePluginList() const {
+  server->sendHeader("X-Plugins-Enabled", SETTINGS.pluginsEnabled ? "1" : "0");
   JsonDocument doc;
   JsonArray arr = doc.to<JsonArray>();
+  JsonDocument filter;
+  for (const char* field : {"title", "version", "author", "description", "mount"}) filter[field] = true;
 
   for (const auto& e : PluginLocations::scanPlugins()) {
-    if (!e.hasPluginJs) continue;
     JsonObject obj = arr.add<JsonObject>();
     obj["name"] = e.name;
-    obj["dir"] = e.dir;         // the plugin keeps its own files here
-    obj["title"] = e.name;      // overridden by manifest below
-    obj["mount"] = "settings";  // default mount point
-    std::string manifest;
-    if (e.hasManifest && Storage.readFileToString("WEB", e.dir + "/manifest.json", 64 * 1024, manifest)) {
-      JsonDocument m;
-      if (deserializeJson(m, manifest) == DeserializationError::Ok) {
-        if (m["title"].is<const char*>()) obj["title"] = m["title"];
-        if (m["mount"].is<const char*>()) obj["mount"] = m["mount"];
+    obj["dir"] = e.dir;
+    obj["title"] = e.name;
+    obj["version"] = "";
+    obj["author"] = "";
+    obj["mount"] = "settings";
+    obj["hasPluginJs"] = e.hasPluginJs;
+
+    const auto readMetadata = [&](const char* filename) {
+      std::string raw;
+      if (!Storage.readFileToString("WEB", e.dir + "/" + filename, 8192, raw)) return;
+      JsonDocument metadata;
+      if (deserializeJson(metadata, raw, DeserializationOption::Filter(filter)) != DeserializationError::Ok) return;
+      for (const char* field : {"title", "version", "author", "description", "mount"}) {
+        if (metadata[field].is<const char*>()) obj[field] = metadata[field].as<String>();
       }
-    }
+    };
+    if (e.hasManifest) readMetadata("manifest.json");
+    if (e.hasDevice) readMetadata("device.json");
   }
 
   sendJson(doc);
+}
+
+// POST /api/plugins/remove?name=<id> -> remove only a currently installed,
+// non-quarantined direct child of an allowed plugin root. This is recursive
+// so wallpaper cache directories larger than 1024 files can be uninstalled.
+void CrossPointWebServer::handlePluginRemove() const {
+  if (rejectIfPluginsDisabled()) return;
+  const String name = server->arg("name");
+  if (!safeComponent(name)) {
+    server->send(400, "application/json", "{\"error\":\"invalid plugin name\"}");
+    return;
+  }
+  for (const auto& e : PluginLocations::scanPlugins()) {
+    if (e.name != name.c_str()) continue;
+    bool safeDir = false;
+    for (const char* root : PluginLocations::ROOTS) {
+      if (e.dir == std::string(root) + "/" + e.name) {
+        safeDir = true;
+        break;
+      }
+    }
+    if (!safeDir) break;
+    if (!Storage.removeDir(e.dir.c_str())) {
+      server->send(500, "application/json", "{\"error\":\"plugin removal failed\"}");
+      return;
+    }
+    pluginevents::refreshSubscriptions();
+    server->send(200, "application/json", "{\"ok\":true}");
+    return;
+  }
+  server->send(404, "application/json", "{\"error\":\"plugin not installed\"}");
 }
 
 // GET /plugin?name=<plugin>&file=<file> -> serve /.crosspoint/plugins/<plugin>/<file>

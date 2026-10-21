@@ -631,8 +631,8 @@ void SleepActivity::onEnter() {
 
 bool SleepActivity::renderTimedSleepScreen() const {
   std::string selectedPath;
-  if (!selectRandomSleepFile("/.sleep", SleepRecentKind::Standard, selectedPath)) {
-    LOG_DBG("SLP", "Timed refresh: no valid /.sleep wallpaper");
+  if (!selectRandomSleepFile("/.sleep", "/sleep", SleepRecentKind::Standard, selectedPath)) {
+    LOG_DBG("SLP", "Timed refresh: no valid /.sleep or /sleep wallpaper");
     return false;
   }
 

@@ -15,6 +15,7 @@
       <a href="/">Home</a>
       <a href="/files">File Manager</a>
       <a href="/settings">Settings</a>
+      <a href="/plugins">Plugins</a>
       <a href="/fonts">Fonts</a>
     </nav>
   </div>
@@ -30,6 +31,7 @@
       <a href="/">Home</a>
       <a href="/files">File Manager</a>
       <a href="/settings">Settings</a>
+      <a href="/plugins">Plugins</a>
       <a href="/fonts">Fonts</a>
     </nav>
   </details>

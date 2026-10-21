@@ -1,4 +1,4 @@
-  // --- browser-side plugin host (shared by Settings + File Manager) ---------
+  // --- browser-side plugin host (shared by the Plugins page and headless runner) ---
   // Discovers plugins from the SD card (/api/plugins), loads each plugin.js,
   // and calls its registered render fn with a container + a small api. A plugin
   // is just JS on the SD; adding one needs no firmware change.
@@ -120,17 +120,33 @@
 
   async function loadPlugins(mount) {
     const host = document.getElementById('plugin-container');
-    if (!host) return;
+    if (!host) return { enabled: false, plugins: [] };
     let list;
-    try { list = await (await fetch('/api/plugins')).json(); } catch (e) { return; }
-    for (const p of list) {
-      // A null mount loads everything: the headless runner page hosts all
-      // plugins so any registered action can execute there.
-      if (mount && (p.mount || 'settings') !== mount) continue;
+    let enabled = true;
+    try {
+      const response = await fetch('/api/plugins');
+      if (!response.ok) throw new Error('Plugin discovery failed');
+      enabled = response.headers.get('X-Plugins-Enabled') !== '0';
+      list = await response.json();
+    } catch (e) { return { enabled, plugins: [], error: true }; }
+    // The Plugins page lists all installed plugins. Other hosts (including
+    // the headless runner) only load plugins that actually supply plugin.js.
+    const visible = list.filter(p => mount === 'plugins' ||
+      (p.hasPluginJs !== false && (!mount || (p.mount || 'settings') === mount)));
+    if (mount === 'plugins') {
+      const isHub = p => (p.name || '').toLowerCase().replace(/[-_]/g, '') === 'pluginhub';
+      visible.sort((a, b) => (Number(isHub(b)) - Number(isHub(a))) ||
+        (a.title || a.name).localeCompare(b.title || b.name, undefined, { sensitivity: 'base' }));
+    }
+    const hubAvailable = visible.some(p =>
+      (p.name || '').toLowerCase().replace(/[-_]/g, '') === 'pluginhub' && p.hasPluginJs !== false);
+    for (const p of visible) {
       const container = document.createElement('div');
       container.className = 'card';
       container.id = 'plugin-' + p.name;
       host.appendChild(container);
+      const panel = mount === 'plugins' ? renderInstalledPluginCard(container, p, hubAvailable) : container;
+      if (p.hasPluginJs === false) continue;
       CrossPoint._pending = null;
       try {
         await new Promise((resolve, reject) => {
@@ -140,7 +156,7 @@
           document.body.appendChild(s);
         });
         if (typeof CrossPoint._pending === 'function') {
-          CrossPoint._pending(container, {
+          CrossPoint._pending(panel, {
             name: p.name,
             dir: p.dir,
             relay: (m, u, h, b) => CrossPoint.relay(p.name, m, u, h, b),
@@ -152,12 +168,11 @@
           });
         }
       } catch (e) {
-        const h = document.createElement('h2');
-        h.textContent = p.title || p.name;
         const msg = document.createElement('p');
         msg.style.color = '#c0392b';
         msg.textContent = 'Failed to load plugin.';
-        container.replaceChildren(h, msg);
+        panel.replaceChildren(msg);
       }
     }
+    return { enabled, plugins: visible };
   }

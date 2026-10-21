@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Plugins - CrossPoint Reader</title>
+  <link rel="stylesheet" href="/assets/web.css" />
+  <link rel="icon" type="image/svg+xml" href="/assets/razor-crest-icon.svg" />
+  <style>
+    #plugin-container { display: grid; gap: 16px; margin: 16px 0; }
+    #plugin-container .card { margin: 0; border: 1px solid var(--border-color); scroll-margin-top: 20px; }
+    #plugin-container p { line-height: 1.5; }
+    #plugin-container .setting-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, 280px); align-items: center; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--border-color); }
+    #plugin-container .setting-name { color: var(--label-color); font-weight: 600; }
+    #plugin-container .setting-control { min-width: 0; }
+    #plugin-container input[type="text"], #plugin-container input[type="password"], #plugin-container input[type="number"], #plugin-container select, #plugin-container textarea {
+      width: 100%; box-sizing: border-box; padding: 8px 10px; min-height: 38px;
+      border: 1px solid var(--border-color); border-radius: 6px;
+      background: var(--card-bg); color: var(--font-color); font: inherit;
+    }
+    #plugin-container textarea { min-height: 96px; resize: vertical; }
+    #plugin-container button { cursor: pointer; }
+    #plugin-container .btn-small {
+      padding: 8px 12px; min-height: 36px; border: 1px solid var(--accent-color);
+      border-radius: 6px; background: var(--accent-color-10); color: var(--accent-color);
+      font: inherit; font-size: 0.9em; font-weight: 600;
+    }
+    #plugin-container .btn-add { background: var(--accent-color); color: var(--button-text); }
+    #plugin-container .btn-delete { background: var(--danger-color); color: var(--button-text); }
+    #plugin-container button:disabled, #plugin-container input:disabled, #plugin-container select:disabled { opacity: .55; cursor: not-allowed; }
+    #plugin-container :is(input, button, select, textarea):focus-visible, #plugin-select:focus-visible {
+      outline: 2px solid var(--accent-color); outline-offset: 2px;
+    }
+    #plugin-container hr { border: 0; border-top: 1px solid var(--border-color); margin: 18px 0; }
+    #plugin-picker { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+    #plugin-picker label { font-weight: 600; }
+    #plugin-select { flex: 1; min-width: 170px; max-width: 440px; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--card-bg); color: var(--font-color); font: inherit; }
+    #plugin-message { margin-top: 12px; color: var(--label-color); }
+    #plugin-container .plugin-management { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: start; }
+    #plugin-container .plugin-management-info { min-width: 0; overflow-wrap: anywhere; }
+    #plugin-container .plugin-management-info h2 { margin: 0 0 6px; }
+    #plugin-container .plugin-management-info p { margin: 3px 0; color: var(--label-color); }
+    #plugin-container .plugin-management-actions { display: flex; flex-wrap: nowrap; gap: 8px; justify-self: end; }
+    #plugin-container .plugin-btn-reinstall { background: #e8bf42; border-color: #b18d20; color: #202020; }
+    #plugin-container .plugin-btn-remove { background: #bc3636; border-color: #922727; color: #fff; }
+    #plugin-container .plugin-management-status { color: var(--label-color); margin: 8px 0; }
+    #plugin-container .plugin-browser-panel:not(:empty) { margin-top: 16px; }
+    @media (max-width: 600px) {
+      #plugin-container .plugin-management { grid-template-columns: minmax(0, 1fr); }
+      #plugin-container .plugin-management-actions { justify-self: end; }
+
+      #plugin-container .setting-row { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+      #plugin-select { max-width: none; }
+    }
+  </style>
+</head>
+<body class="web-ui">
+  <!--#include file="shared/Header.html.inc" -->
+  <main class="page-content">
+    <div class="card">
+      <h2>Plugins</h2>
+      <div id="plugin-picker" hidden>
+        <label for="plugin-select">Jump to plugin</label>
+        <select id="plugin-select" aria-label="Jump to installed plugin"></select>
+      </div>
+      <p id="plugin-message" role="status">Loading plugins...</p>
+    </div>
+    <div id="plugin-container"></div>
+  </main>
+  <!--#include file="shared/Footer.html.inc" -->
+  <script>
+    <!--#include file="shared/PluginHost.js.inc" -->
+    // All installed plugins receive a management card; browser plugins also
+    // render their plugin.js panel inside it, preserving this header/actions.
+    function renderInstalledPluginCard(container, plugin, hubAvailable) {
+      const heading = document.createElement('div');
+      heading.className = 'plugin-management';
+      const info = document.createElement('div');
+      info.className = 'plugin-management-info';
+      const name = document.createElement('h2');
+      name.textContent = plugin.title || plugin.name;
+      const version = document.createElement('p');
+      version.textContent = plugin.version ? 'Version: v' + String(plugin.version).replace(/^v/i, '') :
+        'Version: not specified';
+      const author = document.createElement('p');
+      author.textContent = plugin.author ? 'Author: ' + plugin.author : 'Author: not specified';
+      info.append(name, version, author);
+
+      const actions = document.createElement('div');
+      actions.className = 'plugin-management-actions';
+      const reinstall = document.createElement('button');
+      reinstall.type = 'button';
+      reinstall.className = 'btn-small plugin-btn-reinstall';
+      reinstall.textContent = 'Reinstall';
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'btn-small plugin-btn-remove';
+      remove.textContent = 'Remove';
+      actions.append(reinstall, remove);
+      heading.append(info, actions);
+
+      const status = document.createElement('p');
+      status.className = 'plugin-management-status';
+      status.setAttribute('role', 'status');
+      status.hidden = true;
+      const panel = document.createElement('div');
+      panel.className = 'plugin-browser-panel';
+      container.append(heading, status, panel);
+
+      reinstall.onclick = () => {
+        if (!hubAvailable) {
+          status.hidden = false;
+          status.textContent = 'Reinstall requires Plugin Hub. Install it from the device Plugins menu.';
+          return;
+        }
+        // Plugin Hub already implements the confirmed reinstall flow and
+        // handles versioned catalog sources. Never guess a download URL.
+        window.location.assign('/plugins?manage=' + encodeURIComponent(plugin.name) + '&action=reinstall');
+      };
+      remove.onclick = async () => {
+        if (!window.confirm('Remove ' + (plugin.title || plugin.name) + ' from the SD card?')) return;
+        reinstall.disabled = true;
+        remove.disabled = true;
+        remove.textContent = 'Removing...';
+        status.hidden = false;
+        status.textContent = 'Removing ' + (plugin.title || plugin.name) + ' (large caches may take several minutes)...';
+        try {
+          const response = await fetch('/api/plugins/remove', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'name=' + encodeURIComponent(plugin.name)
+          });
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok || !result.ok) throw new Error(result.error || 'HTTP ' + response.status);
+          window.location.reload();
+        } catch (error) {
+          status.textContent = 'Remove failed: ' + String(error.message || error);
+          reinstall.disabled = false;
+          remove.disabled = false;
+          remove.textContent = 'Remove';
+        }
+      };
+      return panel;
+    }
+
+    (async () => {
+      const message = document.getElementById('plugin-message');
+      const picker = document.getElementById('plugin-picker');
+      const select = document.getElementById('plugin-select');
+      try {
+        const result = await loadPlugins('plugins');
+        if (!result.enabled) {
+          message.textContent = 'Plugin System is disabled. Enable it on the device under Settings > Connectivity > Plugins.';
+          return;
+        }
+        if (result.error) {
+          message.textContent = 'Could not load installed plugins. Check the device connection and refresh.';
+          return;
+        }
+        if (!result.plugins.length) {
+          message.textContent = 'No plugins installed.';
+          return;
+        }
+        picker.hidden = false;
+        message.textContent = '';
+        message.hidden = true;
+        for (const plugin of result.plugins) {
+          const option = document.createElement('option');
+          option.value = 'plugin-' + plugin.name;
+          option.textContent = (plugin.title || plugin.name) +
+            (plugin.version ? ' — v' + String(plugin.version).replace(/^v/i, '') : '');
+          select.appendChild(option);
+        }
+        select.addEventListener('change', () => {
+          const target = document.getElementById(select.value);
+          if (target) target.scrollIntoView({behavior: 'smooth', block: 'start'});
+        });
+      } catch (error) {
+        message.textContent = 'Could not load plugins. Check the device connection and refresh.';
+      }
+    })();
+  </script>
+</body>
+</html>

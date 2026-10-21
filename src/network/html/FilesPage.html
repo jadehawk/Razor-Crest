@@ -1630,7 +1630,7 @@
   </div>
 </div>
 
-<div id="plugin-container"></div>
+
 
 </main>
 <!--#include file="shared/Footer.html.inc" -->
@@ -2038,8 +2038,8 @@
     // Fetch CrossPoint version
     fetchVersion();
 
-    // Load any SD-hosted plugins that mount on the File Manager page.
-    loadPlugins('files');
+
+
 
     // Keep upload cleanup rules when a dialog is cancelled or its backdrop is clicked.
     const closeModal = {
@@ -6313,7 +6313,7 @@ function retryAllFailedUploads() {
 
     xhr.send(formData);
   }
-<!--#include file="shared/PluginHost.js.inc" -->
+
   hydrate();
 </script>
 </body>
