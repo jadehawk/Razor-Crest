@@ -219,6 +219,7 @@ Settings are grouped into **System**, **Display**, **Reader**, **Controls**, **L
   - "Cover + Custom" - The book cover image while actively reading, falls back to "Custom" behavior otherwise
   - "Quick resume" - The text of the last page read will be displayed on the sleep screen and a moon icon is shown on the edge of the screen. Waking up the device will return to the same page of the opened book. This is useful for quickly resuming reading without waiting for the device to fully wake up and load the book.
   - "Transparent" - A transparent overlay image drawn over the current screen; see [Sleep Screen](#37-sleep-screen) below for more information
+  - "Cover + Transparent" - The transparent overlay image drawn over the cover of the last opened book, falls back to "Transparent" behavior if there is no book cover
 - **Timed Sleep-Screen Refresh**: Optionally rotate Custom sleep-screen wallpapers while the device remains asleep. It is **Off** by default; available intervals are 1 minute, 15 minutes, 30 minutes, 1 hour, 3 hours, 6 hours, 12 hours, and 24 hours. This setting applies only when **Sleep Screen** is set to **Custom** and uses valid BMP images from the hidden .sleep directory in the SD-card root. It is shown only on devices whose sleep hardware supports timer wake.
 - **Sleep Screen Cover Mode**: How to display the book cover when "Cover" sleep screen is selected:
   
@@ -347,12 +348,12 @@ Settings are grouped into **System**, **Display**, **Reader**, **Controls**, **L
 
 - **Check for updates**: Check for Crosspoint firmware updates over Wi-Fi. Firmware can also be updated without a USB connection by placing a `firmware.bin` file on the SD card. Neither option is available on the BOOX Picco, which is updated over USB.
 
-- **Advanced**: Opens advanced system settings. This entry appears at the bottom of the System settings list.
-  - **Plugin System**: Go to **Settings → System → Advanced → Plugin System** to globally enable or disable SD-card plugins. Clean installs start disabled; upgrades with existing plugins are kept enabled automatically. Disabling the Plugin System leaves all plugin files on the SD card but stops plugin discovery and execution until it is enabled again.
+- **Plugins**: Open **Settings → Connectivity → Plugins** to enable or disable SD-card plugins.
+  - Clean installs start with plugins disabled; upgrades with existing plugins remain enabled. Disabling Plugins keeps plugin files on the SD card but stops their discovery and execution until enabled again.
   - Enabling the Plugin System immediately adds **Plugins** to the Home screen, even when no plugins are installed yet. Sideloaded SD-card plugins work without Plugin Hub.
   - Open **Home → Plugins** to view installed plugins. If no usable on-device Plugin Hub is available and its installer has not been hidden, a **Plugin Hub — Download, discover, and update plugins** entry is also shown. A manually sideloaded Hub with a valid `device.json` is recognized without requiring the optional README or browser files.
   - Selecting that Plugin Hub entry offers **Install**, **Hide**, or **Cancel**. **Install** downloads Plugin Hub over Wi-Fi. If you back out of Wi-Fi selection, installation is cancelled, Wi-Fi is turned back off, and you return to Plugins with the installer still available. **Hide** removes only the Plugin Hub install entry; it does not disable the Plugin System or affect sideloaded plugins. **Cancel** leaves the entry unchanged.
-  - **Hide** is persistent across reboots and Plugin System disable/enable cycles. To restore the installer, go to **Settings → System → Advanced** while the Plugin System is enabled and select **Restore Plugin Hub installer**.
+  - **Hide** is persistent across reboots. To restore a hidden installer, go to **Settings → Connectivity → Plugins** and disable, then re-enable Plugins.
   - Plugin Hub is optional. Users who prefer manual installation can download it directly from [crosspoint-plugin-hub releases](https://github.com/crosspoint-reader/crosspoint-plugin-hub/releases) and copy/extract the `pluginhub` folder so it ends up at `/.crosspoint/plugins/pluginhub/`, `/plugins/pluginhub/`, or `/.plugins/pluginhub/`. Once installed, Plugin Hub appears as a normal entry under **Home → Plugins**.
 
 - **Language**: Set the UI language. CrossPoint supports 32 languages: English, Spanish, French, German, Czech, Brazilian Portuguese, European Portuguese, Russian, Swedish, Romanian, Catalan, Ukrainian, Belarusian, Italian, Polish, Finnish, Danish, Dutch, Turkish, Kazakh, Hungarian, Lithuanian, Slovenian, Valencian, Hebrew, Arabic, Slovak, Bosnian, Vietnamese, Norwegian Bokmål, Indonesian, and Orangutan.
@@ -562,11 +563,12 @@ The **Sleep Screen** setting controls what is displayed when the device goes to 
 | **Cover**          | The cover of the currently open book. Falls back to **Dark** if no book is open.                                             |
 | **Cover + Custom** | The cover of the currently open book, shown only while actively reading. Falls back to **Custom** behavior when not reading. |
 | **Transparent**    | A BMP or PNG overlay drawn over the current screen. Supports PNG and 32-bit BGRA alpha transparency, and treats white as transparent in regular BMPs. Falls back to **Dark** if no valid overlay image is found. |
+| **Cover + Transparent** | The **Transparent** overlay drawn over the cover of the last opened book, from any screen. Falls back to **Transparent** behavior if there is no book cover, and to the plain cover if no valid overlay image is found. |
 | **None**           | A blank screen.                                                                                                              |
 
 #### Cover settings
 
-When using **Cover** or **Cover + Custom**, two additional settings apply:
+When using **Cover**, **Cover + Custom** or **Cover + Transparent**, two additional settings apply:
 
 - **Sleep Screen Cover Mode**: **Fit** (scale to fit, white borders) or **Crop** (scale and crop to fill the screen).
 - **Sleep Screen Cover Filter**: **None** (grayscale), **Contrast** (black & white), or **Inverted** (inverted black & white).
@@ -588,7 +590,7 @@ See [Timed wake testing](docs/timed-wake-testing.md) for the implementation back
 
 #### Transparent overlay images
 
-To use transparent sleep overlays, set the sleep screen mode to **Transparent**, then place BMP or PNG files on the SD card:
+To use transparent sleep overlays, set the sleep screen mode to **Transparent** or **Cover + Transparent**, then place BMP or PNG files on the SD card:
 
 - **Multiple Images (recommended):** Create a `.sleep-overlay` directory in the root of the SD card and place any number of valid overlay `.bmp` or `.png` images inside. One will be randomly selected each time the device sleeps. A directory named `sleep-overlay` is also accepted as a fallback.
 - **Single Image:** Place `sleep-overlay.bmp` or `sleep-overlay.png` in the root directory. A root BMP takes priority over a root PNG, and both take priority over the `.sleep-overlay`/`sleep-overlay` directories.

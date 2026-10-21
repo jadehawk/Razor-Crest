@@ -29,7 +29,7 @@ enum class SettingAction {
   DownloadFonts,
   TextSettings,
   Plugins,
-  Advanced,
+
   KeyboardLayouts,
   HomeButton,
   About,

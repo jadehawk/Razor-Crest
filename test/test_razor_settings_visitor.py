@@ -6,7 +6,7 @@ import re
 root = Path(__file__).resolve().parents[1]
 settings = (root / "src/SettingsList.cpp").read_text(encoding="utf-8")
 storage = (root / "src/CrossPointSettings.cpp").read_text(encoding="utf-8")
-advanced = (root / "src/activities/settings/AdvancedSettingsActivity.cpp").read_text(encoding="utf-8")
+settings_screen = (root / "src/activities/settings/SettingsActivity.cpp").read_text(encoding="utf-8")
 header = (root / "src/SettingsList.h").read_text(encoding="utf-8")
 
 # The entries must be part of the shared visitor, not only a temporary UI list.
@@ -36,8 +36,10 @@ for label, field, key in (
     assert expected in visitor, f"Missing saved descriptor: {expected}"
     assert visitor.count(f'"{key}"') == 1, f"Duplicate saved key: {key}"
 assert 'withWebHidden()' in visitor[visitor.index('"pluginsEnabled"'):visitor.index('"pluginHubPromptHidden"')]
-assert 'StrId::STR_PLUGIN_SYSTEM' in advanced
-assert 'SETTINGS.pluginsEnabled' in advanced and 'SETTINGS.saveToFile()' in advanced
+assert 'SettingsSection::Network, StrId::STR_PLUGINS, SettingAction::Plugins' in settings_screen
+assert 'SETTINGS.pluginsEnabled' in settings_screen and 'SETTINGS.saveToFile()' in settings_screen
+assert 'pluginevents::refreshSubscriptions()' in settings_screen
+assert 'SettingAction::Advanced' not in settings_screen
 
 # Both the serializer and deserializer must use the same visitor.
 assert storage.count("forEachBaseSetting(visit);") == 2

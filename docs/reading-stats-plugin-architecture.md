@@ -122,7 +122,7 @@ Only the plugin repository controls the displayed page/metric layout.
    `../reading-statistics.crosspoint-plugin/reading-statistics.crosspoint-plugin/`
    into `/.crosspoint/plugins/reading-statistics/` on the SD card.
    Keep `manifest.json`, `device.json`, `README.md` and `DETAILS.md` together.
-3. Enable Plugin System in Settings > System > Advanced.
+3. Enable Plugins in Settings > Connectivity > Plugins.
 4. Open Home > Plugins > Reading Statistics. Confirm six pages display,
    including All Books and Import Statistics. On All Books, Select opens the
    paginated book list. On Import Statistics, Select opens source review;

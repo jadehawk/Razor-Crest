@@ -14,7 +14,6 @@
 #include <cstring>
 
 #include "AboutActivity.h"
-#include "AdvancedSettingsActivity.h"
 #include "BleSettingsActivity.h"
 #include "ButtonRemapActivity.h"
 #include "ClearCacheActivity.h"
@@ -41,6 +40,7 @@
 #include "components/UIThemeTokens.h"
 #include "components/UiAppHelpers.h"
 #include "fontIds.h"
+#include "util/PluginEvents.h"
 
 namespace fui = freeink::ui;
 
@@ -58,9 +58,6 @@ bool showOnDevice(const SettingInfo& setting) {
   }
   // Merged into the Text Settings screen.
   if (setting.category == StrId::STR_CAT_READER && setting.inTextSettings) return false;
-  // Touch boards act on the text directly; the X4 Pro home key and the
-  // short power click on other touch boards carry the remaining shortcuts.
-  if (BoardConfig::hasTouch() && setting.valuePtr == &CrossPointSettings::longPressMenuFunction) return false;
   if (setting.valuePtr == &CrossPointSettings::pwrBtnFootnoteBack &&
       SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::FOOTNOTES) {
     return false;
@@ -146,6 +143,7 @@ void SettingsActivity::rebuildSettings() {
   }
   addAction(SettingsSection::Network, StrId::STR_KOREADER_SYNC, SettingAction::KOReaderSync);
   addAction(SettingsSection::Network, StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser);
+  addAction(SettingsSection::Network, StrId::STR_PLUGINS, SettingAction::Plugins);
 
   // OTA fetches this board's own release asset (see OtaUpdater); boards whose
   // asset isn't published yet just report no update available. The Picco's
@@ -156,7 +154,6 @@ void SettingsActivity::rebuildSettings() {
     addAction(SettingsSection::General, StrId::STR_SD_FIRMWARE_UPDATE, SettingAction::SdFirmwareUpdate);
   }
   addAction(SettingsSection::General, StrId::STR_ABOUT, SettingAction::About);
-  addAction(SettingsSection::General, StrId::STR_ADVANCED, SettingAction::Advanced);
   rebuildRowItems();
 }
 
@@ -414,16 +411,21 @@ void SettingsActivity::toggleSelectedSetting() {
                                  rebuildSettings();
                                });
         break;
-      case SettingAction::Advanced:
-        if (auto activity = makeUniqueNoThrow<AdvancedSettingsActivity>(renderer, mappedInput)) {
-          startActivityForResult(std::move(activity), resultHandler);
-        } else {
-          LOG_ERR("SETTINGS", "OOM: AdvancedSettingsActivity");
-        }
-        break;
-      case SettingAction::Plugins:
-        // Razor-Crest manages the plugin system from General -> Advanced.
-        break;
+      case SettingAction::Plugins: {
+        static constexpr StrId OPTIONS[] = {StrId::STR_ENABLED, StrId::STR_DISABLED, StrId::STR_CANCEL};
+        optionPopup.show(StrId::STR_PLUGINS, OPTIONS, 3, SETTINGS.pluginsEnabled ? 0 : 1, [this](const int idx) {
+          if (idx == 2) return;
+          SETTINGS.pluginsEnabled = idx == 0 ? 1 : 0;
+          // Turning plugins on brings back a dismissed Plugin Hub install row.
+          if (SETTINGS.pluginsEnabled) SETTINGS.pluginHubPromptHidden = 0;
+          SETTINGS.saveToFile();
+          // Applies to event delivery now, not after a reboot.
+          pluginevents::refreshSubscriptions();
+          rebuildSettings();
+        });
+        requestUpdate();
+        return;
+      }
       case SettingAction::KeyboardLayouts:
         if (auto activity = makeUniqueNoThrow<KeyboardLayoutsActivity>(renderer, mappedInput)) {
           startActivityForResult(std::move(activity), nullptr);

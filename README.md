@@ -51,7 +51,7 @@ The list below describes the current **net differences from upstream `develop`**
 
 ### Global Plugin System control
 
-- Adds **Settings → System → Advanced → Plugin System** as a global enable/disable switch for SD-card plugins.
+- Uses upstream **Settings → Connectivity → Plugins** as the global enable/disable switch for SD-card plugins.
 - New installations default the Plugin System to **Disabled**.
 - Firmware upgrades automatically preserve an existing plugin setup by enabling the Plugin System when plugin folders are already present on disk and the setting did not previously exist.
 - When enabled, **Plugins** is shown on the Home screen even if no plugin is installed yet.
@@ -64,8 +64,8 @@ The list below describes the current **net differences from upstream `develop`**
 
 - Adds a synthetic **Plugin Hub — Download, discover, and update plugins** entry under **Home → Plugins** when the Plugin System is enabled but a usable Plugin Hub is not installed.
 - The synthetic Hub entry supports **Install**, **Hide**, and **Cancel**.
-- **Hide** affects only the synthetic installer row and persists across reboots and Plugin System disable/enable cycles.
-- Adds **Restore Plugin Hub installer** under **Settings → System → Advanced** when the installer was hidden.
+- **Hide** affects only the synthetic installer row and persists across reboots; enabling Plugins again restores the install row.
+- Re-enabling **Plugins** under Connectivity restores a previously hidden Plugin Hub installer, matching upstream behavior.
 - The built-in installer downloads the Plugin Hub manifest/device/plugin/README files over Wi-Fi using staged replacement rather than exposing a half-installed plugin.
 - Cancelling out of Wi-Fi selection cleanly aborts the Hub install flow and returns to the plugin picker.
 - A manually sideloaded Plugin Hub is recognized from any supported plugin root when it has a valid `device.json` and is not quarantined by an in-progress install marker.
@@ -118,7 +118,7 @@ These capabilities are implemented as **plugin-agnostic firmware features**. Plu
 ### Supporting documentation and development differences
 
 - Expands the SD-plugin documentation for the Plugin System, Hub bootstrap, firmware identity/capabilities, dynamic lists/notices, compatibility filtering, native tabs/settings, image layouts, progressive caching, bundle update behavior, and related manifest schema.
-- Expands the User Guide with the new Advanced/Plugin System and Plugin Hub workflow.
+- Expands the User Guide with the Connectivity/Plugins control and Plugin Hub workflow.
 - Expands the webserver endpoint documentation with the firmware identity/plugin capability fields returned by `/api/status`.
 - Adds/updates plugin manifest classification tests for the extended plugin discovery behavior.
 - Adds a repository-local build policy in `AGENTS.md` requiring this workstation's canonical `C:\XP-FW` build environment for firmware builds instead of ad-hoc/direct PlatformIO builds.
@@ -181,7 +181,7 @@ Check [our Devices page](https://crosspointreader.com/devices) for the full list
 - **Localization**: 34 UI languages and counting, including CJK font fallback and RTL support.
 
 
-- **SD card plugins**: Optional plugin support can be enabled from **Settings → System → Advanced → Plugin System**. Sideloaded plugins work independently of Plugin Hub; a hidden Hub installer can be restored from Advanced settings. See the [User Guide](USER_GUIDE.md) and [SD-card plugin documentation](docs/sd-plugins.md).
+- **SD card plugins**: Optional plugin support can be enabled from **Settings → Connectivity → Plugins**. Sideloaded plugins work independently of Plugin Hub; a hidden Hub installer can be restored by disabling and re-enabling Plugins. See the [User Guide](USER_GUIDE.md) and [SD-card plugin documentation](docs/sd-plugins.md). See the [User Guide](USER_GUIDE.md) and [SD-card plugin documentation](docs/sd-plugins.md).
 
 - On-device plugins use firmware-provided screens and operations. Browser-side JavaScript plugins require their browser page to remain open; see the [reading-focused scope](SCOPE.md#out-of-scope).
 

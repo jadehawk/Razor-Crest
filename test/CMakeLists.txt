@@ -101,6 +101,7 @@ add_test(NAME PiccoUsbPowerHandoff COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT
 add_test(NAME RazorSettingsVisitor COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_razor_settings_visitor.py)
 
 add_test(NAME RemoteButtonInputIntegration COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_remote_button_input.py)
+add_test(NAME confirmation_translations COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_confirmation_translations.py)
 add_test(NAME BleLearning COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_ble_learning.py)
 add_subdirectory(ble_link_note_title)
 add_subdirectory(ble_chapter_build_gate)

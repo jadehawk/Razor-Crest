@@ -19,6 +19,7 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
     values[CrossPointSettings::BLANK] = StrId::STR_NONE_OPT;
     values[CrossPointSettings::QUICK_RESUME] = StrId::STR_QUICK_RESUME;
     values[CrossPointSettings::TRANSPARENT_CUSTOM] = StrId::STR_TRANSPARENT;
+    values[CrossPointSettings::COVER_TRANSPARENT] = StrId::STR_COVER_TRANSPARENT;
     return values;
   }();
   static constexpr auto STATUS_BAR_CLOCK_VALUES = [] {
@@ -198,8 +199,8 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
     emit(SettingInfo::Toggle(StrId::STR_BACK_SHORT_TO_FILE_BROWSER, &CrossPointSettings::backShortToFileBrowser,
                              "backShortToFileBrowser", StrId::STR_CAT_CONTROLS));
 
-  // Razor-Crest plugin toggle is persisted here but managed from
-  // Settings -> System -> Advanced -> Plugin System.
+  // Plugin settings are persisted here; the device toggle is in Connectivity > Plugins.
+
   emit(SettingInfo::Toggle(StrId::STR_PLUGIN_SYSTEM, &CrossPointSettings::pluginsEnabled, "pluginsEnabled")
            .withWebHidden());
   emit(SettingInfo::Toggle(StrId::STR_PLUGIN_HUB, &CrossPointSettings::pluginHubPromptHidden, "pluginHubPromptHidden")
