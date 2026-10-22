@@ -48,6 +48,7 @@ class StatsDashboardActivity final : public Activity {
   bool hasBookInfo = false;
   std::string seriesName;
   std::string seriesIndex;
+  uint32_t recordedBookCount = 0;
   bool statsAvailable = false;
   bool bookStatsAvailable = false;
   readingstats::legacy::Preview crossInkPreview{};

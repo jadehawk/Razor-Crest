@@ -145,6 +145,7 @@ void StatsDashboardActivity::loadSeries() {
 }
 
 void StatsDashboardActivity::refresh() {
+  recordedBookCount = readingstats::bookCount();
   statsAvailable = readingstats::loadGlobal(stats);
   bookStatsAvailable =
       hasBookInfo && (bookInfo.hash() != 0 ? readingstats::loadBookHash(bookInfo.hash(), bookStats)
@@ -289,23 +290,22 @@ bool StatsDashboardActivity::statsPresentFor(const Widget& widget) const {
 
 int StatsDashboardActivity::drawBookIdentity(int y, const int width) const {
   const int availableWidth = width - 2 * kMargin;
-  const char* title = hasBookInfo && bookInfo.title[0] ? bookInfo.title : "No book selected";
-  const auto titleLines = renderer.wrappedText(NOTOSANS_14_FONT_ID, title, availableWidth, 2);
-  for (const auto& line : titleLines) {
-    renderer.drawText(NOTOSANS_14_FONT_ID, kMargin, y, line.c_str(), true, EpdFontFamily::BOLD);
-    y += renderer.getLineHeight(NOTOSANS_14_FONT_ID) + 2;
-  }
+  const int smallStep = renderer.getLineHeight(UI_12_FONT_ID) + 2;
+  const auto drawLines = [&](const int font, const std::string& text, const int maxLines,
+                             const EpdFontFamily::Style style, const int step) {
+    for (const auto& line : renderer.wrappedText(font, text.c_str(), availableWidth, maxLines, style)) {
+      renderer.drawText(font, kMargin, y, line.c_str(), true, style);
+      y += step;
+    }
+  };
+  drawLines(NOTOSANS_14_FONT_ID, hasBookInfo && bookInfo.title[0] ? bookInfo.title : "No book selected", 3,
+            EpdFontFamily::BOLD, renderer.getLineHeight(NOTOSANS_14_FONT_ID) + 2);
   if (hasBookInfo && bookInfo.author[0]) {
-    const std::string author = std::string("Author: ") + bookInfo.author;
-    renderer.drawText(UI_12_FONT_ID, kMargin, y,
-                      renderer.truncatedText(UI_12_FONT_ID, author.c_str(), availableWidth).c_str());
-    y += renderer.getLineHeight(UI_12_FONT_ID) + 3;
+    drawLines(UI_12_FONT_ID, std::string("Author: ") + bookInfo.author, 2, EpdFontFamily::REGULAR, smallStep);
   }
   if (!seriesName.empty()) {
     const std::string series = "Series: " + seriesName + (seriesIndex.empty() ? "" : " #" + seriesIndex);
-    renderer.drawText(UI_12_FONT_ID, kMargin, y,
-                      renderer.truncatedText(UI_12_FONT_ID, series.c_str(), availableWidth).c_str());
-    y += renderer.getLineHeight(UI_12_FONT_ID) + 3;
+    drawLines(UI_12_FONT_ID, series, 3, EpdFontFamily::REGULAR, smallStep);
   }
   return y + 8;
 }
@@ -337,116 +337,153 @@ std::string StatsDashboardActivity::metricValue(const Widget& widget) const {
 
 void StatsDashboardActivity::drawMetric(const Widget& widget, const int x, const int y, const int w,
                                         const int height) const {
+  if (height <= 0 || w <= 0) return;
   renderer.drawRect(x, y, w, height, true);
-  const std::string label = renderer.truncatedText(UI_12_FONT_ID, widget.label.c_str(), std::max(1, w - 16));
-  renderer.drawText(UI_12_FONT_ID, x + 8, y + 10, label.c_str());
+  constexpr int inset = 8;
+  const int labelStep = renderer.getLineHeight(UI_12_FONT_ID) + 1;
+  const auto labels = renderer.wrappedText(UI_12_FONT_ID, widget.label.c_str(), std::max(1, w - 2 * inset), 2);
+  int labelY = y + 8;
+  for (const auto& line : labels) {
+    const int lineWidth = renderer.getTextWidth(UI_12_FONT_ID, line.c_str());
+    renderer.drawText(UI_12_FONT_ID, x + (w - lineWidth) / 2, labelY, line.c_str());
+    labelY += labelStep;
+  }
   const std::string value = metricValue(widget);
-  const int valueFont = NOTOSANS_14_FONT_ID;
-  const std::string fitted = renderer.truncatedText(valueFont, value.c_str(), std::max(1, w - 16));
-  const int valueY = y + std::min(height - renderer.getLineHeight(valueFont) - 7,
-                                  std::max(renderer.getLineHeight(UI_10_FONT_ID) + 15, height * 5 / 9));
-  renderer.drawText(valueFont, x + 8, valueY, fitted.c_str(), true, EpdFontFamily::BOLD);
+  const int valueFont = renderer.getTextWidth(NOTOSANS_14_FONT_ID, value.c_str(), EpdFontFamily::BOLD) <= w - 2 * inset
+                            ? NOTOSANS_14_FONT_ID
+                            : UI_12_FONT_ID;
+  const std::string fitted =
+      renderer.truncatedText(valueFont, value.c_str(), std::max(1, w - 2 * inset), EpdFontFamily::BOLD);
+  const int valueWidth = renderer.getTextWidth(valueFont, fitted.c_str(), EpdFontFamily::BOLD);
+  const int valueHeight = renderer.getLineHeight(valueFont);
+  const int valueTop = std::max(labelY + 4, y + (height * 2) / 5);
+  const int valueY = std::max(labelY + 2, valueTop + std::max(0, (y + height - 7 - valueTop - valueHeight) / 2));
+  if (valueY + valueHeight < y + height) {
+    renderer.drawText(valueFont, x + (w - valueWidth) / 2, valueY, fitted.c_str(), true, EpdFontFamily::BOLD);
+  }
 }
 
 void StatsDashboardActivity::drawWeek(const Widget& widget, const int x, const int y, const int w, const int h) const {
+  if (w <= 24 || h <= 52) return;
   renderer.drawRect(x, y, w, h, true);
-  const std::string label = renderer.truncatedText(UI_10_FONT_ID, widget.label.c_str(), std::max(1, w - 16));
-  renderer.drawText(UI_10_FONT_ID, x + 8, y + 5, label.c_str());
+  const std::string label = renderer.truncatedText(UI_10_FONT_ID, widget.label.c_str(), w - 16);
+  renderer.drawText(UI_10_FONT_ID, x + 8, y + 7, label.c_str());
   const auto& stats = statsFor(widget);
-  const int chartTop = y + renderer.getLineHeight(UI_10_FONT_ID) + 12;
-  const int chartHeight = std::max(6, h - (chartTop - y) - 16);
-  const int barGap = 4;
-  const int chartWidth = std::max(1, w - 28);
-  const int barWidth = std::max(2, (chartWidth - 6 * barGap) / 7);
+  const int chartTop = y + renderer.getLineHeight(UI_10_FONT_ID) + 17;
+  const int baseline = y + h - renderer.getLineHeight(UI_10_FONT_ID) - 12;
+  const int chartHeight = std::max(0, baseline - chartTop);
+  const int slotWidth = (w - 20) / 7;
+  const int barWidth = std::max(3, slotWidth / 2);
   uint32_t high = 0;
-  for (uint32_t i = 0; i < 7; ++i)
-    if (stats.latestDay > i) high = std::max(high, stats.secondsOnDay(stats.latestDay - i));
   for (uint32_t i = 0; i < 7; ++i) {
-    const uint32_t seconds = stats.latestDay > 6 - i ? stats.secondsOnDay(stats.latestDay - (6 - i)) : 0;
-    const int height = high ? static_cast<int>((static_cast<uint64_t>(chartHeight) * seconds) / high) : 0;
-    if (height > 0)
-      renderer.fillRect(x + 10 + static_cast<int>(i) * (barWidth + barGap), chartTop + chartHeight - height, barWidth,
-                        height, true);
+    if (stats.latestDay > i) high = std::max(high, stats.secondsOnDay(stats.latestDay - i));
+  }
+  renderer.fillRect(x + 8, baseline, w - 16, 1, true);
+  constexpr const char* days[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+  for (uint32_t i = 0; i < 7; ++i) {
+    const uint32_t offset = 6 - i;
+    const uint32_t day = stats.latestDay > offset ? stats.latestDay - offset : 0;
+    const uint32_t seconds = day ? stats.secondsOnDay(day) : 0;
+    const int barHeight = high ? static_cast<int>((static_cast<uint64_t>(chartHeight) * seconds) / high) : 0;
+    const int centerX = x + 10 + static_cast<int>(i) * slotWidth + slotWidth / 2;
+    if (barHeight > 0) {
+      renderer.fillRect(centerX - barWidth / 2, baseline - barHeight, barWidth, barHeight, true);
+    }
+    if (day) {
+      const char* name = days[(day + 3) % 7];  // Local-day ordinal: 1970-01-01 is Thursday.
+      renderer.drawText(UI_10_FONT_ID, centerX - renderer.getTextWidth(UI_10_FONT_ID, name) / 2, baseline + 5, name);
+    }
   }
 }
 
 void StatsDashboardActivity::drawHeatmap(const Widget& widget, const int x, const int y, const int w,
                                          const int h) const {
+  if (w <= 24 || h <= 90) return;
   renderer.drawRect(x, y, w, h, true);
-  const std::string label = renderer.truncatedText(UI_10_FONT_ID, widget.label.c_str(), std::max(1, w - 16));
-  renderer.drawText(UI_10_FONT_ID, x + 8, y + 5, label.c_str());
+  const std::string label = renderer.truncatedText(UI_10_FONT_ID, widget.label.c_str(), w - 16);
+  renderer.drawText(UI_10_FONT_ID, x + 8, y + 7, label.c_str());
   const auto& stats = statsFor(widget);
-  const int top = y + renderer.getLineHeight(UI_10_FONT_ID) + 12;
-  const int gap = 4;
-  const int cellW = std::max(5, (w - 24 - gap * 6) / 7);
-  const int cellH = std::max(5, (h - (top - y) - 12 - gap * 3) / 4);
+  constexpr int gap = 4;
+  const int legendHeight = renderer.getLineHeight(UI_10_FONT_ID);
+  const int gridTop = y + renderer.getLineHeight(UI_10_FONT_ID) + 29;
+  const int cellW = std::max(5, std::min(42, (w - 24 - gap * 6) / 7));
+  const int cellH = std::max(5, std::min(cellW, (y + h - gridTop - legendHeight - 15 - gap * 3) / 4));
+  const int gridWidth = cellW * 7 + gap * 6;
+  const int gridX = x + (w - gridWidth) / 2;
+  constexpr const char* days[] = {"S", "M", "T", "W", "T", "F", "S"};
+  const uint32_t firstDay = stats.latestDay > 27 ? stats.latestDay - 27 : 0;
+  for (int col = 0; col < 7; ++col) {
+    if (!firstDay) break;
+    const char* labelDay = days[(firstDay + static_cast<uint32_t>(col) + 3) % 7];
+    const int cellX = gridX + col * (cellW + gap);
+    renderer.drawText(UI_10_FONT_ID, cellX + (cellW - renderer.getTextWidth(UI_10_FONT_ID, labelDay)) / 2,
+                      gridTop - legendHeight - 3, labelDay);
+  }
   for (int day = 0; day < 28; ++day) {
     const int col = day % 7;
     const int row = day / 7;
-    const int cellX = x + 10 + col * (cellW + gap);
-    const int cellY = top + row * (cellH + gap);
+    const int cellX = gridX + col * (cellW + gap);
+    const int cellY = gridTop + row * (cellH + gap);
     const uint32_t seconds =
         stats.latestDay > static_cast<uint32_t>(27 - day) ? stats.secondsOnDay(stats.latestDay - (27 - day)) : 0;
     renderer.drawRect(cellX, cellY, cellW, cellH, true);
+    const int innerWidth = std::max(1, cellW - 4);
     if (seconds >= 2700)
-      renderer.fillRect(cellX + 2, cellY + 2, std::max(1, cellW - 4), std::max(1, cellH - 4), true);
+      renderer.fillRect(cellX + 2, cellY + 2, innerWidth, std::max(1, cellH - 4), true);
     else if (seconds >= 900)
-      renderer.fillRect(cellX + 2, cellY + 2, std::max(1, (cellW - 4) / 2), std::max(1, cellH - 4), true);
+      renderer.fillRect(cellX + 2, cellY + 2, std::max(1, innerWidth / 2), std::max(1, cellH - 4), true);
     else if (seconds > 0)
-      renderer.fillRect(cellX + 2, cellY + 2, std::max(1, (cellW - 4) / 3), std::max(1, cellH - 4), true);
+      renderer.fillRect(cellX + 2, cellY + 2, std::max(1, innerWidth / 3), std::max(1, cellH - 4), true);
   }
+  renderer.drawText(UI_10_FONT_ID, gridX, gridTop + 4 * cellH + 3 * gap + 6, "Less shading = less reading");
 }
 
 void StatsDashboardActivity::drawLegacyImport(const int x, const int y, const int w, const int h) const {
+  if (h <= 0) return;
   renderer.drawRect(x, y, w, h, true);
-  const int inset = 10;
-  int line = y + 8;
-  const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID) + 5;
-  auto textLine = [&](const char* text, bool emphasized = false) {
-    if (line + lineHeight > y + h - 6) return;
-    renderer.drawText(UI_12_FONT_ID, x + inset, line,
-                      renderer.truncatedText(UI_12_FONT_ID, text, w - inset * 2).c_str(), true,
-                      emphasized ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR);
-    line += lineHeight;
-  };
-  auto source = [&](const char* label, const readingstats::legacy::Preview& preview, bool showTurns) {
-    textLine(label, true);
-    if (!preview.present) {
-      textLine("No source file found");
-      return;
-    }
-    if (!preview.supported) {
-      textLine(preview.truncated ? "Source too large for preview" : "Unsupported or damaged source");
-      return;
-    }
-    char value[96];
-    if (showTurns) {
-      snprintf(value, sizeof(value), "%lluh %lum | %lu sessions",
-               static_cast<unsigned long long>(preview.totals.totalSeconds / 3600),
-               static_cast<unsigned long>((preview.totals.totalSeconds / 60) % 60),
-               static_cast<unsigned long>(preview.totals.sessions));
-      textLine(value);
-      snprintf(value, sizeof(value), "%lu page turns (global)", static_cast<unsigned long>(preview.totals.turns));
+  constexpr int inset = 9;
+  const int step = renderer.getLineHeight(UI_12_FONT_ID) + 3;
+  const int rowHeight = std::max(54, (h - 3 * inset - 2 * step - 12) / 2);
+  auto source = [&](int top, const char* name, const char* filename, const readingstats::legacy::Preview& preview,
+                    bool showTurns) {
+    renderer.drawRect(x + inset, top, w - 2 * inset, rowHeight, true);
+    int line = top + 7;
+    auto textLine = [&](const char* text, bool bold = false) {
+      if (line + step > top + rowHeight - 2) return;
+      const auto style = bold ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
+      const std::string fitted = renderer.truncatedText(UI_12_FONT_ID, text, w - 4 * inset, style);
+      renderer.drawText(UI_12_FONT_ID, x + inset * 2, line, fitted.c_str(), true, style);
+      line += step;
+    };
+    textLine(name, true);
+    textLine(filename);
+    if (!legacyPreviewLoaded) {
+      textLine("Checking source...");
+    } else if (!preview.present) {
+      textLine("Not found on SD card");
+    } else if (!preview.supported) {
+      textLine(preview.truncated ? "Too large for preview" : "Unsupported or damaged");
     } else {
-      snprintf(value, sizeof(value), "%lu books | %lu sessions", static_cast<unsigned long>(preview.books),
-               static_cast<unsigned long>(preview.totals.sessions));
-      textLine(value);
-      snprintf(value, sizeof(value), "%lluh %llum | no turn history",
+      char value[96];
+      snprintf(value, sizeof(value), "%lu sessions | %lluh %llum", static_cast<unsigned long>(preview.totals.sessions),
                static_cast<unsigned long long>(preview.totals.totalSeconds / 3600),
                static_cast<unsigned long long>((preview.totals.totalSeconds / 60) % 60));
+      textLine(value);
+      if (showTurns) {
+        snprintf(value, sizeof(value), "%lu page turns", static_cast<unsigned long>(preview.totals.turns));
+      } else {
+        snprintf(value, sizeof(value), "%lu books; no turn history", static_cast<unsigned long>(preview.books));
+      }
+      textLine(value);
     }
-    textLine(value);
   };
-  if (!legacyPreviewLoaded) {
-    textLine("Checking legacy SD sources...");
-    return;
+  source(y + inset, "CrossInk", "global_stats.bin", crossInkPreview, true);
+  source(y + 2 * inset + rowHeight, "vCodex", "reading_stats.json", vCodexPreview, false);
+  const int footer = y + 3 * inset + 2 * rowHeight;
+  if (footer + 2 * step < y + h) {
+    renderer.drawText(UI_10_FONT_ID, x + inset, footer, "Preview only; sources are unchanged.");
+    renderer.drawText(UI_10_FONT_ID, x + inset, footer + step, "Select to review / import history.");
   }
-  source("CrossInk  -  global_stats.bin", crossInkPreview, true);
-  line += 8;
-  source("vCodex  -  reading_stats.json", vCodexPreview, false);
-  line += 12;
-  textLine("Preview only; no files are changed.");
-  textLine("Select: review / import history");
 }
 
 void StatsDashboardActivity::drawWidget(const Widget& widget, const int x, const int y, const int w,
@@ -460,10 +497,20 @@ void StatsDashboardActivity::drawWidget(const Widget& widget, const int x, const
   else if (widget.type == "legacy_import")
     drawLegacyImport(x, y, w, height);
   else if (widget.type == "book_list") {
+    if (height <= 0) return;
     renderer.drawRect(x, y, w, height, true);
-    renderer.drawText(UI_12_FONT_ID, x + 10, y + 10, "Browse recorded books", true, EpdFontFamily::BOLD);
-    renderer.drawText(UI_10_FONT_ID, x + 10, y + 10 + renderer.getLineHeight(UI_12_FONT_ID),
-                      "Tap or press Select to open");
+    const std::string title = renderer.truncatedText(UI_12_FONT_ID, widget.label.c_str(), w - 16, EpdFontFamily::BOLD);
+    renderer.drawText(UI_12_FONT_ID,
+                      x + (w - renderer.getTextWidth(UI_12_FONT_ID, title.c_str(), EpdFontFamily::BOLD)) / 2, y + 13,
+                      title.c_str(), true, EpdFontFamily::BOLD);
+    char summary[48];
+    const auto count = static_cast<unsigned long>(recordedBookCount);
+    snprintf(summary, sizeof(summary), "%lu recorded %s", count, count == 1 ? "book" : "books");
+    renderer.drawText(UI_12_FONT_ID, x + (w - renderer.getTextWidth(UI_12_FONT_ID, summary)) / 2,
+                      y + height / 2 - renderer.getLineHeight(UI_12_FONT_ID) / 2, summary);
+    const char* hint = "Tap or press Select to open";
+    renderer.drawText(UI_10_FONT_ID, x + (w - renderer.getTextWidth(UI_10_FONT_ID, hint)) / 2,
+                      y + height - renderer.getLineHeight(UI_10_FONT_ID) - 12, hint);
   }
 }
 
@@ -498,16 +545,16 @@ void StatsDashboardActivity::render(RenderLock&&) {
     ++widgetRows;
     if (page.widgets[i].type == "metric" && i + 1 < page.count && page.widgets[i + 1].type == "metric") ++i;
   }
-  // Use most of the X3 display rather than a compact strip at the top.
-  // A bounded per-row budget also keeps small-screen and touch layouts safe.
-  const int budget = std::max(0, (bottom - y) * 3 / 4 - kGap * std::max(0, widgetRows - 1));
-  const int slotHeight = std::max(32, std::min(widgetRows >= 3 ? 190 : 270, budget / std::max(1, widgetRows)));
+  const int available = std::max(0, bottom - y);
+  const int budget = std::max(0, available - kGap * std::max(0, widgetRows - 1));
+  const int slotHeight = std::max(0, std::min(widgetRows >= 3 ? 150 : 180, budget / std::max(1, widgetRows)));
+  const bool chartAndMetric = page.count == 2 && page.widgets[0].type != "metric" && page.widgets[1].type == "metric";
   const int contentWidth = width - kMargin * 2;
   const int halfWidth = (contentWidth - kGap) / 2;
-  for (int i = 0; i < page.count && y < bottom - 35; ++i) {
+  for (int i = 0; i < page.count && y < bottom; ++i) {
     const auto& widget = page.widgets[i];
     if (widget.type == "metric") {
-      const int h = std::max(0, std::min({slotHeight, bottom - y}));
+      const int h = std::max(0, std::min({chartAndMetric ? 120 : slotHeight, bottom - y}));
       if (i + 1 < page.count && page.widgets[i + 1].type == "metric") {
         drawWidget(widget, kMargin, y, halfWidth, h);
         drawWidget(page.widgets[++i], kMargin + halfWidth + kGap, y, contentWidth - halfWidth - kGap, h);
@@ -516,7 +563,10 @@ void StatsDashboardActivity::render(RenderLock&&) {
       }
       y += h + kGap;
     } else {
-      const int h = std::max(0, std::min({350, slotHeight, bottom - y}));
+      const int desired = chartAndMetric                   ? std::min(260, std::max(0, available - 120 - kGap))
+                          : widget.type == "legacy_import" ? 390
+                                                           : 160;
+      const int h = std::max(0, std::min(desired, bottom - y));
       drawWidget(widget, kMargin, y, contentWidth, h);
       y += h + kGap;
     }

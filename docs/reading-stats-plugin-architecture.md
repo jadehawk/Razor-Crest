@@ -105,9 +105,23 @@ preview alone never writes either legacy or native files. The native host accept
   recently opened book).
 
 Manifest labels, page sequence, and widget choices are plugin-defined.
+The dashboard host centers metric labels/values, wraps labels into up to two lines
+and presents book title, author and EPUB series metadata on multiple lines.
+Metric cards use bounded, screen-relative heights; the 7-day bars include
+weekday labels, the 28-day grid uses compact cells, and the All Books entry
+uses its plugin-defined label with the cached recorded-book count.
+Both charts end on the latest *recorded* day, not necessarily today.
+The active-days metric covers the native 366-day history, not only the
+visible 28-day grid. Qualified page turns are not unique pages read.
 The firmware contains no particular dashboard design, cloud service,
 or plugin identity. Invalid manifest widget types/fields are rejected
 rather than executed.
+
+Stock CrossPoint `develop` has an in-memory ReaderSession tracker and may
+emit `reader.session` events for subscribed plugins, but does not persist
+an equivalent historical statistics database. Saved reading progress is not
+a source for reconstructing session time or page turns, so the migration
+screen intentionally offers only CrossInk and vCodex sources.
 
 The standalone installable dashboard lives in the sibling repository
 `../reading-statistics.crosspoint-plugin/reading-statistics.crosspoint-plugin/`.
