@@ -210,6 +210,9 @@ void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
     return;
   }
 
+  if (const auto* scene = UITheme::getInstance().activeExternalScene()) {
+    if (scene->drawHints(renderer, btn1, btn2, btn3, btn4)) return;
+  }
   const GfxRenderer::Orientation orig_orientation = renderer.getOrientation();
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
 
@@ -398,6 +401,28 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
   // Every activity header renders through the FreeInkUI header + battery
   // indicator components, styled by the active theme's tokens (padding,
   // centering, underline). Non-interactive frame: no hit rects registered.
+  if (!gpio.hasTouch() && UITheme::getInstance().renderExternalScene(
+          ThemeScene::Region::Header, renderer,
+          Rect{0, 0, renderer.getScreenWidth(), rect.y + rect.height},
+          title ? title : "UNSC")) {
+    HeaderBackTapTarget::clear();
+    const int right = renderer.getScreenWidth() - 18;
+    const int middle = (rect.y + rect.height) / 2;
+    const int bx = right - 22;
+    const int by = middle - 6;
+    renderer.drawRect(bx, by, 20, 11, false);
+    renderer.fillRect(bx + 20, by + 3, 2, 5, false);
+    const int filled = std::clamp(static_cast<int>(powerManager.getBatteryPercentage()) / 25, 0, 4);
+    for (int i = 0; i < filled; ++i) renderer.fillRect(bx + 2 + i * 4, by + 2, 3, 7, false);
+    if (SETTINGS.hideBatteryPercentage != CrossPointSettings::HIDE_BATTERY_PERCENTAGE::HIDE_ALWAYS) {
+      char percent[8];
+      snprintf(percent, sizeof(percent), "%u%%", static_cast<unsigned>(powerManager.getBatteryPercentage()));
+      const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, percent);
+      renderer.drawText(SMALL_FONT_ID, bx - 8 - textWidth,
+                        middle - renderer.getLineHeight(SMALL_FONT_ID) / 2, percent, false);
+    }
+    return;
+  }
   namespace fui = freeink::ui;
   const auto spec = uiScaleSpec();
   fui::GfxRendererFrame<1> ui(renderer, spec.smallFontId, spec.bodyFontId, spec.titleFontId);
@@ -716,6 +741,9 @@ int BaseTheme::getMenuRowHeight(const GfxRenderer&) const { return UITheme::getI
 void BaseTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                                const std::function<std::string(int index)>& buttonLabel,
                                const std::function<UIIcon(int index)>& rowIcon) const {
+  if (const auto* scene = UITheme::getInstance().activeExternalScene()) {
+    if (scene->drawMenu(renderer, rect, buttonCount, selectedIndex, buttonLabel, rowIcon)) return;
+  }
   for (int i = 0; i < buttonCount; ++i) {
     const int tileY = BaseMetrics::values.verticalSpacing + rect.y +
                       static_cast<int>(i) * (BaseMetrics::values.menuRowHeight + BaseMetrics::values.menuSpacing);

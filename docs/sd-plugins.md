@@ -1,5 +1,9 @@
 # SD-card plugins
 
+Plugins implement functionality. SD UI themes and standalone wallpaper packs use
+separate package formats and firmware loaders; see the
+[shared extension/capability contract](sd-extension-contracts.md).
+
 CrossPoint keeps service integrations off the firmware. A plugin is a folder on
 the SD card; the firmware provides three generic, scheme-neutral surfaces that
 plugins compose. Adding or updating a plugin never requires a firmware build,

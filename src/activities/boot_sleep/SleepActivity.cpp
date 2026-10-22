@@ -25,6 +25,7 @@
 #include "CrossPointState.h"
 #include "activities/reader/ReaderUtils.h"
 #include "components/UITheme.h"
+#include "components/wallpapers/WallpaperPackRegistry.h"
 #include "fontIds.h"
 #include "images/Logo120.h"
 #include "images/MoonIcon.h"
@@ -631,7 +632,10 @@ void SleepActivity::onEnter() {
 
 bool SleepActivity::renderTimedSleepScreen() const {
   std::string selectedPath;
-  if (!selectRandomSleepFile("/.sleep", "/sleep", SleepRecentKind::Standard, selectedPath)) {
+  if (SETTINGS.wallpaperPackId[0] &&
+      !WallpaperPackRegistry::getInstance().selectImage(SETTINGS.wallpaperPackId, selectedPath))
+    LOG_ERR("SLP", "Selected wallpaper pack unavailable; checking the regular pool");
+  if (selectedPath.empty() && !selectRandomSleepFile("/.sleep", "/sleep", SleepRecentKind::Standard, selectedPath)) {
     LOG_DBG("SLP", "Timed refresh: no valid /.sleep or /sleep wallpaper");
     return false;
   }
@@ -664,11 +668,15 @@ bool SleepActivity::renderTimedSleepScreen() const {
 }
 
 void SleepActivity::renderCustomSleepScreen() const {
+  std::string selectedPath;
+  if (SETTINGS.wallpaperPackId[0] &&
+      !WallpaperPackRegistry::getInstance().selectImage(SETTINGS.wallpaperPackId, selectedPath))
+    LOG_ERR("SLP", "Selected wallpaper pack unavailable; checking the regular pool");
   // Look for sleep.bmp on the root of the sd card to determine if we should
   // render a custom sleep screen instead of the default.
   // This takes priority over both custom sleep directories.
   HalFile file;
-  if (Storage.openFileForRead("SLP", "/sleep.bmp", file)) {
+  if (selectedPath.empty() && Storage.openFileForRead("SLP", "/sleep.bmp", file)) {
     Bitmap bitmap(file, true,
                   renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported() &&
                       display.getController() == HalDisplay::Controller::SSD1677 &&
@@ -682,8 +690,7 @@ void SleepActivity::renderCustomSleepScreen() const {
     file.close();
   }
 
-  std::string selectedPath;
-  selectRandomSleepFile("/.sleep", "/sleep", SleepRecentKind::Standard, selectedPath);
+  if (selectedPath.empty()) selectRandomSleepFile("/.sleep", "/sleep", SleepRecentKind::Standard, selectedPath);
 
   if (!selectedPath.empty()) {
     HalFile randFile;
@@ -715,6 +722,14 @@ void SleepActivity::renderDefaultSleepScreen() const {
   const auto pageHeight = renderer.getScreenHeight();
 
   renderer.clearScreen();
+  // User-selected custom pools and cover/quick-resume modes bypass this path.
+  if ((SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::DARK ||
+       SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::LIGHT) &&
+      UITheme::getInstance().renderExternalScene(ThemeScene::Region::Sleep, renderer,
+                                                 Rect{0, 0, pageWidth, pageHeight})) {
+    renderer.displayBuffer(kSleepClean);
+    return;
+  }
   renderer.drawImage(Logo120, (pageWidth - 200) / 2, (pageHeight - 200) / 2, 200, 200);
   renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 110, firmwareidentity::ID, true, EpdFontFamily::BOLD);
   renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 135, tr(STR_SLEEPING));

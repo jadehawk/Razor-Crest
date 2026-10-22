@@ -14,9 +14,11 @@
 #include "RecentBooksStore.h"
 #include "components/CoverGridHomeUi.h"
 #include "components/themes/BaseTheme.h"
+#include "components/themes/ThemePackRegistry.h"
 #include "components/themes/lyra/Lyra3CoversTheme.h"
 #include "components/themes/lyra/LyraTheme.h"
 #include "components/themes/roundedraff/RoundedRaffTheme.h"
+#include "fontIds.h"
 
 UITheme UITheme::instance;
 
@@ -25,9 +27,46 @@ UITheme::UITheme() {
   setTheme(themeType);
 }
 
+// UI theme font ownership is separate from the reader's selected font family.
+void UITheme::syncFonts() {
+  extern GfxRenderer renderer;
+  if (renderer.getFontMap().count(UI_10_FONT_ID) == 0) return;  // early boot
+  themeFonts.deactivate(renderer);
+  if (externalActive && !externalScene.fontFiles()[0].empty() &&
+      !themeFonts.activate(renderer, externalScene.fontFiles())) {
+    LOG_ERR("THEME", "External font activation failed; retaining stock UI fonts");
+  }
+}
+
 void UITheme::reload() {
+  if (SETTINGS.sdThemeId[0] != '\0') {
+    ThemeMetrics candidate{};
+    std::string scenePath;
+    if (ThemePackRegistry::getInstance().loadMetrics(SETTINGS.sdThemeId, candidate, &scenePath)) {
+      auto theme = makeUniqueNoThrow<BaseTheme>();
+      ThemeScene scene;
+      if (theme && scene.load(scenePath)) {
+        currentTheme = std::move(theme);
+        externalScene = std::move(scene);
+        externalActive = true;
+        externalMetrics = candidate;
+        currentMetrics = &externalMetrics;
+        metricsValid = false;
+        syncFonts();
+        LOG_INF("THEME", "Activated external theme: %s", SETTINGS.sdThemeId);
+        return;
+      }
+      LOG_ERR("THEME", "Cannot load external scene or theme, using Classic");
+    } else {
+      LOG_ERR("THEME", "Invalid or missing external theme %s, using Classic", SETTINGS.sdThemeId);
+    }
+    setTheme(CrossPointSettings::CLASSIC);
+    syncFonts();
+    return;
+  }
   auto themeType = static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme);
   setTheme(themeType);
+  syncFonts();
 }
 
 bool UITheme::supportsCoverGrid() { return HalMemory::getPsramHeap().totalBytes > 0; }
@@ -36,7 +75,15 @@ bool UITheme::hasCoverGridHome() { return SETTINGS.uiTheme == CrossPointSettings
 
 void UITheme::drawCoverGridHome(CoverGridHomeUi& home) { home.renderUi(); }
 
+bool UITheme::renderExternalScene(ThemeScene::Region region, const GfxRenderer& renderer, Rect area, const char* title,
+                                  const std::vector<RecentBook>* books, int selection, ThemeScene::Phase phase) const {
+  return externalActive && externalScene.hasRegion(region) &&
+         externalScene.draw(renderer, region, area, title, books, selection, phase);
+}
+
 void UITheme::setTheme(CrossPointSettings::UI_THEME type) {
+  externalActive = false;
+  externalScene = ThemeScene{};
   if (type == CrossPointSettings::COVER_GRID && !supportsCoverGrid()) type = CrossPointSettings::LYRA;
 
   switch (type) {

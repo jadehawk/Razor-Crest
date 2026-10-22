@@ -519,9 +519,36 @@ void HomeActivity::render(RenderLock&&) {
   coverRectW = content.width;
   coverRectH = metrics.homeCoverTileHeight;
 
-  GUI.drawRecentBookCover(renderer, Rect{content.x, metrics.homeTopPadding, content.width, metrics.homeCoverTileHeight},
-                          recentBooks, selectorIndex, coverRendered, coverBufferStored, bufferRestored,
-                          std::bind(&HomeActivity::storeCoverBuffer, this));
+  const Rect tile{content.x, metrics.homeTopPadding, content.width, metrics.homeCoverTileHeight};
+  const auto& uiTheme = UITheme::getInstance();
+  const ThemeScene* external = uiTheme.activeExternalScene();
+  const bool externalHome = external && external->hasRegion(ThemeScene::Region::Home);
+  bool themedHome = false;
+  if (externalHome) {
+    bool backgroundReady = bufferRestored;
+    if (!backgroundReady) {
+      backgroundReady = uiTheme.renderExternalScene(ThemeScene::Region::Home, renderer, tile, nullptr, &recentBooks,
+                                                    selectorIndex, ThemeScene::Phase::Background);
+      if (backgroundReady) {
+        coverBufferStored = storeCoverBuffer();
+        coverRendered = coverBufferStored;
+      }
+    }
+    if (backgroundReady)
+      themedHome = uiTheme.renderExternalScene(ThemeScene::Region::Home, renderer, tile, nullptr, &recentBooks,
+                                               selectorIndex, ThemeScene::Phase::Foreground);
+  }
+  if (!themedHome) {
+    if (externalHome) {
+      coverRendered = false;
+      coverBufferStored = false;
+      bufferRestored = false;
+      renderer.fillRect(tile.x, tile.y, tile.width, tile.height, false);
+    }
+
+    GUI.drawRecentBookCover(renderer, tile, recentBooks, selectorIndex, coverRendered, coverBufferStored,
+                            bufferRestored, std::bind(&HomeActivity::storeCoverBuffer, this));
+  }
 
   // Build menu items dynamically
   std::vector<const char*> menuItems = {tr(STR_BROWSE_FILES), tr(STR_LIBRARY), tr(STR_FILE_TRANSFER),
@@ -560,6 +587,11 @@ void HomeActivity::render(RenderLock&&) {
     requestUpdate();
   } else if (!recentsLoaded && !recentsLoading) {
     recentsLoading = true;
+    if (themedHome) {
+      recentsLoaded = true;
+      recentsLoading = false;
+      return;
+    }
     const int themeThumbHeight = GUI.homeCoverThumbHeight(renderer);
     loadRecentCovers(themeThumbHeight > 0 ? themeThumbHeight : metrics.homeCoverHeight);
   }

@@ -205,6 +205,12 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
 
   // UI Theme
   enum UI_THEME { CLASSIC = 0, LYRA = 1, LYRA_3_COVERS = 2, ROUNDEDRAFF = 3, COVER_GRID = 4 };
+  enum SETTINGS_NAVIGATION {
+    SETTINGS_NAV_LIST = 0,
+    SETTINGS_NAV_TABS = 1,
+    SETTINGS_NAV_THEME = 2,
+    SETTINGS_NAV_COUNT = 3
+  };
 
   // Image rendering in EPUB reader
   enum IMAGE_RENDERING { IMAGES_DISPLAY = 0, IMAGES_PLACEHOLDER = 1, IMAGES_SUPPRESS = 2, IMAGE_RENDERING_COUNT };
@@ -246,6 +252,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
 
   // Sleep screen settings
   uint8_t sleepScreen = DARK;
+  char wallpaperPackId[48] = "";  // Empty selects the existing /.sleep and /sleep pool.
   // Optional timer-driven refresh for Custom sleep-screen wallpapers. Off by default.
   uint8_t timedSleepScreenRefresh = TIMED_SLEEP_REFRESH_OFF;
   // Night mode: inverted output polarity, applied to every activity per
@@ -349,6 +356,9 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t longPressMenuFunction = LP_MENU_DISABLED;
   // UI Theme
   uint8_t uiTheme = LYRA;
+  uint8_t settingsNavigation = SETTINGS_NAV_THEME;  // Theme preference; List if theme does not specify.
+  // External theme ID: <collection-id>/<theme-id>. Empty selects a built-in theme.
+  char sdThemeId[96] = "";
   // Sunlight fading compensation
   uint8_t fadingFix = 0;
   // Power button return from footnotes (1 = enabled, 0 = disabled)

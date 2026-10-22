@@ -27,6 +27,7 @@ SettingsListActivity::SettingsListActivity(GfxRenderer& renderer, MappedInputMan
 
 void SettingsListActivity::onEnter() {
   UiListActivity::onEnter();
+  tabbedPresented = false;
   rebuildRows();
 }
 
@@ -36,6 +37,13 @@ void SettingsListActivity::onExit() {
 }
 
 void SettingsListActivity::loop() {
+  if (UITheme::getInstance().useTabbedSettings() && !tabbedPresented) {
+    tabbedPresented = true;
+    const auto target = pendingSection == SettingsSection::End ? SettingsSection::Display : pendingSection;
+    pendingSection = SettingsSection::End;
+    openSection(target);
+    return;
+  }
   if (pendingSection != SettingsSection::End) {
     const SettingsSection section = pendingSection;
     pendingSection = SettingsSection::End;
@@ -92,7 +100,12 @@ void SettingsListActivity::openSection(const SettingsSection section) {
     LOG_ERR("SETTINGS", "OOM: SettingsActivity");
     return;
   }
-  startActivityForResult(std::move(activity), [this](const ActivityResult&) {
+  const bool openedTabbed = UITheme::getInstance().useTabbedSettings();
+  startActivityForResult(std::move(activity), [this, openedTabbed](const ActivityResult&) {
+    if (openedTabbed && UITheme::getInstance().useTabbedSettings()) {
+      onGoHome();
+      return;
+    }
     rebuildRows();
     // A theme change inside the section must restyle this screen too.
     resetUi();

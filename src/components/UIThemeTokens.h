@@ -18,6 +18,7 @@ inline freeink::ui::ThemeTokens uiThemeTokens(const freeink::ui::GfxRendererTarg
   // grows individual rows for wrapping, subtitles and icons.
   if (!BoardConfig::hasTouch()) tokens.listMinRowHeight = static_cast<int16_t>(metrics.listRowHeight);
   tokens.listRowGap = static_cast<int16_t>(metrics.listRowGap);
+  if (UITheme::getInstance().hasExternalListSeparators()) tokens.listSeparator = fui::Paint::solid(fui::Color::Black);
   tokens.listRowRadius = static_cast<uint8_t>(metrics.listRowRadius);
   tokens.listInset = static_cast<int16_t>(metrics.listInset);
   tokens.listSidePadding = static_cast<int16_t>(metrics.listSidePadding);

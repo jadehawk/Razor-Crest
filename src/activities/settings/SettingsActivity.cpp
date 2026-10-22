@@ -33,12 +33,15 @@
 #include "SilentRestart.h"
 #include "StatusBarSettingsActivity.h"
 #include "TextSettingsActivity.h"
+#include "WallpaperCollectionActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "activities/util/IntervalSelectionActivity.h"
 #include "components/UITheme.h"
 #include "components/UIThemeTokens.h"
 #include "components/UiAppHelpers.h"
+#include "components/themes/ThemePackRegistry.h"
+#include "components/wallpapers/WallpaperPackRegistry.h"
 #include "fontIds.h"
 #include "util/PluginEvents.h"
 
@@ -102,12 +105,80 @@ void SettingsActivity::rebuildSettings() {
   DictionaryRegistry::discover(dictionaries);
 
   auto all = getSettingsList(&sdFontSystem.registry(), &dictionaries);
+  if (section == SettingsSection::Display) {
+    auto& registry = ThemePackRegistry::getInstance();
+    registry.scan();
+    for (auto& setting : all) {
+      if (setting.nameId != StrId::STR_UI_THEME) continue;
+      const auto builtins = homeThemeValues();
+      std::vector<std::string> labels;
+      std::vector<std::string> externalIds;
+      labels.reserve(builtins.size() + registry.choices().size());
+      externalIds.reserve(builtins.size() + registry.choices().size());
+      for (StrId id : builtins) {
+        labels.emplace_back(I18N.get(id));
+        externalIds.emplace_back();
+      }
+      for (const auto& theme : registry.choices()) {
+        labels.push_back(theme.label);
+        externalIds.push_back(theme.id);
+      }
+      auto runtimeSetting = SettingInfo::DynamicEnum(
+          StrId::STR_UI_THEME, {},
+          [externalIds, count = builtins.size()]() -> uint8_t {
+            if (SETTINGS.sdThemeId[0] != '\0') {
+              for (size_t i = count; i < externalIds.size(); ++i) {
+                if (externalIds[i] == SETTINGS.sdThemeId) return static_cast<uint8_t>(i);
+              }
+              return 0;  // Unavailable external theme renders as Classic.
+            }
+            return SETTINGS.uiTheme < count ? SETTINGS.uiTheme : 0;
+          },
+          [externalIds, count = builtins.size()](uint8_t index) {
+            if (index >= externalIds.size()) return;
+            if (index < count) {
+              SETTINGS.sdThemeId[0] = '\0';
+              SETTINGS.uiTheme = index;
+            } else {
+              const auto& id = externalIds[index];
+              if (id.size() >= sizeof(SETTINGS.sdThemeId)) return;
+              std::memcpy(SETTINGS.sdThemeId, id.c_str(), id.size() + 1);
+              SETTINGS.uiTheme = CrossPointSettings::CLASSIC;
+            }
+          },
+          nullptr, StrId::STR_CAT_DISPLAY);
+      runtimeSetting.enumStringValues = std::move(labels);
+      setting = std::move(runtimeSetting);
+      break;
+    }
+  }
+
+  // Resolve the selected collection's title only while Custom sleep is active.
+  // No scan or wallpaper UI is needed for Dark/Light, Cover or other modes.
+  if (section == SettingsSection::Display && SETTINGS.sleepScreen == CrossPointSettings::CUSTOM)
+    WallpaperPackRegistry::getInstance().scan();
 
   const size_t count = std::count_if(all.begin(), all.end(), [this](const SettingInfo& setting) {
     return sectionFor(setting) == section && showOnDevice(setting);
   });
+  // Reserve only visible rows on X3, not every setting in collapsed groups.
+  size_t subgroupRows = 0;
+  if (tabbed && section == SettingsSection::General) {
+    subgroupRows = 2;  // Disclosure headers.
+    if (expandedSystemGroups & 1) {
+      subgroupRows += std::count_if(all.begin(), all.end(), [](const SettingInfo& info) {
+        return sectionFor(info) == SettingsSection::Library && showOnDevice(info);
+      });
+    }
+    if (expandedSystemGroups & 2) {
+      subgroupRows += std::count_if(all.begin(), all.end(), [](const SettingInfo& info) {
+        return sectionFor(info) == SettingsSection::Network && showOnDevice(info);
+      });
+      subgroupRows += 5;  // Connectivity actions, including optional Bluetooth.
+    }
+  }
   settings.clear();
-  settings.reserve(count + EXTRA_ROWS_PER_SECTION);
+  settings.reserve(count + EXTRA_ROWS_PER_SECTION + subgroupRows);
 
   const auto addAction = [this](SettingsSection target, StrId name, SettingAction action) {
     if (target == section) settings.push_back(SettingInfo::Action(name, action));
@@ -127,7 +198,13 @@ void SettingsActivity::rebuildSettings() {
 
   for (auto& setting : all) {
     if (sectionFor(setting) != section || !showOnDevice(setting)) continue;
+    const bool sleepScreenRow = setting.valuePtr == &CrossPointSettings::sleepScreen;
     settings.push_back(std::move(setting));
+    // Only Custom sleep uses the independent wallpaper pack registry.
+    // Keep its picker adjacent to Sleep Screen, never at the foot of Display.
+    if (section == SettingsSection::Display && sleepScreenRow && SETTINGS.sleepScreen == CrossPointSettings::CUSTOM) {
+      settings.push_back(SettingInfo::Action(StrId::STR_SLEEP_SCREEN, SettingAction::WallpaperCollection));
+    }
   }
 
   // Clock configuration only exists where the RTC probe found hardware.
@@ -154,15 +231,43 @@ void SettingsActivity::rebuildSettings() {
     addAction(SettingsSection::General, StrId::STR_SD_FIRMWARE_UPDATE, SettingAction::SdFirmwareUpdate);
   }
   addAction(SettingsSection::General, StrId::STR_ABOUT, SettingAction::About);
+  // Four historical tabs; the newer groups expand inline under System.
+  if (tabbed && section == SettingsSection::General) {
+    settings.push_back(SettingInfo::Action(StrId::STR_LIBRARY, SettingAction::ExpandLibrary));
+    if (expandedSystemGroups & 1) {
+      for (auto& setting : all)
+        if (sectionFor(setting) == SettingsSection::Library && showOnDevice(setting))
+          settings.push_back(std::move(setting));
+    }
+    settings.push_back(SettingInfo::Action(StrId::STR_SETTINGS_NETWORK, SettingAction::ExpandConnectivity));
+    if (expandedSystemGroups & 2) {
+      for (auto& setting : all)
+        if (sectionFor(setting) == SettingsSection::Network && showOnDevice(setting))
+          settings.push_back(std::move(setting));
+      settings.push_back(SettingInfo::Action(StrId::STR_WIFI_NETWORKS, SettingAction::Network));
+      if (bleturner::status().compiledIn)
+        settings.push_back(SettingInfo::Action(StrId::STR_BT_PAGE_TURNER, SettingAction::Bluetooth));
+      settings.push_back(SettingInfo::Action(StrId::STR_KOREADER_SYNC, SettingAction::KOReaderSync));
+      settings.push_back(SettingInfo::Action(StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser));
+      settings.push_back(SettingInfo::Action(StrId::STR_PLUGINS, SettingAction::Plugins));
+    }
+  }
   rebuildRowItems();
 }
 
 SettingsActivity::SettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                    const SettingsSection section)
-    : UiListActivity("Settings", renderer, mappedInput), section(section) {}
+    : UiTabListActivity("Settings", renderer, mappedInput),
+      section(section),
+      tabbed(UITheme::getInstance().useTabbedSettings()) {
+  if (tabbed && (section == SettingsSection::Library || section == SettingsSection::Network)) {
+    expandedSystemGroups = section == SettingsSection::Library ? 1 : 2;
+    this->section = SettingsSection::General;
+  }
+}
 
 void SettingsActivity::onEnter() {
-  UiListActivity::onEnter();
+  UiTabListActivity::onEnter();
 
   preserveQuickResumeTimeoutOn =
       SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT;
@@ -172,17 +277,85 @@ void SettingsActivity::onEnter() {
   rebuildSettings();
 }
 
+SettingsSection SettingsActivity::tabSection(int index) {
+  constexpr SettingsSection sections[] = {SettingsSection::Display, SettingsSection::Reader, SettingsSection::Controls,
+                                          SettingsSection::General};
+  return sections[index >= 0 && index < 4 ? index : 0];
+}
+
+int SettingsActivity::activeTab() const {
+  for (int i = 0; i < 4; ++i) {
+    if (tabSection(i) == section) return i;
+  }
+  return 3;  // System is the fallback for legacy Library/Connectivity deep links.
+}
+
+void SettingsActivity::switchSection(SettingsSection next) {
+  if (!tabbed || next >= SettingsSection::End || section == next) return;
+  section = next;
+  rebuildSettings();
+  requestUpdate();
+}
+
+void SettingsActivity::stepTab(int direction) {
+  const int count = tabCount();
+  const int next = (activeTab() + (direction > 0 ? 1 : count - 1)) % count;
+  switchSection(tabSection(next));
+}
+
+bool SettingsActivity::handleButtons() {
+  if (!tabbed) return UiListActivity::handleButtons();
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    finish();
+    return true;
+  }
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    if (ringPos() == 0)
+      stepTab(1);
+    else if (ringPos() - 1 < listCount())
+      activateIndex(ringPos() - 1);
+    return true;
+  }
+  return false;
+}
+
+void SettingsActivity::navigateButtons() {
+  if (tabbed)
+    UiTabListActivity::navigateButtons();
+  else
+    UiListActivity::navigateButtons();
+}
+
+void SettingsActivity::onRowAction(const fui::ActionEvent& event) {
+  if (tabbed)
+    UiTabListActivity::onRowAction(event);
+  else
+    UiListActivity::onRowAction(event);
+}
+
 // Rebuilds rowValues_/rowItems_ (label + actionValue) for settings.
 // Structural — call only when the setting list changes, never from
 // buildScreen(), which only refreshes rowValues_ content and rowItems_[].value
 // pointers in place.
 void SettingsActivity::rebuildRowItems() {
   rowValues_.assign(settings.size(), std::string());
+  rowLabels_.assign(settings.size(), std::string());
   rowItems_.clear();
   rowItems_.reserve(settings.size());
+  bool inSubgroup = false;
   for (size_t i = 0; i < settings.size(); i++) {
     fui::ListItem item;
-    item.label = I18N.get(settings[i].nameId);
+    const auto action = settings[i].action;
+    if (action == SettingAction::ExpandLibrary || action == SettingAction::ExpandConnectivity) {
+      inSubgroup = true;
+    }
+    if (tabbed && section == SettingsSection::General && inSubgroup && action != SettingAction::ExpandLibrary &&
+        action != SettingAction::ExpandConnectivity) {
+      rowLabels_[i] = std::string("  ") + I18N.get(settings[i].nameId);
+      item.label = rowLabels_[i].c_str();
+    } else {
+      item.label = action == SettingAction::WallpaperCollection ? "Wallpaper Collection" : I18N.get(settings[i].nameId);
+    }
     item.actionValue = static_cast<int16_t>(i);
     rowItems_.push_back(item);
   }
@@ -197,7 +370,7 @@ void SettingsActivity::activateIndex(const int index) {
   // Most rows repaint a different surface (popup, sub-activity, new value);
   // a lingering tap flash would gray an unrelated element.
   app.clearTapFlash();
-  nav.selected = index;
+  activeNav().selected = tabbed ? index + 1 : index;
   toggleSelectedSetting();
   requestUpdate();
 }
@@ -205,9 +378,11 @@ void SettingsActivity::activateIndex(const int index) {
 void SettingsActivity::applyUiSettingChange(uint8_t CrossPointSettings::* valuePtr) {
   // Theme changes take effect immediately, on this screen — reload the theme
   // and re-derive the app's tokens so the very next repaint is in the new look.
-  if (valuePtr != &CrossPointSettings::uiTheme) {
+  if (valuePtr == &CrossPointSettings::settingsNavigation) {
+    finish();  // Root activity will open the chosen list or tabs view.
     return;
   }
+  if (valuePtr != &CrossPointSettings::uiTheme) return;
   UITheme::getInstance().reload();
   // Re-derive the shared tokens for the new look; the gate stays closed until
   // the repaint that rebuilds the interaction table in the new layout.
@@ -220,7 +395,7 @@ bool SettingsActivity::handleCustomInput() {
 
 void SettingsActivity::toggleSelectedSetting() {
   mappedInput.resetHomeButtonInput();
-  const int selectedSetting = nav.selected;
+  const int selectedSetting = selectedSettingIndex();
   if (selectedSetting < 0 || selectedSetting >= static_cast<int>(settings.size())) {
     return;
   }
@@ -251,7 +426,7 @@ void SettingsActivity::toggleSelectedSetting() {
             if (valuePtr == &CrossPointSettings::timedSleepScreenRefresh && x3 && idx > 0 &&
                 idx != SETTINGS.timedSleepScreenRefresh &&
                 idx < static_cast<int>(sizeof(X3_TIMED_SLEEP_ESTIMATED_DAYS))) {
-              const auto intervalLabels = settings[nav.selected].enumLabels();
+              const auto intervalLabels = settings[selectedSettingIndex()].enumLabels();
               char message[256];
               std::snprintf(message, sizeof(message), I18N.get(StrId::STR_X3_TIMED_WARNING_BODY),
                             static_cast<unsigned>(X3_TIMED_SLEEP_ESTIMATED_DAYS[idx]), I18N.get(intervalLabels[idx]));
@@ -289,8 +464,19 @@ void SettingsActivity::toggleSelectedSetting() {
     const uint8_t cur = setting.valueGetter();
     if (totalValues > 2) {
       const auto valueSetter = setting.valueSetter;
-      auto onSelect = [this, valueSetter, sleepScreenChanged, quickResumeTimeoutChanged](int idx) {
+      const bool themeChanged = setting.nameId == StrId::STR_UI_THEME;
+      auto onSelect = [this, valueSetter, sleepScreenChanged, quickResumeTimeoutChanged, themeChanged](int idx) {
         valueSetter(idx);
+        if (themeChanged) {
+          UITheme::getInstance().reload();
+          // Follow-theme mode may change the entire Settings navigation.
+          if (UITheme::getInstance().useTabbedSettings() != tabbed) {
+            SETTINGS.saveToFile();
+            finish();
+            return;
+          }
+          resetUi();
+        }
         syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
         SETTINGS.saveToFile();
         rebuildSettings();
@@ -317,6 +503,28 @@ void SettingsActivity::toggleSelectedSetting() {
     auto resultHandler = [this](const ActivityResult&) { SETTINGS.saveToFile(); };
 
     switch (setting.action) {
+      case SettingAction::WallpaperCollection: {
+        auto picker = makeUniqueNoThrow<WallpaperCollectionActivity>(renderer, mappedInput);
+        if (!picker) {
+          LOG_ERR("SETTINGS", "OOM: WallpaperCollectionActivity");
+          return;
+        }
+        startActivityForResult(std::move(picker), [this](const ActivityResult&) {
+          rebuildSettings();
+          requestUpdate();
+        });
+        return;
+      }
+      case SettingAction::ExpandLibrary:
+      case SettingAction::ExpandConnectivity: {
+        const uint8_t flag = setting.action == SettingAction::ExpandLibrary ? 1 : 2;
+        expandedSystemGroups ^= flag;
+        rebuildSettings();
+        // The expanding header retains focus; List mode never uses these actions.
+        activeNav().selected = selectedSetting + 1;
+        requestUpdate();
+        return;
+      }
       case SettingAction::HomeButton: {
         // Activities must outlive this call and are owned by the activity stack.
         auto activity = makeUniqueNoThrow<HomeButtonSettingsActivity>(renderer, mappedInput);
@@ -451,11 +659,17 @@ void SettingsActivity::toggleSelectedSetting() {
 
   syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
   SETTINGS.saveToFile();
+  const bool externalThemeChanged = setting.nameId == StrId::STR_UI_THEME && !setting.valuePtr;
   const auto valuePtr = setting.valuePtr;  // rebuildSettings() replaces `setting`
   rebuildSettings();
   applyUiSettingChange(valuePtr);
+  if (externalThemeChanged) {
+    UITheme::getInstance().reload();
+    resetUi();
+  }
   // Rows can appear/disappear with a change (e.g. the footnote-back toggle).
-  nav.selected = std::min(selectedSetting, static_cast<int>(settings.size()) - 1);
+  const int clamped = std::max(0, std::min(selectedSetting, static_cast<int>(settings.size()) - 1));
+  activeNav().selected = tabbed ? clamped + 1 : clamped;
 }
 
 void SettingsActivity::syncQuickResumeTimeoutForSleepScreen(bool sleepScreenChanged, bool quickResumeTimeoutChanged) {
@@ -497,6 +711,20 @@ void SettingsActivity::openSleepTimeoutPicker() {
 }
 
 std::string SettingsActivity::settingValueText(const SettingInfo& setting) {
+  if (setting.action == SettingAction::WallpaperCollection) {
+    if (!SETTINGS.wallpaperPackId[0]) return "All wallpapers";
+    for (const auto& pack : WallpaperPackRegistry::getInstance().choices()) {
+      if (pack.id == SETTINGS.wallpaperPackId) {
+        // Display settings have a right-aligned value: keep long pack titles
+        // inside that column. The selection screen shows the complete title.
+        if (pack.label.size() <= 22) return pack.label;
+        size_t end = 19;
+        while (end > 0 && (static_cast<unsigned char>(pack.label[end]) & 0xc0) == 0x80) --end;
+        return pack.label.substr(0, end) + "...";
+      }
+    }
+    return "Unavailable";
+  }
   if (setting.action == SettingAction::HomeButton) return tr(STR_CONFIGURE);
   if (setting.action == SettingAction::Plugins) return SETTINGS.pluginsEnabled ? tr(STR_ENABLED) : tr(STR_DISABLED);
   if (setting.type == SettingType::ENUM && setting.valuePtr != nullptr) {
@@ -538,7 +766,10 @@ void SettingsActivity::buildScreen(UiScreen& screen) {
   // Content below the GUI.drawHeader band, above the button hints.
   screen.setContentMarginFromScreen(fui::Insets{static_cast<int16_t>(metrics.topPadding + metrics.headerHeight), 0,
                                                 static_cast<int16_t>(metrics.buttonHintsHeight), 0});
-  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
+  if (tabbed)
+    buildTabBar(screen);
+  else
+    screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 
   // rowItems_ (label/actionValue) was built by rebuildRowItems(); only the
   // live value text needs refreshing here, by assigning into the existing
@@ -549,6 +780,12 @@ void SettingsActivity::buildScreen(UiScreen& screen) {
     const bool checkbox = setting.type == SettingType::TOGGLE ||
                           (setting.type == SettingType::ENUM && setting.enumStringValues.empty() &&
                            labels.size() == 2 && labels[0] == StrId::STR_STATE_OFF && labels[1] == StrId::STR_STATE_ON);
+    if (setting.action == SettingAction::ExpandLibrary || setting.action == SettingAction::ExpandConnectivity) {
+      const uint8_t bit = setting.action == SettingAction::ExpandLibrary ? 1 : 2;
+      rowValues_[i] = (expandedSystemGroups & bit) ? "[-]" : "[+]";
+      rowItems_[i].value = rowValues_[i].c_str();
+      continue;
+    }
     if (checkbox && (setting.valuePtr || setting.valueGetter)) {
       const bool checked = setting.valuePtr ? SETTINGS.*(setting.valuePtr) != 0 : setting.valueGetter() != 0;
       rowValues_[i].clear();
@@ -565,25 +802,32 @@ void SettingsActivity::buildScreen(UiScreen& screen) {
   props.action = ACTION_ROW;
   props.inputMask = fui::InputTouch;  // physical buttons stay in loop()
   props.valueInset = 8;               // air between the value and the row edge
-  // Touch uses the standard list sizing, as in Bluetooth; buttons keep compact labels.
-  // maxLines also marks smallText as explicit so the list does not replace it with bodyText.
-  props.labelText = mappedInput.hasTouch() ? screen.theme().bodyText : screen.theme().smallText;
+  // Consistent section typography: X3 labels and values now use the same
+  // body-size UI font as the Settings category list.
+  // Two-line wrapping remains available; FreeInkUI measures the larger font
+  // and expands each row instead of clipping long setting labels.
+  props.labelText = screen.theme().bodyText;
   props.labelText.maxLines = 2;
-  syncListViewport(screen, props);
+  props.valueText = screen.theme().bodyText;
+  if (tabbed)
+    syncTabListViewport(screen, props);
+  else
+    syncListViewport(screen, props);
   screen.list(props);
 }
 
 void SettingsActivity::drawFooter() {
-  const int selected = nav.selected;
+  const int selected = selectedSettingIndex();
   const bool picker =
       selected >= 0 && selected < static_cast<int>(settings.size()) &&
       (settings[selected].type == SettingType::ACTION || settings[selected].nameId == StrId::STR_TIME_TO_SLEEP);
   const auto labels =
-      mappedInput.mapLabels(tr(STR_BACK), picker ? tr(STR_SELECT) : tr(STR_TOGGLE), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+      mappedInput.mapLabels(tr(STR_BACK), (tabbed && ringPos() == 0) || picker ? tr(STR_SELECT) : tr(STR_TOGGLE),
+                            tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
 
 void SettingsActivity::render(RenderLock&& lock) {
   if (optionPopup.processRender(renderer, mappedInput)) return;
-  UiListActivity::render(std::move(lock));
+  UiTabListActivity::render(std::move(lock));
 }

@@ -92,6 +92,8 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   doc["frontButtonConfirm"] = frontButtonConfirm;
   doc["frontButtonLeft"] = frontButtonLeft;
   doc["frontButtonRight"] = frontButtonRight;
+  if (sdThemeId[0] != '\0') doc["sdThemeId"] = sdThemeId;
+  if (wallpaperPackId[0] != '\0') doc["wallpaperPackId"] = wallpaperPackId;
   // Font family and size — both use dynamic getter/setters in SettingsList (the
   // option lists depend on the SD font registry), so the generic loop skips them.
   doc["fontFamily"] = STORED_NOTOSANS;
@@ -280,6 +282,8 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   }
   if (storedFontFamily != STORED_NOTOSANS) needsResave = true;
   // Dictionary folder name — uses dynamic getter/setter in SettingsList, load manually
+  copyToField(sdThemeId, doc["sdThemeId"] | "", sizeof(sdThemeId));
+  copyToField(wallpaperPackId, doc["wallpaperPackId"] | "", sizeof(wallpaperPackId));
   copyToField(dictionaryName, doc["dictionaryName"] | "", sizeof(dictionaryName));
   // Language -- stored as code string for stability across enum reorders.
   if (doc["language"].is<const char*>()) {

@@ -11,6 +11,7 @@ class SettingsListActivity final : public UiListActivity {
   // Section opened on the first loop pass (End = none), e.g. returning to
   // Network after the Wi-Fi rows' silent restart.
   SettingsSection pendingSection;
+  bool tabbedPresented = false;
 
   std::array<freeink::ui::ListItem, SETTINGS_SECTION_COUNT> rowItems_{};
 

@@ -8,7 +8,7 @@
 
 #include "CrossPointSettings.h"
 #include "SettingsSection.h"
-#include "activities/UiListActivity.h"
+#include "activities/UiTabListActivity.h"
 #include "components/OptionPopup.h"
 
 enum class SettingType { TOGGLE, ENUM, ACTION, VALUE, STRING };
@@ -33,6 +33,9 @@ enum class SettingAction {
   KeyboardLayouts,
   HomeButton,
   About,
+  ExpandLibrary,
+  ExpandConnectivity,
+  WallpaperCollection,
 };
 
 struct SettingInfo {
@@ -184,8 +187,10 @@ struct SettingInfo {
 
 // The rows of one SettingsSection; activating a row toggles/cycles it, opens
 // its option popup, or launches its sub-screen.
-class SettingsActivity final : public UiListActivity {
-  const SettingsSection section;
+class SettingsActivity final : public UiTabListActivity {
+  SettingsSection section;
+  const bool tabbed;
+  uint8_t expandedSystemGroups = 0;  // Library and Connectivity accordion bits.
   std::vector<SettingInfo> settings;
 
   bool preserveQuickResumeTimeoutOn = false;
@@ -197,9 +202,24 @@ class SettingsActivity final : public UiListActivity {
   // changes; rowValues_ holds the live value text, refreshed every
   // buildScreen() by assigning into the existing strings.
   std::vector<std::string> rowValues_;
+  std::vector<std::string> rowLabels_;  // Own indented subgroup labels.
   std::vector<freeink::ui::ListItem> rowItems_;
 
   void rebuildSettings();
+  int selectedSettingIndex() const { return tabbed ? ringPos() - 1 : nav.selected.load(); }
+  void switchSection(SettingsSection next);
+  static SettingsSection tabSection(int index);
+  int tabCount() const override { return 4; }
+  int activeTab() const override;
+  const char* tabLabel(int index) const override {
+    return I18N.get(SETTINGS_SECTION_TITLES[static_cast<size_t>(tabSection(index))]);
+  }
+  void onTabAction(int index) override { switchSection(tabSection(index)); }
+  void stepTab(int direction) override;
+  bool handleButtons() override;
+  freeink::ui::ListNav& activeNav() override { return tabbed ? UiTabListActivity::activeNav() : nav; }
+  void onRowAction(const freeink::ui::ActionEvent& event) override;
+  void navigateButtons() override;
   void rebuildRowItems();
   void toggleSelectedSetting();
   void openSleepTimeoutPicker();

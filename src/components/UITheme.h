@@ -7,6 +7,8 @@
 
 #include "CrossPointSettings.h"
 #include "components/themes/BaseTheme.h"
+#include "components/themes/ThemeFonts.h"
+#include "components/themes/ThemeScene.h"
 
 class CoverGridHomeUi;
 
@@ -41,6 +43,18 @@ class UITheme {
   static bool hasCoverGridHome();
   static void drawCoverGridHome(CoverGridHomeUi& home);
   void reload();
+  void syncFonts();  // Call after display/font initialization and on theme change.
+  const ThemeScene* activeExternalScene() const { return externalActive ? &externalScene : nullptr; }
+  bool hasExternalListSeparators() const { return externalActive && externalScene.usesRowSeparators(); }
+  bool useTabbedSettings() const {
+    if (SETTINGS.settingsNavigation == CrossPointSettings::SETTINGS_NAV_LIST) return false;
+    if (SETTINGS.settingsNavigation == CrossPointSettings::SETTINGS_NAV_TABS) return true;
+    // Follow theme (default): undeclared preference and built-in themes use List.
+    return externalActive && externalScene.prefersTabbedSettings();
+  }
+  bool renderExternalScene(ThemeScene::Region region, const GfxRenderer& renderer, Rect area,
+                           const char* title = nullptr, const std::vector<RecentBook>* books = nullptr,
+                           int selection = 0, ThemeScene::Phase phase = ThemeScene::Phase::Full) const;
   void setTheme(CrossPointSettings::UI_THEME type);
   static std::string getCoverThumbPath(std::string coverBmpPath, int coverHeight);
   static UIIcon getFileIcon(const std::string& filename);
@@ -50,6 +64,10 @@ class UITheme {
  private:
   BaseTheme fallbackTheme;
   const ThemeMetrics* currentMetrics = &BaseMetrics::values;
+  ThemeMetrics externalMetrics{};
+  ThemeScene externalScene;
+  ThemeFonts themeFonts;
+  bool externalActive = false;
   std::unique_ptr<BaseTheme> currentTheme;
   mutable ThemeMetrics adjustedMetrics;
   mutable bool metricsValid = false;
