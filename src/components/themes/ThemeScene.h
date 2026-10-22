@@ -22,6 +22,8 @@ class ThemeScene {
             Phase phase = Phase::Full) const;
   bool hasRegion(Region region) const;
   const std::array<std::string, 4>& fontFiles() const { return fonts; }
+  // New ui-family variants retain independent raster sizes but warm on demand.
+  bool usesUiFontFamilyVariants() const { return uiFamilyVariants_; }
   bool usesRowSeparators() const { return rowSeparators; }
   bool prefersTabbedSettings() const { return settingsNavigationTabs; }
   bool drawMenu(const GfxRenderer& renderer, Rect area, int itemCount, int selected,
@@ -51,6 +53,7 @@ class ThemeScene {
   };
   std::array<std::vector<Op>, 5> regions{};
   std::array<std::string, 4> fonts{};
+  bool uiFamilyVariants_ = false;
   int cornerCut = 0;  // Text plates and legacy fallback.
   int cardCut = 0;
   int rowCut = 0;

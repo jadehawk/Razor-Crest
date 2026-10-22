@@ -60,7 +60,8 @@ bool supportsThemeCapabilities(JsonArrayConst capabilities) {
     else if (strcmp(cap, "theme.metrics.v1") == 0)
       metrics = true;
     else if (strcmp(cap, "theme.images.v1") == 0 || strcmp(cap, "theme.composition.v1") == 0 ||
-             strcmp(cap, "theme.fonts.v1") == 0 || strcmp(cap, "theme.settings-navigation.v1") == 0) {
+             strcmp(cap, "theme.fonts.v1") == 0 || strcmp(cap, "theme.font-family.v1") == 0 ||
+              strcmp(cap, "theme.settings-navigation.v1") == 0) {
       // Fixed primitives, bounded bitmap decoder and generic scenes.
     } else
       return false;  // Unknown capabilities must not be accepted optimistically.

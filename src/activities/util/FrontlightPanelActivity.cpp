@@ -277,8 +277,12 @@ int FrontlightPanelActivity::computePanelBottom() const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int16_t lineHeight = uiTarget.lineHeight(tokens.smallText.font);
   // Slim battery band + the air around it (mirrors buildPanelScreen).
-  const int y0 = std::max<int>(metrics.batteryHeight, lineHeight);
-  int y = tokens.spaceMd + y0 + tokens.spaceMd;
+  int statusBand = std::max<int>(metrics.batteryHeight, lineHeight);
+  if (const auto* scene = UITheme::getInstance().activeExternalScene();
+      scene && scene->hasRegion(ThemeScene::Region::Header)) {
+    statusBand = std::max<int>(statusBand, metrics.homeTopPadding - metrics.topPadding - tokens.spaceMd);
+  }
+  int y = tokens.spaceMd + statusBand + tokens.spaceMd;
   if (Frontlight.present()) {
     // Screen::sliderRow reserves caption + spaceMd + control band, then a
     // spaceMd gap; addSliderRow() adds one more spaceMd of air after each row.
@@ -359,12 +363,16 @@ void FrontlightPanelActivity::buildPanelScreen(UiScreen& screen) {
   {
     const auto& metrics = UITheme::getInstance().getMetrics();
     screen.spacer(theme.spaceMd);
-    const int16_t bandH = std::max<int16_t>(static_cast<int16_t>(metrics.batteryHeight),
-                                            screen.target().lineHeight(theme.smallText.font));
+    int16_t bandH = std::max<int16_t>(static_cast<int16_t>(metrics.batteryHeight),
+                                      screen.target().lineHeight(theme.smallText.font));
+    if (const auto* scene = UITheme::getInstance().activeExternalScene();
+        scene && scene->hasRegion(ThemeScene::Region::Header)) {
+      bandH = std::max<int16_t>(bandH, static_cast<int16_t>(metrics.homeTopPadding - metrics.topPadding - theme.spaceMd));
+    }
     screen.takeTop(bandH, theme.spaceMd);
     UITheme::getInstance().getTheme().BaseTheme::drawHeader(
         renderer, Rect{0, metrics.topPadding, renderer.getScreenWidth(), metrics.homeTopPadding - metrics.topPadding},
-        nullptr);
+        nullptr, nullptr, false);
   }
 
   if (Frontlight.present()) {

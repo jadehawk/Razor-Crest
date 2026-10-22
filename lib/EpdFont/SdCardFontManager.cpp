@@ -112,7 +112,8 @@ void SdCardFontManager::unloadFont(GfxRenderer& renderer, const int fontId) {
 void SdCardFontManager::unloadAll(GfxRenderer& renderer) {
   // Drop UI CJK fallbacks before the SD fonts they point at are freed.
   renderer.clearFallbackFonts();
-  renderer.clearSdCardFonts();
+  // Remove only this reader manager's font IDs below. Clearing the entire
+  // renderer SD registry would also unregister independent theme UI fonts.
   for (auto& lf : loaded_) {
     renderer.removeFont(lf.fontId);
     delete lf.font;

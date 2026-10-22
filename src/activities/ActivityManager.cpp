@@ -1,5 +1,6 @@
 #include "ActivityManager.h"
 
+#include <Arduino.h>
 #include <BlePageTurner.h>
 #include <BoardConfig.h>
 #include <FontCacheManager.h>
@@ -10,6 +11,7 @@
 #include <VectorFontSupport.h>
 
 #include <algorithm>
+#include <cstdio>
 
 #include "Activity.h"
 #include "CrossPointSettings.h"
@@ -78,7 +80,13 @@ void ActivityManager::renderTaskTrampoline(void* param) {
 
 void ActivityManager::renderTaskLoop() {
   while (true) {
-    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    const uint32_t pendingRenders = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+#if FREEINK_DEVICE_X4PRO
+    // Many notifications queued while painting reveal a refresh request storm.
+    if (pendingRenders >= 4) LOG_INF("UI-PERF", "queued redraw requests=%lu", static_cast<unsigned long>(pendingRenders));
+#else
+    (void)pendingRenders;
+#endif
     // Acquire the lock before reading currentActivity to avoid a TOCTOU race
     // where the main task deletes the activity between the null-check and render().
     RenderLock lock;
@@ -88,7 +96,18 @@ void ActivityManager::renderTaskLoop() {
       // The sleep screen forces normal polarity itself (SleepActivity).
       display.setInverted(SETTINGS.screenInverted != 0);
       const uint32_t renderingVisit = screenVisit;
+#if FREEINK_DEVICE_X4PRO
+      const uint32_t renderStart = millis();
+      // render() consumes the lock; copy the name before the activity can change.
+      char renderName[32];
+      snprintf(renderName, sizeof(renderName), "%s", currentActivity->name.c_str());
+#endif
       currentActivity->render(std::move(lock));
+#if FREEINK_DEVICE_X4PRO
+      // Diagnostic only: distinguish busy rendering from the ~562ms panel refresh.
+      const uint32_t renderMs = millis() - renderStart;
+      if (renderMs >= 800) LOG_INF("UI-PERF", "%s render=%lu ms", renderName, static_cast<unsigned long>(renderMs));
+#endif
       paintedVisit.store(renderingVisit, std::memory_order_release);
     }
     // Notify any task blocked in requestUpdateAndWait() that the render is done.
@@ -543,3 +562,7 @@ void RenderLock::unlock() {
  *
  */
 bool RenderLock::peek() { return xQueuePeek(activityManager.renderingMutex, NULL, 0) != pdTRUE; };
+
+bool RenderLock::heldByCurrentTask() {
+  return xSemaphoreGetMutexHolder(activityManager.renderingMutex) == xTaskGetCurrentTaskHandle();
+}

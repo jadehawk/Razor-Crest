@@ -118,6 +118,18 @@ uint8_t FontCacheManager::resolveScanStyle(int fontId, EpdFontFamily::Style styl
 void FontCacheManager::recordText(const char* text, int fontId, EpdFontFamily::Style style) {
   if (!text || *text == '\0') return;
 
+  // Multiple UI font IDs may share one SdCardFont and one glyph cache.
+  // Canonicalize the renderer's aliases before collecting scan groups;
+  // otherwise each alias causes a separate full cache rebuild.
+  const auto aliased = sdCardFonts_.find(fontId);
+  if (aliased != sdCardFonts_.end()) {
+    for (const auto& [registeredId, registeredFont] : sdCardFonts_) {
+      if (registeredFont == aliased->second) {
+        fontId = registeredId;
+        break;
+      }
+    }
+  }
   uint8_t fontSlot = scanFontCount_;
   for (uint8_t i = 0; i < scanFontCount_; i++) {
     if (scanFontIds_[i] == fontId) {

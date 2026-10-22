@@ -396,31 +396,38 @@ freeink::ui::Rect BaseTheme::headerBand(const GfxRenderer& renderer, const freei
                            static_cast<int16_t>(rect.width - l - r), static_cast<int16_t>(rect.height - offset)};
 }
 
+bool BaseTheme::drawExternalHeaderScene(const GfxRenderer& renderer, Rect area, const char* title) {
+  if (!UITheme::getInstance().renderExternalScene(ThemeScene::Region::Header, renderer, area,
+                                                   title ? title : "UNSC"))
+    return false;
+  const int bx = area.x + area.width - 40;
+  const int middle = area.y + area.height / 2;
+  const int by = middle - 6;
+  renderer.drawRect(bx, by, 20, 11, false);
+  renderer.fillRect(bx + 20, by + 3, 2, 5, false);
+  const int filled = std::clamp(static_cast<int>(powerManager.getBatteryPercentage()) / 25, 0, 4);
+  for (int i = 0; i < filled; ++i) renderer.fillRect(bx + 2 + i * 4, by + 2, 3, 7, false);
+  if (SETTINGS.hideBatteryPercentage != CrossPointSettings::HIDE_BATTERY_PERCENTAGE::HIDE_ALWAYS) {
+    char percent[8];
+    snprintf(percent, sizeof(percent), "%u%%", static_cast<unsigned>(powerManager.getBatteryPercentage()));
+    const int width = renderer.getTextWidth(SMALL_FONT_ID, percent);
+    renderer.drawText(SMALL_FONT_ID, bx - 8 - width,
+                      middle - renderer.getLineHeight(SMALL_FONT_ID) / 2, percent, false);
+  }
+  return true;
+}
+
 void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* title, const char* subtitle,
                            const bool backButton) const {
-  // Every activity header renders through the FreeInkUI header + battery
-  // indicator components, styled by the active theme's tokens (padding,
-  // centering, underline). Non-interactive frame: no hit rects registered.
-  if (!gpio.hasTouch() && UITheme::getInstance().renderExternalScene(
-          ThemeScene::Region::Header, renderer,
-          Rect{0, 0, renderer.getScreenWidth(), rect.y + rect.height},
-          title ? title : "UNSC")) {
-    HeaderBackTapTarget::clear();
-    const int right = renderer.getScreenWidth() - 18;
-    const int middle = (rect.y + rect.height) / 2;
-    const int bx = right - 22;
-    const int by = middle - 6;
-    renderer.drawRect(bx, by, 20, 11, false);
-    renderer.fillRect(bx + 20, by + 3, 2, 5, false);
-    const int filled = std::clamp(static_cast<int>(powerManager.getBatteryPercentage()) / 25, 0, 4);
-    for (int i = 0; i < filled; ++i) renderer.fillRect(bx + 2 + i * 4, by + 2, 3, 7, false);
-    if (SETTINGS.hideBatteryPercentage != CrossPointSettings::HIDE_BATTERY_PERCENTAGE::HIDE_ALWAYS) {
-      char percent[8];
-      snprintf(percent, sizeof(percent), "%u%%", static_cast<unsigned>(powerManager.getBatteryPercentage()));
-      const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, percent);
-      renderer.drawText(SMALL_FONT_ID, bx - 8 - textWidth,
-                        middle - renderer.getLineHeight(SMALL_FONT_ID) / 2, percent, false);
-    }
+  // Theme-owned chrome is used on both button and touch screens.
+  // Its emblem serves as the touch Back target; the banner is never
+  // replaced by the generic FreeInkUI Back arrow.
+  const Rect sceneArea{0, 0, renderer.getScreenWidth(), rect.y + rect.height};
+  if (drawExternalHeaderScene(renderer, sceneArea, title)) {
+    if (gpio.hasTouch() && backButton && title)
+      HeaderBackTapTarget::set(0, 0, 58, sceneArea.height);
+    else
+      HeaderBackTapTarget::clear();
     return;
   }
   namespace fui = freeink::ui;
@@ -458,15 +465,15 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
   // Tappable back button leading the band on touch boards, so every pushed
   // screen offers a visible way out beside the edge-swipe gesture. This frame
   // registers no hit rects, so the rect is recorded in HeaderBackTapTarget and
-  // MappedInputManager folds taps on it into Button::Back. Same geometry as
-  // the FUI header's leading slot (applyHeaderStatus set the size/offset) so
-  // the recorded rect matches the drawn button.
+  // MappedInputManager folds taps on it into Button::Back. Include the
+  // upper-left corner so taps above the icon do not open the light panel.
   const int16_t backBtnSize = props.leadingSize;
   const bool showBackButton = backButton && title != nullptr && gpio.hasTouch();
   if (showBackButton) {
     props.leadingIcon = fui::bitmapFromIcon(icon_header_back_32);
     props.leadingAction = 1;  // any non-NO_ACTION id: paints the button, routing is via HeaderBackTapTarget
-    HeaderBackTapTarget::set(band.x + 4, band.y + 4 + props.actionOffsetY, backBtnSize, backBtnSize);
+    HeaderBackTapTarget::set(rect.x, rect.y, band.x + 4 + backBtnSize - rect.x,
+                             band.y + 4 + props.actionOffsetY + backBtnSize - rect.y);
   } else {
     HeaderBackTapTarget::clear();
   }

@@ -17,6 +17,30 @@ namespace fui = freeink::ui;
 void catalogScreenHeader(UiAppHost::UiScreen& screen, const GfxRenderer& renderer, const char* title,
                          const fui::BitmapRef& trailingIcon, const fui::ActionId trailingAction) {
   const auto& metrics = UITheme::getInstance().getMetrics();
+  // Keep the installed theme's full header on touch screens. The emblem
+  // replaces the stock back arrow visually but remains a Back touch target.
+  if (BaseTheme::drawExternalHeaderScene(
+          renderer, Rect{0, 0, renderer.getScreenWidth(), metrics.topPadding + metrics.headerHeight}, title)) {
+    if (gpio.hasTouch())
+      HeaderBackTapTarget::set(0, 0, 58, metrics.topPadding + metrics.headerHeight);
+    else
+      HeaderBackTapTarget::clear();
+    if (trailingIcon && trailingAction != fui::NO_ACTION) {
+      fui::ButtonProps action;
+      action.icon = trailingIcon;
+      action.action = trailingAction;
+      action.styles = fui::plainStyles(fui::Paint::solid(fui::Color::White));
+      action.minTouchSize = screen.theme().minTouchSize;
+      fui::button(screen.frame(),
+                  fui::Rect{static_cast<int16_t>(renderer.getScreenWidth() - 164),
+                            static_cast<int16_t>(metrics.topPadding + (metrics.headerHeight - 48) / 2), 48, 48},
+                  action);
+    }
+    screen.setContentMarginFromScreen(
+        fui::Insets{static_cast<int16_t>(metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing), 0,
+                    static_cast<int16_t>(metrics.buttonHintsHeight), 0});
+    return;
+  }
   const auto& theme = screen.theme();
   fui::HeaderProps header;
   header.title = title;
@@ -42,7 +66,8 @@ void catalogScreenHeader(UiAppHost::UiScreen& screen, const GfxRenderer& rendere
     // and a tap flash (never cleared, since no handler owns this action)
     // renders the same as the resting state instead of sticking.
     header.leadingStyles = fui::plainStyles(fui::Paint::solid(fui::Color::Black));
-    HeaderBackTapTarget::set(band.x + 4, band.y + 4 + header.actionOffsetY, header.leadingSize, header.leadingSize);
+    HeaderBackTapTarget::set(frameRect.x, metrics.topPadding, band.x + 4 + header.leadingSize - frameRect.x,
+                                 band.y + 4 + header.actionOffsetY + header.leadingSize - metrics.topPadding);
   }
   if (trailingIcon && trailingAction != fui::NO_ACTION) {
     header.trailingIcon = trailingIcon;

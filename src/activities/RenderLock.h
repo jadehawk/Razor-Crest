@@ -16,4 +16,5 @@ class RenderLock {
   bool ownsLock() const { return isLocked; }
   void unlock();
   static bool peek();
+  static bool heldByCurrentTask();  // Allows nested-safe theme reload from an activity's onExit().
 };

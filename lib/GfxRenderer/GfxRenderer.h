@@ -18,6 +18,7 @@ class TtfEpdFont;
 #include <array>
 #include <cstring>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -65,6 +66,9 @@ class GfxRenderer {
   // allocation inside the SdCardFont objects. Same pragmatic compromise as
   // fontCacheManager_ below.
   mutable std::map<int, SdCardFont*> sdCardFonts_;
+  // Only theme-owned UI fonts request per-string resident glyphs. The reader
+  // continues using its existing page-scan prewarm strategy.
+  std::set<int> directSdUiFontIds_;
   mutable std::map<int, uint16_t> sdCardFontScales_;  // fontId -> 8.8 fixed point scale (256=1.0x)
   // TTF (vector) fonts: rebuilt per page by ensureSdCardFontReady(). Mutable for
   // the same reason as sdCardFonts_ (const layout path triggers a rebuild).
@@ -152,6 +156,7 @@ class GfxRenderer {
   void removeFont(int fontId) {
     fontMap.erase(fontId);
     sdCardFonts_.erase(fontId);
+    directSdUiFontIds_.erase(fontId);
     sdCardFontScales_.erase(fontId);
   }
   void setFontCacheManager(FontCacheManager* m) { fontCacheManager_ = m; }
@@ -174,9 +179,11 @@ class GfxRenderer {
   bool isFontCacheScanning() const;
   const std::map<int, EpdFontFamily>& getFontMap() const { return fontMap; }
   void registerSdCardFont(int fontId, SdCardFont* font) { sdCardFonts_[fontId] = font; }
+  void enableDirectSdUiText(int fontId) { directSdUiFontIds_.insert(fontId); }
   void unregisterSdCardFont(int fontId) { removeFont(fontId); }
   void clearSdCardFonts() {
     sdCardFonts_.clear();
+    directSdUiFontIds_.clear();
     sdCardFontScales_.clear();
   }
   void registerSdCardFontScale(int fontId, uint16_t scale) { sdCardFontScales_[fontId] = scale; }

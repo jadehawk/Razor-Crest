@@ -19,6 +19,7 @@
 #include "RecentBooksStore.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "activities/util/KeyboardEntryActivity.h"
+#include "components/HeaderBackTapTarget.h"
 #include "components/UIScale.h"
 #include "components/UITheme.h"
 #include "components/icons/headerIcons.h"
@@ -934,6 +935,32 @@ void LibraryListActivity::formatAuthorHeading(const std::string& author, std::st
 
 void LibraryListActivity::buildHeader(UiScreen& screen) {
   const auto& metrics = UITheme::getInstance().getMetrics();
+  // Theme artwork is authoritative; retain interactive touch actions.
+  if (BaseTheme::drawExternalHeaderScene(
+          renderer, Rect{0, 0, renderer.getScreenWidth(), metrics.topPadding + metrics.headerHeight},
+          headerTitle())) {
+    HeaderBackTapTarget::clear();
+    if (mappedInput.hasTouch())
+      screen.frame().hit(fui::Rect{0, 0, 58, static_cast<int16_t>(metrics.topPadding + metrics.headerHeight)},
+                         ACTION_BACK, 0, fui::InputTouch);
+    if (!degraded) {
+      fui::ButtonProps action;
+      action.styles = fui::plainStyles(fui::Paint::solid(fui::Color::White));
+      action.minTouchSize = screen.theme().minTouchSize;
+      const int16_t y = static_cast<int16_t>(metrics.topPadding + (metrics.headerHeight - 48) / 2);
+      action.icon = fui::bitmapFromIcon(icon_search_32);
+      action.action = ACTION_SEARCH;
+      fui::button(screen.frame(),
+                  fui::Rect{static_cast<int16_t>(renderer.getScreenWidth() - 164), y, 48, 48}, action);
+      if (mappedInput.hasTouch()) {
+        action.icon = fui::bitmapFromIcon(icon_refresh_cw_32);
+        action.action = ACTION_REBUILD;
+        fui::button(screen.frame(),
+                    fui::Rect{static_cast<int16_t>(renderer.getScreenWidth() - 220), y, 48, 48}, action);
+      }
+    }
+    return;
+  }
   const auto& theme = screen.theme();
   fui::HeaderProps header;
   header.title = headerTitle();

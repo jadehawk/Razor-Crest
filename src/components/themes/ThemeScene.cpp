@@ -267,6 +267,7 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
   // the corresponding generic firmware capability in its own manifest entry.
   const bool declaredSettingsLayout = !styles.isNull() && !styles["settings_navigation"].isNull();
   bool advertisedSettingsLayout = false;
+  bool advertisedFontFamily = false;
   JsonArrayConst themeEntries = manifest["themes"].as<JsonArrayConst>();
   if (themeEntries.isNull()) return false;
   for (JsonVariantConst entry : themeEntries) {
@@ -276,6 +277,7 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
     for (JsonVariantConst cap : required) {
       const char* name = cap.as<const char*>();
       if (name && strcmp(name, "theme.settings-navigation.v1") == 0) advertisedSettingsLayout = true;
+      if (name && strcmp(name, "theme.font-family.v1") == 0) advertisedFontFamily = true;
     }
     break;
   }
@@ -283,17 +285,32 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
 
   JsonObjectConst fontRoles = doc["fonts"].as<JsonObjectConst>();
   if (!doc["fonts"].isNull()) {
-    if (fontRoles.isNull() || fontRoles.size() != 4) return false;
+    if (fontRoles.isNull()) return false;
+    // Optional single-file UI role: one font instance shared across the UI.
+    const bool sharedUiFont = fontRoles.size() == 1 && fontRoles["ui"].is<const char*>();
+    const JsonObjectConst variants = fontRoles["ui"].as<JsonObjectConst>();
+    const bool familyVariants = fontRoles.size() == 1 && !variants.isNull() && variants.size() == 4;
+    if (!sharedUiFont && !familyVariants && fontRoles.size() != 4) return false;
+    uiFamilyVariants_ = familyVariants;
     const char* roleNames[] = {"ui_small", "ui_regular", "ui_large", "display"};
-    for (int i = 0; i < 4; ++i) {
-      const char* relative = fontRoles[roleNames[i]].as<const char*>();
+    for (int i = 0; i < (sharedUiFont ? 1 : 4); ++i) {
+      const char* role = sharedUiFont ? "ui" : roleNames[i];
+      const char* variantNames[] = {"small", "regular", "large", "display"};
+      const char* relative = familyVariants ? variants[variantNames[i]].as<const char*>()
+                                            : fontRoles[role].as<const char*>();
       if (!safeFontPath(relative, id) || !isDeclared(files, relative) || !checkFontHeader(base + "/" + relative)) {
-        LOG_ERR("THEME", "Invalid external font role %s", roleNames[i]);
+        LOG_ERR("THEME", "Invalid external font role %s", role);
         return false;
       }
       fonts[i] = base + "/" + relative;
     }
   }
+
+  // Nested size variants and the single-file 'ui' role require the newer
+  // family capability; older firmware supporting only four legacy roles must
+  // reject this package during discovery rather than at render time.
+  const bool familyFormat = !fontRoles.isNull() && fontRoles.size() == 1 && !fontRoles["ui"].isNull();
+  if (familyFormat != advertisedFontFamily) return false;
 
   // Validate every referenced resource before accepting a theme, not mid-render.
   for (JsonPairConst asset : assets) {

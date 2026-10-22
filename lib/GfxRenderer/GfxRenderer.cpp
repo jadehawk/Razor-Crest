@@ -683,6 +683,11 @@ int GfxRenderer::getTextWidth(const int fontId, const char* text, const EpdFontF
   }
 
   int w = 0, h = 0;
+  // Theme UI text uses SD font ids directly, unlike the reader's fallback
+  // redirects. Batch-resolve its metrics before measuring to avoid per-glyph
+  // SD opens for previously unseen labels.
+  if (resolvedFontId == fontId && directSdUiFontIds_.count(resolvedFontId) != 0)
+    ensureSdGlyphsResident(resolvedFontId, renderedText, style, true);
   fontIt->second.getTextDimensions(renderedText, &w, &h, style);
   return w;
 }
@@ -741,6 +746,11 @@ void GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
   }
   const auto& font = fontIt->second;
 
+  // Normal theme UI text uses the SD font directly (not a fallback). Batch
+  // its glyph bitmaps before drawing, so an uncached title incurs one bounded
+  // SD pass instead of a separate file open for every character.
+  if (resolvedFontId == fontId && directSdUiFontIds_.count(resolvedFontId) != 0)
+    ensureSdGlyphsResident(resolvedFontId, renderedText, style, false);
   const char* textCursor = renderedText;
   uint32_t cp;
   uint32_t prevCp = 0;

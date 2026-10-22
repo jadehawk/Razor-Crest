@@ -9,8 +9,10 @@
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 
 #include "MappedInputManager.h"
+#include "activities/RenderLock.h"
 #include "RecentBooksStore.h"
 #include "components/CoverGridHomeUi.h"
 #include "components/themes/BaseTheme.h"
@@ -29,16 +31,31 @@ UITheme::UITheme() {
 
 // UI theme font ownership is separate from the reader's selected font family.
 void UITheme::syncFonts() {
+  // Fonts and glyph caches are used by the render task. Theme switching may
+  // also happen from an onExit() that already owns the nonrecursive mutex.
+  std::optional<RenderLock> lock;
+  if (!RenderLock::heldByCurrentTask()) lock.emplace();
   extern GfxRenderer renderer;
   if (renderer.getFontMap().count(UI_10_FONT_ID) == 0) return;  // early boot
   themeFonts.deactivate(renderer);
+#if defined(CROSSPOINT_THEME_FORCE_STOCK_UI_FONTS)
+  // Optional build-time isolation switch for any board. Normal builds
+  // exercise the shared theme-font path on every supported device.
+  if (externalActive && !externalScene.fontFiles()[0].empty())
+    LOG_INF("THEME", "Diagnostic: using stock UI fonts (theme font isolation)");
+  return;
+#endif
   if (externalActive && !externalScene.fontFiles()[0].empty() &&
-      !themeFonts.activate(renderer, externalScene.fontFiles())) {
+      !themeFonts.activate(renderer, externalScene.fontFiles(), externalScene.usesUiFontFamilyVariants())) {
     LOG_ERR("THEME", "External font activation failed; retaining stock UI fonts");
   }
 }
 
 void UITheme::reload() {
+  // Protect scene/metric replacement as well as font replacement from the
+  // render task; onExit() can invoke reload while already owning this mutex.
+  std::optional<RenderLock> lock;
+  if (!RenderLock::heldByCurrentTask()) lock.emplace();
   if (SETTINGS.sdThemeId[0] != '\0') {
     ThemeMetrics candidate{};
     std::string scenePath;
@@ -123,12 +140,29 @@ const ThemeMetrics& UITheme::getMetrics() const {
   // hasTouch() can flip once touch init completes after static construction, so the
   // cached copy is refreshed when the flag differs instead of copying the struct per call.
   const bool touch = gpio.hasTouch();
-  if (!metricsValid || touch != metricsForTouch) {
+  int visibleTop = 0;
+  if (touch && externalActive) {
+    // X4Pro's visible panel begins 9px below the framebuffer top. Reserve
+    // the oriented top inset for standard navigation headers, including Home.
+    extern GfxRenderer renderer;
+    int right = 0, bottom = 0, left = 0;
+    renderer.getOrientedViewableTRBL(&visibleTop, &right, &bottom, &left);
+  }
+  if (!metricsValid || touch != metricsForTouch || visibleTop != metricsVisibleTop) {
     adjustedMetrics = *currentMetrics;
     if (touch) {
       adjustedMetrics.buttonHintsHeight = 0;
+      // A custom Home header on touch boards must reach at least the same
+      // bottom edge as standard headers (top inset + band); otherwise they sit
+      // above the visible chrome, shrinking the usable tap/status band.
+      if (externalActive) {
+        adjustedMetrics.topPadding = std::max(adjustedMetrics.topPadding, visibleTop);
+        adjustedMetrics.homeTopPadding =
+            std::max(adjustedMetrics.homeTopPadding, adjustedMetrics.topPadding + adjustedMetrics.headerHeight);
+      }
     }
     metricsForTouch = touch;
+    metricsVisibleTop = visibleTop;
     metricsValid = true;
   }
   return adjustedMetrics;

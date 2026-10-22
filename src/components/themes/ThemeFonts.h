@@ -16,7 +16,7 @@ class ThemeFonts {
  public:
   static constexpr int DISPLAY_ID = 0x54484d44;  // "THMD", reserved for theme display
   void deactivate(GfxRenderer& renderer);
-  bool activate(GfxRenderer& renderer, const std::array<std::string, 4>& files);
+  bool activate(GfxRenderer& renderer, const std::array<std::string, 4>& files, bool onDemandVariants = false);
   bool active() const { return active_; }
 
  private:

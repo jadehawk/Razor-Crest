@@ -69,8 +69,25 @@ validate and use these independent names:
 | `theme.metrics.v1` | ThemeMetrics layout overrides |
 | `theme.images.v1` | Bounded streamed one-bit CPB bitmaps |
 | `theme.composition.v1` | Declarative named header/home/boot/sleep/hints regions and fill/rect/bitmap/text/line/book-card/progress operations |
-| `theme.fonts.v1` | Four optional UI font roles, restoring stock fonts |
+| `theme.fonts.v1` | Legacy four-role external UI-font map, restoring the built-in fonts safely |
+| `theme.font-family.v1` | Bounded single-`ui` file or four-size `ui` family declaration with demand-loaded glyph caches; requires `theme.fonts.v1` |
 | `theme.settings-navigation.v1` | List/Tabs theme preference, subject to user override |
+
+The declarative `header` region is used on button and touch UI screens,
+including Settings, Library and Plugin Catalog. For pushed touch screens,
+firmware maps the leftmost 58 pixels of the themed header to Back; themes
+should keep a recognizable emblem in that area. Home does not acquire a
+Back target. Firmware draws the battery in the header and preserves native
+trailing controls such as Search and Rebuild without replacing the artwork.
+
+Font validation is layered. Firmware validates declared capabilities, SD resource paths,
+font sizes and v4 headers before activation and validates glyph entries when
+rendering. It does not exhaustively audit every glyph bitmap up front. Theme
+authors and future catalog maintainers **must** run the stricter independent
+host validator (interval layout, glyph bitmap bounds, role ordering and the
+four-size hierarchy) and publish only a successfully validated ZIP, following
+the [HALO theme contract](https://github.com/jadehawk/halo.crosspoint-theme/blob/main/docs/THEME_CONTRACT.md#required-font-checks-before-publication).
+Do not gate compatibility by firmware branding; use advertised capabilities.
 
 Themes **only describe appearance**. They do not register actions,
 intercept gestures, run scripts, access the network, or modify firmware
