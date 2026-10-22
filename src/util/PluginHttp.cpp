@@ -1,5 +1,8 @@
 #include "PluginHttp.h"
 
+#include <FontCacheManager.h>
+#include <GfxRenderer.h>
+#include <HalMemory.h>
 #include <HalStorage.h>
 #include <Logging.h>
 #include <SecureHttpClient.h>
@@ -11,13 +14,55 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "activities/RenderLock.h"
 #include "network/ProtectedPaths.h"
 #include "network/WifiPowerSaveGuard.h"
+
+extern GfxRenderer renderer;
 
 namespace {
 constexpr size_t MAX_TOKEN_FILE_SIZE = 2 * 1024;
 
 bool networkReady() { return WiFi.getMode() != WIFI_MODE_NULL && WiFi.status() == WL_CONNECTED; }
+
+void releaseFontCachesBeforeTls(const std::string& url) {
+  if (url.compare(0, 8, "https://") != 0) return;
+  const auto heap = HalMemory::getInternalHeap();
+  const bool hasPsram = HalMemory::getPsramHeap().totalBytes > 0;
+  // The no-PSRAM baseline needs more internal headroom for the whole TLS
+  // handshake. On PSRAM boards, retain hot UI caches unless DRAM is tight.
+  const size_t minFree = hasPsram ? 48 * 1024 : 104 * 1024;
+  const size_t minBlock = hasPsram ? 24 * 1024 : 48 * 1024;
+  if (heap.freeBytes >= minFree && heap.largestBlockBytes >= minBlock) return;
+  // Cache pointers are shared with rendering; never free them without its lock.
+  RenderLock lock(RenderLock::Mode::Try);
+  if (!lock.ownsLock()) return;
+  if (auto* caches = renderer.getFontCacheManager()) {
+    caches->releaseSdFontCaches();
+    const auto after = HalMemory::getInternalHeap();
+    if (after.freeBytes > heap.freeBytes + 4096) {
+      LOG_INF("PHTP", "TLS cache reclaim: free=%u->%u max=%u->%u", (unsigned)heap.freeBytes, (unsigned)after.freeBytes,
+              (unsigned)heap.largestBlockBytes, (unsigned)after.largestBlockBytes);
+    }
+  }
+}
+
+void releaseIdleTlsSessionIfTight(freeink::SecureHttpClient* session) {
+  if (!session) return;
+  const auto heap = HalMemory::getInternalHeap();
+  const bool hasPsram = HalMemory::getPsramHeap().totalBytes > 0;
+  const size_t minFree = hasPsram ? 48 * 1024 : 104 * 1024;
+  const size_t minBlock = hasPsram ? 24 * 1024 : 48 * 1024;
+  if (heap.freeBytes >= minFree && heap.largestBlockBytes >= minBlock) return;
+  // A keep-alive TLS connection can retain substantial heap while a catalog
+  // renders. Close only under pressure; future requests reconnect normally.
+  session->end();
+  const auto after = HalMemory::getInternalHeap();
+  if (after.freeBytes > heap.freeBytes + 4096) {
+    LOG_INF("PHTP", "TLS idle session released: free=%u->%u max=%u->%u", (unsigned)heap.freeBytes,
+            (unsigned)after.freeBytes, (unsigned)heap.largestBlockBytes, (unsigned)after.largestBlockBytes);
+  }
+}
 
 // Resolves the caller's reused TLS session (or `tmp`) into a configured,
 // connected client, or nullptr if begin() failed.
@@ -241,6 +286,7 @@ int request(freeink::SecureHttpClient* session, const std::string& url, const st
     LOG_ERR("PHTP", "Network request blocked: WiFi is not connected");
     return -1;
   }
+  releaseFontCachesBeforeTls(url);
   WifiPowerSaveGuard psGuard;
   freeink::SecureHttpClient tmp;
   freeink::SecureHttpClient* httpPtr = openClient(session, tmp, url, headers);
@@ -268,11 +314,12 @@ int request(freeink::SecureHttpClient* session, const std::string& url, const st
       },
       shouldAbort);
   if (responseHeaders) *responseHeaders = http.getHeaders();
+  releaseIdleTlsSessionIfTight(session);
   // Error statuses still return their body: OAuth device-code polling carries
   // its state ("authorization_pending") in 4xx response bodies.
   if (overflow || status < 0 || !http.responseComplete()) {
-    LOG_ERR("PHTP", "API request failed: status=%d overflow=%d complete=%d %s", status, overflow,
-            http.responseComplete(), url.c_str());
+    LOG_ERR("PHTP", "API request failed: status=%d overflow=%d complete=%d free=%u max=%u %s", status, overflow,
+            http.responseComplete(), (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap(), url.c_str());
     return -1;
   }
   return status;
@@ -284,6 +331,7 @@ int requestToFile(freeink::SecureHttpClient* session, const std::string& url, co
     LOG_ERR("PHTP", "Network request blocked: WiFi is not connected");
     return -1;
   }
+  releaseFontCachesBeforeTls(url);
   WifiPowerSaveGuard psGuard;
   freeink::SecureHttpClient tmp;
   freeink::SecureHttpClient* httpPtr = openClient(session, tmp, url, headers);
@@ -312,9 +360,10 @@ int requestToFile(freeink::SecureHttpClient* session, const std::string& url, co
     file.flush();
     // file closed at scope exit, before any Storage.remove of destPath
   }
+  releaseIdleTlsSessionIfTight(session);
   if (!writeOk || status < 0 || !http.responseComplete()) {
-    LOG_ERR("PHTP", "API request (to file) failed: status=%d writeOk=%d complete=%d %s", status, writeOk,
-            http.responseComplete(), url.c_str());
+    LOG_ERR("PHTP", "API request (to file) failed: status=%d writeOk=%d complete=%d free=%u max=%u %s", status, writeOk,
+            http.responseComplete(), (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap(), url.c_str());
     Storage.remove(destPath);
     return -1;
   }
