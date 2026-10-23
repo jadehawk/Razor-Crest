@@ -53,9 +53,9 @@ class PluginCatalogActivity : public CatalogActivity {
   // existing catalog, events, README, and install behavior unchanged.
   std::string pickerManifestForRow(int index) const {
     if (state != State::PLUGIN_PICKER) return {};
-    const int offset = (showOpds ? 1 : 0) + (showPluginHubInstallRow ? 1 : 0);
-    if (index < offset || index - offset >= static_cast<int>(installedPlugins.size())) return {};
-    return installedPlugins[index - offset].manifestPath;
+    const int pluginIndex = pickerPluginForRow(index);
+    if (pluginIndex < 0) return {};
+    return installedPlugins[pluginIndex].manifestPath;
   }
   void activateStandardPluginRow(int index) { PluginCatalogActivity::activateIndex(index); }
 
@@ -148,6 +148,8 @@ class PluginCatalogActivity : public CatalogActivity {
     // Named JSON views override the browse URL/body; Back returns to their picker.
     struct BrowseList {
       std::string title, url, body;
+      std::string kind = "plugin";  // v2 index; legacy lists default to plugin
+      std::string itemsPath;        // v2 item array key
       std::string noticeTitle, noticeMessage, noticeConfirm, noticeCancel;
       bool hasNotice() const { return !noticeMessage.empty(); }
     };
@@ -156,6 +158,7 @@ class PluginCatalogActivity : public CatalogActivity {
     // standard contract is {"lists":[...]}; generated catalog indexes may
     // expose the same title/url records under "catalogs".
     std::string browseListsUrl;
+    std::string capabilityListsUrl;  // optional v2 index; legacy URL remains intact
     // JSON search overrides URL/body independently; empty fields reuse browse.
     std::string searchUrl, searchBody;
     bool hasSearch() const { return (!searchUrl.empty() || !searchBody.empty()) && browseFormat != "xml"; }
@@ -216,6 +219,24 @@ class PluginCatalogActivity : public CatalogActivity {
   bool manifestLoaded = false;
   bool browseListsRemoteAttempted = false;
   std::vector<PluginRef> installedPlugins;
+  // Compact picker-only rows: headers and one entry per installed SD package.
+  // Built after registry validation, never during rendering.
+  struct InstalledExtension {
+    enum class Kind : uint8_t { Header, Theme, Wallpaper };
+    Kind kind = Kind::Header;
+    std::string id, title, dir, version, author, description;
+  };
+  std::vector<InstalledExtension> installedExtensions;
+  int pinnedPluginCount() const;
+  int pluginPickerStart() const;
+  int pickerRowForPlugin(int index) const;
+  int pickerPluginForRow(int row) const;
+  int extensionPickerStart() const;
+  bool pickerHeaderRow(int index) const;
+  int nextPickerRow(int current, int direction, int steps = 1) const;
+  void discoverInstalledExtensions();
+  void showInstalledExtensionDetails(int index);
+  void confirmUninstallInstalledExtension(int index);
   bool pluginHubAvailable = false;
   bool showPluginHubInstallRow = false;
   bool ignoreHubInstallerBackRelease = false;
@@ -435,6 +456,8 @@ class PluginCatalogActivity : public CatalogActivity {
   bool loadItemDetails(int itemIndex, ItemDetails& details);
   void showItemDetails(int itemIndex);
   void downloadItem(int itemIndex);
+  HttpDownloader::DownloadError downloadExtension(const Item& item);
+  void confirmRemoveExtension(int itemIndex);
   bool downloadDestination(const Item& item, std::string& dest);
   HttpDownloader::DownloadError finalizeDownloadedFile(const Item& item, const std::string& dest);
   HttpDownloader::DownloadError savePreviewFile(const Item& item, const std::string& previewPath);

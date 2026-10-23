@@ -39,10 +39,13 @@
 #include "components/UITheme.h"
 #include "components/media/book-card.h"
 #include "components/media/cover-grid.h"
+#include "components/themes/ThemePackRegistry.h"
+#include "components/wallpapers/WallpaperPackRegistry.h"
 #include "fontIds.h"
 #include "network/HttpDownloader.h"
 #include "network/ProtectedPaths.h"
 #include "util/BookCacheUtils.h"
+#include "util/ExtensionPackages.h"
 #include "util/FirmwareIdentity.h"
 #include "util/PluginEvents.h"
 #include "util/PluginHttp.h"
@@ -449,6 +452,7 @@ bool PluginCatalogActivity::loadManifest() {
   if (strcasecmp(imageFormat, "bmp") == 0) manifest.imageFormat = Manifest::ImageFormat::Bmp;
   if (strcasecmp(imageFormat, "png") == 0) manifest.imageFormat = Manifest::ImageFormat::Png;
   manifest.browseListsUrl = browse["lists_url"] | "";
+  manifest.capabilityListsUrl = browse["capability_lists_url"] | "";
   manifest.browseLists.reserve(browse["lists"].size());
   for (JsonVariantConst l : browse["lists"].as<JsonArrayConst>()) {
     Manifest::BrowseList entry;
@@ -801,9 +805,184 @@ void PluginCatalogActivity::onEnter() {
   enterPluginPicker();
 }
 
+int PluginCatalogActivity::pinnedPluginCount() const {
+  return !installedPlugins.empty() && installedPlugins.front().name == "pluginhub" ? 1 : 0;
+}
+
+int PluginCatalogActivity::pluginPickerStart() const {
+  const int prefix = (showOpds ? 1 : 0) + (showPluginHubInstallRow ? 1 : 0);
+  const int pinned = pinnedPluginCount();
+  return prefix + pinned + (static_cast<int>(installedPlugins.size()) > pinned ? 1 : 0);
+}
+
+int PluginCatalogActivity::pickerRowForPlugin(const int index) const {
+  const int prefix = (showOpds ? 1 : 0) + (showPluginHubInstallRow ? 1 : 0);
+  return index < pinnedPluginCount() ? prefix + index : pluginPickerStart() + index - pinnedPluginCount();
+}
+
+int PluginCatalogActivity::pickerPluginForRow(const int row) const {
+  const int prefix = (showOpds ? 1 : 0) + (showPluginHubInstallRow ? 1 : 0);
+  const int pinned = pinnedPluginCount();
+  if (row >= prefix && row < prefix + pinned) return row - prefix;
+  if (row < pluginPickerStart() || row >= extensionPickerStart()) return -1;
+  return pinned + row - pluginPickerStart();
+}
+
+int PluginCatalogActivity::extensionPickerStart() const {
+  return pluginPickerStart() + static_cast<int>(installedPlugins.size()) - pinnedPluginCount();
+}
+
+bool PluginCatalogActivity::pickerHeaderRow(const int index) const {
+  if (state != State::PLUGIN_PICKER) return false;
+  if (static_cast<int>(installedPlugins.size()) > pinnedPluginCount() && index == pluginPickerStart() - 1) return true;
+  const int extIndex = index - extensionPickerStart();
+  return extIndex >= 0 && extIndex < static_cast<int>(installedExtensions.size()) &&
+         installedExtensions[extIndex].kind == InstalledExtension::Kind::Header;
+}
+
+int PluginCatalogActivity::nextPickerRow(const int current, const int direction, const int steps) const {
+  const int count = rowCount();
+  if (count <= 0) return 0;
+  int index = current;
+  for (int step = 0; step < steps; ++step) {
+    for (int check = 0; check < count; ++check) {
+      index = direction > 0 ? ButtonNavigator::nextIndex(index, count) : ButtonNavigator::previousIndex(index, count);
+      if (!pickerHeaderRow(index)) break;
+    }
+  }
+  return index;
+}
+
+void PluginCatalogActivity::discoverInstalledExtensions() {
+  installedExtensions.clear();
+  const auto addPackage = [this](InstalledExtension::Kind kind, const std::string& id, const std::string& label,
+                                 const std::string& dir) {
+    // A theme pack may expose several themes; show the package only once.
+    for (const auto& prior : installedExtensions) {
+      if (prior.kind == kind && prior.id == id) return;
+    }
+    std::string raw;
+    if (!Storage.readFileToString("PCAT", dir + "/manifest.json", MAX_MANIFEST_SIZE, raw)) return;
+    JsonDocument doc;
+    JsonDocument filter;
+    filter["kind"] = true;
+    filter["name"] = true;
+    filter["version"] = true;
+    filter["title"] = true;
+    filter["author"] = true;
+    filter["description"] = true;
+    if (deserializeJson(doc, raw, DeserializationOption::Filter(filter)) != DeserializationError::Ok ||
+        id != (doc["name"] | "") ||
+        strcmp(doc["kind"] | "", kind == InstalledExtension::Kind::Theme ? "theme-pack" : "wallpaper-pack") != 0)
+      return;
+    InstalledExtension entry;
+    entry.kind = kind;
+    entry.id = id;
+    entry.dir = dir;
+    entry.title = kind == InstalledExtension::Kind::Theme ? label : doc["title"].as<std::string>();
+    if (entry.title.empty()) entry.title = label.empty() ? id : label;
+    entry.version = doc["version"] | "";
+    entry.author = doc["author"] | "";
+    entry.description = doc["description"] | "";
+    installedExtensions.push_back(std::move(entry));
+  };
+  // Registry entries have already passed firmware-compatible payload checks.
+  auto& themes = ThemePackRegistry::getInstance();
+  if (themes.choices().empty()) themes.scan();
+  for (const auto& theme : themes.choices()) {
+    const size_t slash = theme.id.find('/');
+    if (slash == std::string::npos) continue;
+    const std::string package = theme.id.substr(0, slash);
+    addPackage(InstalledExtension::Kind::Theme, package, theme.label,
+               "/.crosspoint/themes/" + package + ".crosspoint-theme");
+  }
+  if (!installedExtensions.empty()) {
+    InstalledExtension heading;
+    heading.kind = InstalledExtension::Kind::Header;
+    heading.title = "Themes";
+    installedExtensions.insert(installedExtensions.begin(), std::move(heading));
+  }
+  const size_t afterThemes = installedExtensions.size();
+  auto& wallpapers = WallpaperPackRegistry::getInstance();
+  if (wallpapers.choices().empty()) wallpapers.scan();
+  for (const auto& pack : wallpapers.choices())
+    addPackage(InstalledExtension::Kind::Wallpaper, pack.id, pack.label,
+               "/.crosspoint/wallpapers/" + pack.id + ".crosspoint-wallpaper");
+  if (installedExtensions.size() > afterThemes) {
+    InstalledExtension heading;
+    heading.kind = InstalledExtension::Kind::Header;
+    heading.title = "Wallpaper Packs";
+    installedExtensions.insert(installedExtensions.begin() + afterThemes, std::move(heading));
+  }
+}
+
+void PluginCatalogActivity::showInstalledExtensionDetails(const int pickerIndex) {
+  const int index = pickerIndex - extensionPickerStart();
+  if (index < 0 || index >= static_cast<int>(installedExtensions.size())) return;
+  const auto& entry = installedExtensions[index];
+  if (entry.kind == InstalledExtension::Kind::Header) return;
+
+  DetailsSpec spec;
+  spec.header = entry.kind == InstalledExtension::Kind::Theme ? "Installed Theme" : "Installed Wallpaper Pack";
+  spec.title = entry.title;
+  spec.author = entry.author;
+  spec.source = "SD card";
+  spec.metadata = "Version " + (entry.version.empty() ? "unknown" : entry.version) + " · Installed";
+  spec.descriptionHeading = "About";
+  spec.description = entry.description;
+  if (spec.description.empty()) {
+    // README is optional, capped to protect internal RAM on the X3.
+    Storage.readFileToString("PCAT", entry.dir + "/README.md", 2 * 1024, spec.description);
+  }
+  if (spec.description.empty()) spec.description = "Installed collection. Press and hold its row to remove it.";
+  // Removal is offered from the picker by press-and-hold with confirmation.
+  auto details = makeUniqueNoThrow<DetailsActivity>(renderer, mappedInput, std::move(spec));
+  if (!details) {
+    LOG_ERR("PCAT", "OOM: installed extension details");
+    return;
+  }
+  app.clearTapFlash();
+  startActivityForResult(std::move(details), [](const ActivityResult&) {});
+}
+
+void PluginCatalogActivity::confirmUninstallInstalledExtension(const int pickerIndex) {
+  const int index = pickerIndex - extensionPickerStart();
+  if (index < 0 || index >= static_cast<int>(installedExtensions.size())) return;
+  const InstalledExtension entry = installedExtensions[index];
+  if (entry.kind == InstalledExtension::Kind::Header) return;
+  const bool selected = entry.kind == InstalledExtension::Kind::Theme
+                            ? std::string(SETTINGS.sdThemeId).rfind(entry.id + "/", 0) == 0
+                            : strcmp(SETTINGS.wallpaperPackId, entry.id.c_str()) == 0;
+  const std::string message =
+      selected ? "Switch to another theme or wallpaper collection in Settings before removing this one."
+               : "Remove " + entry.title + " from the SD card?";
+  auto dialog = makeUniqueNoThrow<ConfirmationActivity>(renderer, mappedInput,
+                                                        selected ? "Collection in use" : "Remove installed collection",
+                                                        message, tr(STR_CANCEL), selected ? "OK" : "Remove");
+  if (!dialog) return;
+  app.clearTapFlash();
+  startActivityForResult(std::move(dialog), [this, entry, selected](const ActivityResult& result) {
+    if (result.isCancelled || selected) return;
+    // Only registry-verified package IDs under their own install roots are removable.
+    const std::string expected = (entry.kind == InstalledExtension::Kind::Theme
+                                      ? "/.crosspoint/themes/" + entry.id + ".crosspoint-theme"
+                                      : "/.crosspoint/wallpapers/" + entry.id + ".crosspoint-wallpaper");
+    if (entry.dir != expected || !Storage.removeDir(expected.c_str())) {
+      LOG_ERR("PCAT", "Failed to uninstall installed extension: %s", expected.c_str());
+      return;
+    }
+    if (entry.kind == InstalledExtension::Kind::Theme)
+      ThemePackRegistry::getInstance().scan();
+    else
+      WallpaperPackRegistry::getInstance().scan();
+    enterPluginPicker();
+  });
+}
+
 void PluginCatalogActivity::enterPluginPicker() {
   Storage.remove(BROWSE_TMP_PATH);
   installedPlugins = discoverPlugins();
+  discoverInstalledExtensions();
   pluginHubAvailable = PluginHubInstallActivity::isAvailable();
   showPluginHubInstallRow = !pluginHubAvailable && !SETTINGS.pluginHubPromptHidden;
   // Discovery just re-read the plugin folders; keep the event subscription
@@ -848,19 +1027,21 @@ void PluginCatalogActivity::enterPluginPicker() {
   bool restoredSelection = false;
   for (size_t i = 0; i < installedPlugins.size(); ++i) {
     if (installedPlugins[i].name != pickerReturnName) continue;
-    const int prefixRows = (showOpds ? 1 : 0) + (showPluginHubInstallRow ? 1 : 0);
-    moveSelectionTo(prefixRows + static_cast<int>(i));
+    moveSelectionTo(pickerRowForPlugin(static_cast<int>(i)));
     restoredSelection = true;
     break;
   }
-  if (!restoredSelection && rowCount() > 0) moveSelectionTo(0);
+  if (!restoredSelection && rowCount() > 0) moveSelectionTo(nextPickerRow(-1, 1));
   requestUpdate();
 }
 
 void PluginCatalogActivity::confirmUninstallPlugin(const int pickerIndex) {
   if (state != State::PLUGIN_PICKER) return;
-  const int offset = (showOpds ? 1 : 0) + (showPluginHubInstallRow ? 1 : 0);
-  const int pluginIndex = pickerIndex - offset;
+  if (pickerIndex >= extensionPickerStart()) {
+    confirmUninstallInstalledExtension(pickerIndex);
+    return;
+  }
+  const int pluginIndex = pickerPluginForRow(pickerIndex);
   if (pluginIndex < 0 || pluginIndex >= static_cast<int>(installedPlugins.size())) return;
 
   const PluginRef plugin = installedPlugins[pluginIndex];
@@ -1108,8 +1289,14 @@ bool PluginCatalogActivity::loadBrowseListIndex() {
   if (!wifiConnected()) return false;
 
   String response;
-  const std::string url = substituted(manifest.browseListsUrl, nullptr);
-  const int status = pluginhttp::request(session.get(), url, "GET", "", {}, response, MAX_BROWSE_LIST_INDEX_RESPONSE);
+  const bool preferV2 = !manifest.capabilityListsUrl.empty();
+  std::string url = substituted(preferV2 ? manifest.capabilityListsUrl : manifest.browseListsUrl, nullptr);
+  int status = pluginhttp::request(session.get(), url, "GET", "", {}, response, MAX_BROWSE_LIST_INDEX_RESPONSE);
+  if ((status < 200 || status >= 300) && preferV2 && !manifest.browseListsUrl.empty()) {
+    response = "";
+    url = substituted(manifest.browseListsUrl, nullptr);
+    status = pluginhttp::request(session.get(), url, "GET", "", {}, response, MAX_BROWSE_LIST_INDEX_RESPONSE);
+  }
   if (status < 200 || status >= 300) {
     LOG_ERR("PCAT", "browse list index fetch failed: status=%d %s", status, url.c_str());
     return false;
@@ -1127,6 +1314,7 @@ bool PluginCatalogActivity::loadBrowseListIndex() {
   manifest.cacheGeneration =
       remoteCacheGeneration.empty() ? substituted(manifest.cacheGenerationTpl, nullptr) : remoteCacheGeneration;
 
+  const bool v2 = doc["schema_version"].as<int>() == 2;
   JsonArrayConst lists = doc["lists"].as<JsonArrayConst>();
   if (lists.isNull()) lists = doc["catalogs"].as<JsonArrayConst>();
   if (lists.isNull() || lists.size() == 0) {
@@ -1143,6 +1331,15 @@ bool PluginCatalogActivity::loadBrowseListIndex() {
     entry.title = l["title"] | "";
     entry.url = l["url"] | "";
     entry.body = l["body"] | "";
+    if (v2) {
+      entry.kind = l["kind"] | "";
+      entry.itemsPath = l["items"] | "";
+      if ((entry.kind != "plugin" && entry.kind != "theme-pack" && entry.kind != "wallpaper-pack") ||
+          !extensionpackages::supportsAll(l["requires"].as<JsonArrayConst>()))
+        continue;
+      if (entry.kind != "plugin" && entry.itemsPath != "items") continue;
+      if (entry.kind == "plugin" && entry.itemsPath != "plugins") continue;
+    }
     JsonVariantConst notice = l["notice"];
     entry.noticeTitle = notice["title"] | "";
     entry.noticeMessage = notice["message"] | "";
@@ -1402,8 +1599,7 @@ bool PluginCatalogActivity::nextRowVisible() const {
 }
 
 int PluginCatalogActivity::rowCount() const {
-  if (state == State::PLUGIN_PICKER)
-    return static_cast<int>(installedPlugins.size()) + (showOpds ? 1 : 0) + (showPluginHubInstallRow ? 1 : 0);
+  if (state == State::PLUGIN_PICKER) return extensionPickerStart() + static_cast<int>(installedExtensions.size());
   if (state == State::LIST_PICKER) return static_cast<int>(manifest.browseLists.size());
   if (state != State::BROWSING) return 0;
   if (cacheTabActive()) return cacheRowCount();
@@ -2614,13 +2810,22 @@ bool PluginCatalogActivity::parseBrowseResponse() {
   if (manifest.isXmlList()) return parseXmlList();
 
   const char* source = browseSourcePath.empty() ? BROWSE_TMP_PATH : browseSourcePath.c_str();
+  const bool extension = currentList >= 0 && currentList < static_cast<int>(manifest.browseLists.size()) &&
+                         manifest.browseLists[currentList].kind != "plugin";
+  const bool filterCompatibility = !extension && manifest.filtersCompatibility();
+  const std::string extTitle = "title", extAuthor = "author", extId = "name", extUrl = "asset_url";
+  const std::string& titles = extension ? extTitle : manifest.titlePath;
+  const std::string& authors = extension ? extAuthor : manifest.authorPath;
+  const std::string& ids = extension ? extId : manifest.idPath;
+  const std::string& urls = extension ? extUrl : manifest.urlPath;
+  const std::string& itemsPath = extension ? manifest.browseLists[currentList].itemsPath : manifest.itemsPath;
 
   // Compatibility is opt-in. Catalog entries that omit compatibility values
   // remain visible; explicit restrictions must match this firmware. The extra
   // titled row remains pagination lookahead and is never displayed.
   std::vector<int> compatibleRows;
   bool rawHasMore = false;
-  if (manifest.filtersCompatibility()) {
+  if (filterCompatibility) {
     compatibleRows.reserve(manifest.pageSize);
     int rowIndex = 0;
     int titledRows = 0;
@@ -2640,7 +2845,7 @@ bool PluginCatalogActivity::parseBrowseResponse() {
                                                       &manifest.compatFirmwarePath, &manifest.compatApiMinPath,
                                                       &manifest.compatRequiresPath, &unused};
     auto compatibilityParser = makeUniqueNoThrow<JsonListParser>(
-        manifest.itemsPath, compatibilityFields, unused,
+        itemsPath, compatibilityFields, unused,
         [](void* context, JsonListParser::Row& row) { (*static_cast<decltype(selectCompatible)*>(context))(row); },
         &selectCompatible);
     if (!streamBrowseFile(compatibilityParser.get(), source)) {
@@ -2653,12 +2858,14 @@ bool PluginCatalogActivity::parseBrowseResponse() {
   items.clear();
   items.reserve(manifest.pageSize + 1);
   int rowIndex = 0;
+  const int extensionStartRow = extension ? std::max(0, page - 1) * manifest.pageSize : 0;
   size_t compatibleIndex = 0;
   // The unfiltered extra row controls server pagination; compatibility only
   // controls which rows from this page are displayed.
   auto append = [&](JsonListParser::Row& row) {
     const int thisRow = rowIndex++;
-    if (manifest.filtersCompatibility()) {
+    if (extension && thisRow < extensionStartRow) return;
+    if (filterCompatibility) {
       if (compatibleIndex >= compatibleRows.size() || compatibleRows[compatibleIndex] != thisRow) return;
       compatibleIndex++;
     }
@@ -2675,10 +2882,9 @@ bool PluginCatalogActivity::parseBrowseResponse() {
   };
   // Streamed straight from the SD temp file: neither the raw response nor a
   // parsed document occupies DRAM, only the rows kept.
-  const std::string* const fields[] = {&manifest.titlePath, &manifest.authorPath,  &manifest.idPath,
-                                       &manifest.urlPath,   &manifest.versionPath, &manifest.bundleBasePath};
+  const std::string* const fields[] = {&titles, &authors, &ids, &urls, &manifest.versionPath, &manifest.bundleBasePath};
   auto parser = makeUniqueNoThrow<JsonListParser>(
-      manifest.itemsPath, fields, manifest.bundleFilesPath,
+      itemsPath, fields, manifest.bundleFilesPath,
       [](void* context, JsonListParser::Row& row) { (*static_cast<decltype(append)*>(context))(row); }, &append);
   if (!streamBrowseFile(parser.get(), source)) {
     fail(StrId::STR_PARSE_FEED_FAILED);
@@ -2699,7 +2905,7 @@ bool PluginCatalogActivity::parseBrowseResponse() {
     size_t thumbnailCompatibleIndex = 0;
     auto appendThumbnail = [&](JsonListParser::Row& row) {
       const int thisRow = thumbnailSourceRow++;
-      if (manifest.filtersCompatibility()) {
+      if (filterCompatibility) {
         if (thumbnailCompatibleIndex >= compatibleRows.size() || compatibleRows[thumbnailCompatibleIndex] != thisRow)
           return;
         thumbnailCompatibleIndex++;
@@ -2708,7 +2914,7 @@ bool PluginCatalogActivity::parseBrowseResponse() {
       items[thumbnailRow++].thumbnail = std::move(row.field[JsonListParser::F_BASE]);
     };
     auto thumbnailParser = makeUniqueNoThrow<JsonListParser>(
-        manifest.itemsPath, thumbnailFields, std::string(),
+        itemsPath, thumbnailFields, std::string(),
         [](void* context, JsonListParser::Row& row) { (*static_cast<decltype(appendThumbnail)*>(context))(row); },
         &appendThumbnail);
     if (!streamBrowseFile(thumbnailParser.get(), source)) {
@@ -2717,7 +2923,7 @@ bool PluginCatalogActivity::parseBrowseResponse() {
     }
   }
 
-  hasMore = manifest.filtersCompatibility() ? rawHasMore : static_cast<int>(items.size()) > manifest.pageSize;
+  hasMore = filterCompatibility ? rawHasMore : static_cast<int>(items.size()) > manifest.pageSize;
   if (static_cast<int>(items.size()) > manifest.pageSize) items.resize(manifest.pageSize);
   computeInstallStatus();
   return true;
@@ -2729,6 +2935,44 @@ bool PluginCatalogActivity::parseBrowseResponse() {
 // Runs once per page.
 void PluginCatalogActivity::computeInstallStatus() {
   if (!manifest.tracksInstalls()) return;
+  if (currentList >= 0 && currentList < static_cast<int>(manifest.browseLists.size()) &&
+      manifest.browseLists[currentList].kind != "plugin") {
+    const auto& list = manifest.browseLists[currentList];
+    const auto kind = list.kind == "theme-pack"       ? extensionpackages::Kind::Theme
+                      : list.kind == "wallpaper-pack" ? extensionpackages::Kind::Wallpaper
+                                                      : extensionpackages::Kind::Plugin;
+    const std::string root =
+        kind == extensionpackages::Kind::Theme ? "/.crosspoint/themes/" : "/.crosspoint/wallpapers/";
+    const std::string suffix = kind == extensionpackages::Kind::Theme ? ".crosspoint-theme" : ".crosspoint-wallpaper";
+    const char* source = browseSourcePath.empty() ? BROWSE_TMP_PATH : browseSourcePath.c_str();
+    const uint16_t width = std::min(renderer.getDisplayWidth(), renderer.getDisplayHeight());
+    const uint16_t height = std::max(renderer.getDisplayWidth(), renderer.getDisplayHeight());
+    JsonDocument filter;
+    filter["name"] = true;
+    filter["version"] = true;
+    filter["kind"] = true;
+    for (auto& item : items) {
+      item.status = item.version.empty() ? "" : "v" + item.version;
+      if (kind == extensionpackages::Kind::Plugin || item.id.empty()) continue;
+      // Catalog IDs are collection IDs. Wallpaper SD directories instead use
+      // the single package ID matching this panel's portrait resolution.
+      extensionpackages::Release release;
+      if (!extensionpackages::selectRelease(source, kind, item.id, width, height, release)) continue;
+      std::string raw;
+      if (!Storage.readFileToString("PCAT", root + release.name + suffix + "/manifest.json", MAX_MANIFEST_SIZE, raw))
+        continue;
+      JsonDocument installed;
+      if (deserializeJson(installed, raw, DeserializationOption::Filter(filter)) != DeserializationError::Ok) continue;
+      if (release.name != (installed["name"] | "") ||
+          strcmp(installed["kind"] | "", kind == extensionpackages::Kind::Theme ? "theme-pack" : "wallpaper-pack") != 0)
+        continue;
+      const std::string installedVersion = installed["version"] | "";
+      if (installedVersion.empty()) continue;
+      item.status = PluginLocations::isNewerVersion(item.version, installedVersion) ? tr(STR_UPDATE_AVAILABLE)
+                                                                                    : tr(STR_INSTALLED);
+    }
+    return;
+  }
   JsonDocument filter;
   filter["version"] = true;
   for (auto& item : items) {
@@ -2833,7 +3077,11 @@ void PluginCatalogActivity::downloadItem(const int itemIndex) {
     std::vector<Item>().swap(items);
   }
   requestUpdateAndWait();
-  const auto result = manifest.isBundle() && !item.files.empty() ? downloadBundle(item) : downloadBook(item);
+  const bool extension = currentList >= 0 && currentList < static_cast<int>(manifest.browseLists.size()) &&
+                         manifest.browseLists[currentList].kind != "plugin";
+  const auto result = extension
+                          ? downloadExtension(item)
+                          : (manifest.isBundle() && !item.files.empty() ? downloadBundle(item) : downloadBook(item));
   session.reset();
   item = {};
   // Reuse the SD response without another network request or resetting navigation.
@@ -2846,6 +3094,122 @@ void PluginCatalogActivity::downloadItem(const int itemIndex) {
 void PluginCatalogActivity::downloadFinished(const bool cancelled) {
   state = cancelled ? State::BROWSING : State::DONE;
   requestUpdate();
+}
+
+void PluginCatalogActivity::confirmRemoveExtension(const int itemIndex) {
+  if (itemIndex < 0 || itemIndex >= static_cast<int>(items.size()) || currentList < 0 ||
+      currentList >= static_cast<int>(manifest.browseLists.size()))
+    return;
+  const std::string& kindName = manifest.browseLists[currentList].kind;
+  const auto kind = kindName == "theme-pack"       ? extensionpackages::Kind::Theme
+                    : kindName == "wallpaper-pack" ? extensionpackages::Kind::Wallpaper
+                                                   : extensionpackages::Kind::Plugin;
+  if (kind == extensionpackages::Kind::Plugin) return;
+  const Item& item = items[itemIndex];
+  const char* source = browseSourcePath.empty() ? BROWSE_TMP_PATH : browseSourcePath.c_str();
+  extensionpackages::Release release;
+  if (!extensionpackages::selectRelease(source, kind, item.id,
+                                        std::min(renderer.getDisplayWidth(), renderer.getDisplayHeight()),
+                                        std::max(renderer.getDisplayWidth(), renderer.getDisplayHeight()), release))
+    return;
+  const std::string root = kind == extensionpackages::Kind::Theme ? "/.crosspoint/themes/" : "/.crosspoint/wallpapers/";
+  const std::string path =
+      root + release.name + (kind == extensionpackages::Kind::Theme ? ".crosspoint-theme" : ".crosspoint-wallpaper");
+  if (!Storage.exists(path.c_str())) return;
+  const bool selected = kind == extensionpackages::Kind::Theme
+                            ? std::string(SETTINGS.sdThemeId).rfind(release.name + "/", 0) == 0
+                            : strcmp(SETTINGS.wallpaperPackId, release.name.c_str()) == 0;
+  const std::string title = "Remove " + item.title;
+  const std::string message = selected ? "Switch to another theme or wallpaper collection before removing this one."
+                                       : "Remove the installed collection from the SD card?";
+  auto dialog = makeUniqueNoThrow<ConfirmationActivity>(renderer, mappedInput, title, message, "Cancel",
+                                                        selected ? "OK" : "Remove");
+  if (!dialog) return;
+  startActivityForResult(std::move(dialog), [this, path, kind, selected](const ActivityResult& answer) {
+    if (selected || answer.isCancelled) return;
+    if (!Storage.removeDir(path.c_str())) {
+      LOG_ERR("PCAT", "Unable to remove extension: %s", path.c_str());
+      return;
+    }
+    if (kind == extensionpackages::Kind::Theme)
+      ThemePackRegistry::getInstance().scan();
+    else
+      WallpaperPackRegistry::getInstance().scan();
+    computeInstallStatus();
+    requestUpdate();
+  });
+}
+
+HttpDownloader::DownloadError PluginCatalogActivity::downloadExtension(const Item& item) {
+  if (currentList < 0 || currentList >= static_cast<int>(manifest.browseLists.size()))
+    return HttpDownloader::FILE_ERROR;
+  const auto& list = manifest.browseLists[currentList];
+  const auto kind = list.kind == "theme-pack"       ? extensionpackages::Kind::Theme
+                    : list.kind == "wallpaper-pack" ? extensionpackages::Kind::Wallpaper
+                                                    : extensionpackages::Kind::Plugin;
+  if (kind == extensionpackages::Kind::Plugin) return HttpDownloader::FILE_ERROR;
+  const char* source = browseSourcePath.empty() ? BROWSE_TMP_PATH : browseSourcePath.c_str();
+  extensionpackages::Release release;
+  if (!extensionpackages::selectRelease(source, kind, item.id,
+                                        std::min(renderer.getDisplayWidth(), renderer.getDisplayHeight()),
+                                        std::max(renderer.getDisplayWidth(), renderer.getDisplayHeight()), release)) {
+    LOG_ERR("PCAT", "No compatible or trusted extension release for %s", item.id.c_str());
+    return HttpDownloader::FILE_ERROR;
+  }
+  // Do not swap files out from under a currently active theme/sleep source.
+  const bool currentlySelected = kind == extensionpackages::Kind::Theme
+                                     ? std::string(SETTINGS.sdThemeId).rfind(release.name + "/", 0) == 0
+                                     : strcmp(SETTINGS.wallpaperPackId, release.name.c_str()) == 0;
+  if (currentlySelected) {
+    // Re-selecting an already installed, identical release is not an update.
+    // In particular, never swap a live SD theme's glyph/bitmap backing files.
+    const std::string root =
+        kind == extensionpackages::Kind::Theme ? "/.crosspoint/themes/" : "/.crosspoint/wallpapers/";
+    const std::string packagePath =
+        root + release.name + (kind == extensionpackages::Kind::Theme ? ".crosspoint-theme" : ".crosspoint-wallpaper");
+    std::string raw;
+    if (Storage.readFileToString("PCAT", packagePath + "/manifest.json", MAX_MANIFEST_SIZE, raw)) {
+      JsonDocument installed;
+      if (deserializeJson(installed, raw) == DeserializationError::Ok && release.name == (installed["name"] | "") &&
+          release.version == (installed["version"] | "")) {
+        LOG_INF("PCAT", "Extension already installed and selected: %s v%s", release.name.c_str(),
+                release.version.c_str());
+        statusMessage = item.title + " is already installed";
+        return HttpDownloader::OK;
+      }
+    }
+    LOG_ERR("PCAT", "Switch away from the active theme/collection before updating %s", release.name.c_str());
+    return HttpDownloader::FILE_ERROR;
+  }
+  // Keep the firmware's collection limits; installing a new collection must
+  // not silently displace another installed one.
+  if (kind == extensionpackages::Kind::Theme) {
+    auto& registry = ThemePackRegistry::getInstance();
+    registry.scan();
+    const std::string root = "/.crosspoint/themes/" + release.name + ".crosspoint-theme";
+    if (!Storage.exists(root.c_str()) && registry.choices().size() >= 16) return HttpDownloader::FILE_ERROR;
+  } else {
+    auto& registry = WallpaperPackRegistry::getInstance();
+    registry.scan();
+    const std::string root = "/.crosspoint/wallpapers/" + release.name + ".crosspoint-wallpaper";
+    if (!Storage.exists(root.c_str()) && registry.choices().size() >= 8) return HttpDownloader::FILE_ERROR;
+  }
+  session.reset();  // the firmware must not retain TLS allocations during ZIP inflation
+  constexpr char ARCHIVE[] = "/.pcat_extension.zip";
+  Storage.remove(ARCHIVE);
+  const auto downloaded = downloadFile(release.url, ARCHIVE);
+  if (downloaded != HttpDownloader::OK) {
+    Storage.remove(ARCHIVE);
+    return downloaded;
+  }
+  const bool installed = extensionpackages::installVerifiedZip(ARCHIVE, release);
+  Storage.remove(ARCHIVE);
+  if (!installed) return HttpDownloader::FILE_ERROR;
+  if (kind == extensionpackages::Kind::Theme)
+    ThemePackRegistry::getInstance().scan();
+  else
+    WallpaperPackRegistry::getInstance().scan();
+  return HttpDownloader::OK;
 }
 
 HttpDownloader::DownloadError PluginCatalogActivity::downloadBundle(const Item& item) {
@@ -3178,6 +3542,12 @@ void PluginCatalogActivity::onRowAction(const fui::ActionEvent& event) {
     confirmUninstallPlugin(event.value);
     return;
   }
+  if (state == State::BROWSING && event.longPress && currentList >= 0 &&
+      currentList < static_cast<int>(manifest.browseLists.size()) &&
+      manifest.browseLists[currentList].kind != "plugin") {
+    confirmRemoveExtension(event.value);
+    return;
+  }
   if (pluginTabsActive()) {
     activeNav().selected = event.value + contentSelectionOffset();
     if (!event.longPress) activateIndex(event.value);
@@ -3229,6 +3599,18 @@ bool PluginCatalogActivity::stepBrowseViewport(const int direction, const bool m
 }
 
 void PluginCatalogActivity::navigateButtons() {
+  if (state == State::PLUGIN_PICKER) {
+    // Header rows are display-only. Skip them for single presses and repeats,
+    // including when a held button moves through an entire visible page.
+    buttonNavigator.onNextPress([this] { moveSelectionTo(nextPickerRow(activeNav().selected, 1)); });
+    buttonNavigator.onPreviousPress([this] { moveSelectionTo(nextPickerRow(activeNav().selected, -1)); });
+    buttonNavigator.onNextContinuous(
+        [this] { moveSelectionTo(nextPickerRow(activeNav().selected, 1, std::max(1, activeNav().inputPageRows()))); });
+    buttonNavigator.onPreviousContinuous(
+        [this] { moveSelectionTo(nextPickerRow(activeNav().selected, -1, std::max(1, activeNav().inputPageRows()))); });
+    return;
+  }
+
   if (!pluginTabsActive() && !nativeFooterActive()) {
     CatalogActivity::navigateButtons();
     return;
@@ -3538,8 +3920,14 @@ void PluginCatalogActivity::activateIndex(const int index) {
       requestUpdate();
       return;
     }
-    const int syntheticHubRows = showPluginHubInstallRow ? 1 : 0;
-    const PluginRef& plugin = installedPlugins[index - pluginStart - syntheticHubRows];
+    if (index >= extensionPickerStart()) {
+      showInstalledExtensionDetails(index);
+      return;
+    }
+    if (pickerHeaderRow(index)) return;
+    const int pluginIndex = pickerPluginForRow(index);
+    if (pluginIndex < 0) return;
+    const PluginRef& plugin = installedPlugins[pluginIndex];
     const auto action = PluginLocations::pickerAction(plugin.deviceKind, !plugin.readmePath.empty());
     if (action == PluginLocations::PickerAction::Readme) {
       // A plain paged text view, not the book reader: viewing instructions must
@@ -3624,7 +4012,9 @@ void PluginCatalogActivity::activateItem(const int itemIndex) {
     fetchPage(page);
     return;
   }
-  if (!manifest.isXmlList() && manifest.hasItemDetails()) {
+  if (!manifest.isXmlList() && manifest.hasItemDetails() &&
+      !(currentList >= 0 && currentList < static_cast<int>(manifest.browseLists.size()) &&
+        manifest.browseLists[currentList].kind != "plugin")) {
     showItemDetails(itemIndex);
     return;
   }
@@ -4121,6 +4511,9 @@ void PluginCatalogActivity::buildBrowsingScreen(UiScreen& screen) {
   props.valueInset = 8;  // air between the nav chevron and the row edge
   if (state == State::BROWSING) props.rowStyles = selectionStyles(screen.theme().listRow);
   if (state == State::PLUGIN_PICKER) {
+    props.rowStyles = selectionStyles(screen.theme().listRow);
+    props.rowStyles.disabled.background = fui::Paint::solid(fui::Color::LightGray);
+    props.rowStyles.disabled.foreground = fui::Paint::solid(fui::Color::Black);
     // Mark the subtitle style caller-owned before resolving the theme.
     props.subtitleText = screen.theme().smallText;
     props.subtitleText.maxLines = 2;
@@ -4335,26 +4728,45 @@ void PluginCatalogActivity::rebuildRowItems() {
   if (state == State::PLUGIN_PICKER) {
     if (showOpds) addRow(tr(STR_OPDS_BROWSER), tr(STR_OPDS_SERVERS));
     if (showPluginHubInstallRow) addRow(tr(STR_PLUGIN_HUB), tr(STR_PLUGIN_HUB_DESCRIPTION), ">");
-    for (const auto& plugin : installedPlugins) {
-      //   None       -> own description; web-only hint only if none supplied
-      //   Catalog    -> browsable, own description, chevron
-      //   Background -> events-only, own description, chevron only with a readme
+    const auto addPluginRow = [&](const PluginRef& plugin) {
+      // Keep Plugin Hub pinned above the Plugins divider alongside OPDS.
       const char* subtitle = plugin.description.empty() ? nullptr : plugin.description.c_str();
-      // The FreeInkUI value column is right-aligned. Version comes from the
-      // installed manifest rather than requiring it in the plugin title.
-      const char* installedVersion = plugin.version.empty() ? nullptr : plugin.version.c_str();
+      const char* version = plugin.version.empty() ? nullptr : plugin.version.c_str();
       switch (plugin.deviceKind) {
         case PluginLocations::DeviceKind::None:
           addRow(plugin.title.c_str(), subtitle ? subtitle : tr(STR_PLUGIN_WEB_ONLY),
-                 installedVersion ? installedVersion : (plugin.readmePath.empty() ? nullptr : ">"));
+                 version ? version : (plugin.readmePath.empty() ? nullptr : ">"));
           break;
         case PluginLocations::DeviceKind::Catalog:
-          addRow(plugin.title.c_str(), subtitle, installedVersion ? installedVersion : ">");
+          addRow(plugin.title.c_str(), subtitle, version ? version : ">");
           break;
         case PluginLocations::DeviceKind::Background:
-          addRow(plugin.title.c_str(), subtitle,
-                 installedVersion ? installedVersion : (plugin.readmePath.empty() ? nullptr : ">"));
+          addRow(plugin.title.c_str(), subtitle, version ? version : (plugin.readmePath.empty() ? nullptr : ">"));
           break;
+      }
+    };
+    if (pinnedPluginCount() > 0) addPluginRow(installedPlugins.front());
+    if (installedPlugins.size() > static_cast<size_t>(pinnedPluginCount())) {
+      fui::ListItem header;
+      header.label = "Plugins";
+      header.enabled = false;
+      header.actionValue = static_cast<int16_t>(rowItems.size());
+      rowItems.push_back(header);
+    }
+    for (size_t i = pinnedPluginCount(); i < installedPlugins.size(); ++i) addPluginRow(installedPlugins[i]);
+    for (const auto& entry : installedExtensions) {
+      if (entry.kind == InstalledExtension::Kind::Header) {
+        fui::ListItem header;
+        header.label = entry.title.c_str();
+        // Non-interactive shaded divider; the picker uses the disabled-row
+        // background for a full-width gray band without any SDK changes.
+        header.enabled = false;
+        header.actionValue = static_cast<int16_t>(rowItems.size());
+        rowItems.push_back(header);
+      } else {
+        // The version value is in the same right-aligned column as plugin versions.
+        addRow(entry.title.c_str(), entry.author.empty() ? entry.description.c_str() : entry.author.c_str(),
+               entry.version.empty() ? ">" : entry.version.c_str());
       }
     }
   } else if (state == State::LIST_PICKER) {
