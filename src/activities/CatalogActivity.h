@@ -3,6 +3,7 @@
 #include <I18n.h>
 
 #include "UiListActivity.h"
+#include "DownloadProgressPolicy.h"
 #include "network/HttpDownloader.h"
 
 // Network catalogs share input, child screens, and transfer lifecycle. Each
@@ -36,6 +37,11 @@ class CatalogActivity : public UiListActivity {
   std::string errorMessage, statusMessage, downloadHeading;
   size_t downloadProgress = 0, downloadTotal = 0;
   bool cancelDownload = false;
+  // Large catalog extension ZIPs use fewer e-ink progress refreshes than
+  // ordinary plugin/book downloads. Defaults preserve the existing behavior.
+  uint8_t downloadPercentStep = catalogprogress::kDefault.percentStep;
+  unsigned long downloadRefreshIntervalMs = catalogprogress::kDefault.maxRefreshIntervalMs;
+  unsigned long downloadFirstChunkMs = 0;
 
   virtual void startBrowse() = 0;
   virtual void retryBrowse() { startBrowse(); }

@@ -155,8 +155,11 @@ void SettingsActivity::rebuildSettings() {
 
   // Resolve the selected collection's title only while Custom sleep is active.
   // No scan or wallpaper UI is needed for Dark/Light, Cover or other modes.
-  if (section == SettingsSection::Display && SETTINGS.sleepScreen == CrossPointSettings::CUSTOM)
-    WallpaperPackRegistry::getInstance().scan();
+  if (section == SettingsSection::Display && SETTINGS.sleepScreen == CrossPointSettings::CUSTOM) {
+    auto& wallpapers = WallpaperPackRegistry::getInstance();
+    wallpapers.scan();
+    wallpapers.reconcileSelection();
+  }
 
   const size_t count = std::count_if(all.begin(), all.end(), [this](const SettingInfo& setting) {
     return sectionFor(setting) == section && showOnDevice(setting);

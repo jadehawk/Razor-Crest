@@ -42,6 +42,7 @@
 #include "components/themes/ThemePackRegistry.h"
 #include "components/wallpapers/WallpaperPackRegistry.h"
 #include "fontIds.h"
+#include "network/GithubReleaseRedirect.h"
 #include "network/HttpDownloader.h"
 #include "network/ProtectedPaths.h"
 #include "util/BookCacheUtils.h"
@@ -968,12 +969,16 @@ void PluginCatalogActivity::confirmUninstallInstalledExtension(const int pickerI
   if (index < 0 || index >= static_cast<int>(installedExtensions.size())) return;
   const InstalledExtension entry = installedExtensions[index];
   if (entry.kind == InstalledExtension::Kind::Header) return;
-  const bool selected = entry.kind == InstalledExtension::Kind::Theme
-                            ? std::string(SETTINGS.sdThemeId).rfind(entry.id + "/", 0) == 0
-                            : strcmp(SETTINGS.wallpaperPackId, entry.id.c_str()) == 0;
+  // Themes may reference live fonts/bitmaps; wallpaper packs can be removed
+  // regardless of the current sleep mode or saved collection.
+  const bool selected = entry.kind == InstalledExtension::Kind::Theme &&
+                        std::string(SETTINGS.sdThemeId).rfind(entry.id + "/", 0) == 0;
+  const bool selectedWallpaper = entry.kind == InstalledExtension::Kind::Wallpaper &&
+                                 strcmp(SETTINGS.wallpaperPackId, entry.id.c_str()) == 0;
   const std::string message =
-      selected ? "Switch to another theme or wallpaper collection in Settings before removing this one."
-               : "Remove " + entry.title + " from the SD card?";
+      selected ? "Switch to another theme in Settings before removing this one."
+               : selectedWallpaper ? "Remove " + entry.title + "? All Wallpapers will be selected instead."
+                                   : "Remove " + entry.title + " from the SD card?";
   auto dialog = makeUniqueNoThrow<ConfirmationActivity>(renderer, mappedInput,
                                                         selected ? "Collection in use" : "Remove installed collection",
                                                         message, tr(STR_CANCEL), selected ? "OK" : "Remove");
@@ -989,10 +994,13 @@ void PluginCatalogActivity::confirmUninstallInstalledExtension(const int pickerI
       LOG_ERR("PCAT", "Failed to uninstall installed extension: %s", expected.c_str());
       return;
     }
-    if (entry.kind == InstalledExtension::Kind::Theme)
+    if (entry.kind == InstalledExtension::Kind::Theme) {
       ThemePackRegistry::getInstance().scan();
-    else
-      WallpaperPackRegistry::getInstance().scan();
+    } else {
+      auto& wallpapers = WallpaperPackRegistry::getInstance();
+      wallpapers.scan();
+      wallpapers.reconcileSelection();
+    }
     enterPluginPicker();
   });
 }
@@ -3134,12 +3142,15 @@ void PluginCatalogActivity::confirmRemoveExtension(const int itemIndex) {
   const std::string path =
       root + release.name + (kind == extensionpackages::Kind::Theme ? ".crosspoint-theme" : ".crosspoint-wallpaper");
   if (!Storage.exists(path.c_str())) return;
-  const bool selected = kind == extensionpackages::Kind::Theme
-                            ? std::string(SETTINGS.sdThemeId).rfind(release.name + "/", 0) == 0
-                            : strcmp(SETTINGS.wallpaperPackId, release.name.c_str()) == 0;
+  const bool selected = kind == extensionpackages::Kind::Theme &&
+                        std::string(SETTINGS.sdThemeId).rfind(release.name + "/", 0) == 0;
+  const bool selectedWallpaper = kind == extensionpackages::Kind::Wallpaper &&
+                                 strcmp(SETTINGS.wallpaperPackId, release.name.c_str()) == 0;
   const std::string title = "Remove " + item.title;
-  const std::string message = selected ? "Switch to another theme or wallpaper collection before removing this one."
-                                       : "Remove the installed collection from the SD card?";
+  const std::string message =
+      selected ? "Switch to another theme before removing it."
+               : selectedWallpaper ? "Remove the pack? All Wallpapers will be selected instead."
+                                   : "Remove the installed collection from the SD card?";
   auto dialog = makeUniqueNoThrow<ConfirmationActivity>(renderer, mappedInput, title, message, "Cancel",
                                                         selected ? "OK" : "Remove");
   if (!dialog) return;
@@ -3149,10 +3160,13 @@ void PluginCatalogActivity::confirmRemoveExtension(const int itemIndex) {
       LOG_ERR("PCAT", "Unable to remove extension: %s", path.c_str());
       return;
     }
-    if (kind == extensionpackages::Kind::Theme)
+    if (kind == extensionpackages::Kind::Theme) {
       ThemePackRegistry::getInstance().scan();
-    else
-      WallpaperPackRegistry::getInstance().scan();
+    } else {
+      auto& wallpapers = WallpaperPackRegistry::getInstance();
+      wallpapers.scan();
+      wallpapers.reconcileSelection();
+    }
     computeInstallStatus();
     requestUpdate();
   });
@@ -3174,10 +3188,10 @@ HttpDownloader::DownloadError PluginCatalogActivity::downloadExtension(const Ite
     LOG_ERR("PCAT", "No compatible or trusted extension release for %s", item.id.c_str());
     return HttpDownloader::FILE_ERROR;
   }
-  // Do not swap files out from under a currently active theme/sleep source.
-  const bool currentlySelected = kind == extensionpackages::Kind::Theme
-                                     ? std::string(SETTINGS.sdThemeId).rfind(release.name + "/", 0) == 0
-                                     : strcmp(SETTINGS.wallpaperPackId, release.name.c_str()) == 0;
+  // Active themes own live resources and cannot be replaced. Wallpaper
+  // packs are read on sleep and may be reinstalled without changing modes.
+  const bool currentlySelected = kind == extensionpackages::Kind::Theme &&
+                                 std::string(SETTINGS.sdThemeId).rfind(release.name + "/", 0) == 0;
   if (currentlySelected) {
     // Re-selecting an already installed, identical release is not an update.
     // In particular, never swap a live SD theme's glyph/bitmap backing files.
@@ -3196,7 +3210,7 @@ HttpDownloader::DownloadError PluginCatalogActivity::downloadExtension(const Ite
         return HttpDownloader::OK;
       }
     }
-    LOG_ERR("PCAT", "Switch away from the active theme/collection before updating %s", release.name.c_str());
+    LOG_ERR("PCAT", "Switch away from the active theme before updating %s", release.name.c_str());
     return HttpDownloader::FILE_ERROR;
   }
   // Keep the firmware's collection limits; installing a new collection must
@@ -3215,18 +3229,49 @@ HttpDownloader::DownloadError PluginCatalogActivity::downloadExtension(const Ite
   session.reset();  // the firmware must not retain TLS allocations during ZIP inflation
   constexpr char ARCHIVE[] = "/.pcat_extension.zip";
   Storage.remove(ARCHIVE);
-  const auto downloaded = downloadFile(release.url, ARCHIVE);
+  // These large ZIP transfers must not repaint e-ink for every 5% as book
+  // transfers do. Preserve all input/cancel polling and byte progress data.
+  const unsigned long transferStarted = millis();
+  // GitHub Release assets issue a 302 to their signed HTTPS CDN. The generic
+  // downloader drains the intermediate redirect body; on device that can
+  // stall ~30 seconds. Resolve only the vetted CDN Location header first,
+  // then download the final asset with the existing verified file downloader.
+  std::string directAssetUrl;
+  const bool directAsset = githubreleasedirect::resolveAssetUrl(release.url, directAssetUrl, &cancelDownload);
+  if (cancelDownload) return HttpDownloader::ABORTED;
+  downloadPercentStep = catalogprogress::kExtensionZip.percentStep;
+  downloadRefreshIntervalMs = catalogprogress::kExtensionZip.maxRefreshIntervalMs;
+  auto downloaded = downloadFile(directAsset ? directAssetUrl : release.url, ARCHIVE);
+  if (downloaded != HttpDownloader::OK && downloaded != HttpDownloader::ABORTED && directAsset) {
+    // Preserve reliability if GitHub changes the CDN URL/redirect behavior.
+    LOG_INF("EXT", "Direct asset transfer failed; retrying the original release URL");
+    Storage.remove(ARCHIVE);
+    downloaded = downloadFile(release.url, ARCHIVE);
+  }
+  downloadPercentStep = catalogprogress::kDefault.percentStep;
+  downloadRefreshIntervalMs = catalogprogress::kDefault.maxRefreshIntervalMs;
+  const unsigned long firstChunkDelay =
+      downloadFirstChunkMs ? downloadFirstChunkMs - transferStarted : 0;
+  LOG_INF("EXT", "Download %s: result=%d HTTP=%d first data=%lu ms transfer=%lu ms bytes=%u",
+          release.name.c_str(), static_cast<int>(downloaded), HttpDownloader::lastStatus(),
+          firstChunkDelay, millis() - transferStarted, static_cast<unsigned>(downloadProgress));
   if (downloaded != HttpDownloader::OK) {
     Storage.remove(ARCHIVE);
     return downloaded;
   }
+  const unsigned long installStarted = millis();
   const bool installed = extensionpackages::installVerifiedZip(ARCHIVE, release);
+  LOG_INF("EXT", "ZIP verify/extract %s: result=%d duration=%lu ms",
+          release.name.c_str(), static_cast<int>(installed), millis() - installStarted);
   Storage.remove(ARCHIVE);
   if (!installed) return HttpDownloader::FILE_ERROR;
-  if (kind == extensionpackages::Kind::Theme)
+  if (kind == extensionpackages::Kind::Theme) {
     ThemePackRegistry::getInstance().scan();
-  else
-    WallpaperPackRegistry::getInstance().scan();
+  } else {
+    auto& wallpapers = WallpaperPackRegistry::getInstance();
+    wallpapers.scan();
+    wallpapers.reconcileSelection();
+  }
   return HttpDownloader::OK;
 }
 

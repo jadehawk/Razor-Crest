@@ -17,6 +17,7 @@ void WallpaperCollectionActivity::onEnter() {
 
   auto& registry = WallpaperPackRegistry::getInstance();
   registry.scan();
+  registry.reconcileSelection();
   choices.clear();
   choices.reserve(registry.choices().size() + 1);
   // Empty ID is the original shared /.sleep + /sleep pool.

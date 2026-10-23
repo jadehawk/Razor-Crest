@@ -27,6 +27,61 @@ For complete publisher contracts, ready-to-copy AI development instructions, cap
 | Theme | `/.crosspoint/themes/<id>.crosspoint-theme/` | `kind: "theme-pack"`, `themes/<id>/theme.json` | bounded monochrome CPB bitmaps, optional CPFONT UI fonts, declarative regions |
 | Wallpaper pack | `/.crosspoint/wallpapers/<id>.crosspoint-wallpaper/` | `kind: "wallpaper-pack"` manifest | uncompressed BMP images and declared README/DETAILS metadata; no CPB/theme/plugin scripts |
 
+### Required package files and rejection
+
+**New Plugin Hub catalog ZIP installs for both themes and wallpaper packs
+REQUIRE all three metadata files inside the single package folder:**
+
+1. `manifest.json` (identity, version, declared file list)
+2. `README.md` (bounded, device-readable plain text)
+3. `DETAILS.md` (UTF-8 rich Markdown; catalog details source)
+
+**Omitting any of the three, omitting any declared image/theme asset, or
+including undeclared ZIP entries causes the firmware ZIP installer to reject
+the package.** The host authoring validator and Plugin Hub publisher must
+reject it earlier. The wallpaper installer requires exactly `images.size()
++ 3` ZIP entries: a 19-image pack therefore needs **22 files**, with no
+exceptions for new published packages. The expected destination is
+`/.crosspoint/wallpapers/<id>.crosspoint-wallpaper/` and the ZIP must have
+a matching single directory prefix. After a successful network transfer,
+a rejected ZIP may still surface as **“Download failed”**—consult `[EXT]`
+logs for the validation reason. This rule is enforced by
+`src/util/ExtensionPackages.cpp`; host regression checks live in
+`test/extension_packages/`.
+
+**Existing manually copied wallpaper folders may still be discovered using
+the older two-metadata layout.** That is a migration allowance in the
+on-SD registry, *not* acceptance of incomplete newly downloaded ZIPs.
+
+### Wallpaper uninstall and missing-pack fallback
+
+Wallpaper collections, unlike SD themes, do not hold live UI resources.
+**Any installed wallpaper pack may be removed or reinstalled from Plugin Hub,
+even when it is selected for Custom Sleep Screen.** If the removed pack was
+selected, the firmware clears `wallpaperPackId`, saves the setting, and
+uses **All Wallpapers** (`/.sleep` + `/sleep`) thereafter. Removing an
+unrelated pack leaves the chosen collection unchanged. If a selected pack
+was manually deleted, became corrupt, or is missing when the user returns
+to Settings → Display → Sleep Screen → Custom, the picker rescans and falls
+back automatically to All Wallpapers instead of showing "Unavailable".
+The fallback is persisted only when SD storage is accessible; a temporarily
+unmounted SD card must not erase a user's preference.
+
+**SD themes are intentionally different:** an active SD theme continues to
+block removal or updating until another theme has been selected, because
+its fonts and artwork may still be in use.
+
+**Regular plugins are different.** The Plugin Hub *publication* gate
+requires `manifest.json` plus one or both of `plugin.js` and `device.json`,
+and every file named in `manifest.files`; it rejects a missing manifest or
+both absent entry points. `README.md` and `DETAILS.md` remain optional for
+plugins (but mandatory **when explicitly declared**). A plugin manually
+copied to SD may be loaded by firmware with only `plugin.js` or
+`device.json`; manual firmware loading does not necessarily require a
+manifest, README, or DETAILS. **Do not apply theme/wallpaper metadata
+rejection to plugins.** See
+[Plugin Hub contract](https://github.com/crosspoint-reader/crosspoint-plugin-hub/blob/main/PLUGIN_HUB_CONTRACT.md).
+
 Publish theme collections in individual GitHub repositories. Wallpaper pack repositories
 may instead contain up to eight independently installable collections, each
 with its own manifest and unique ID, packaged as **separate** install-only ZIP

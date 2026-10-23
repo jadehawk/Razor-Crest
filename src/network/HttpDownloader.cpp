@@ -56,10 +56,23 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::st
   freeink::FetchOptions options;
   options.redirectToHttp = downgradeRedirectsToHttp;
   bool answeredBySameOrigin = true;
+  // Instrument only GitHub extension release ZIPs. Do not expose redirect
+  // query tokens and do not change the established plugin/book networking.
+  const bool extensionZip = url.find(".crosspoint-theme.zip") != std::string::npos ||
+                            url.find(".crosspoint-wallpaper.zip") != std::string::npos;
+  const unsigned long fetchStart = millis();
+  unsigned long previousAttemptStart = fetchStart;
+  unsigned attempts = 0;
   const freeink::FetchResult result = freeink::fetchResumable(
       url, options,
       [&](freeink::SecureHttpClient& http, const bool sameOrigin) {
         answeredBySameOrigin = sameOrigin;
+        if (extensionZip) {
+          const unsigned long now = millis();
+          LOG_INF("EXT", "HTTP request %u: preceding request/redirect=%lu ms",
+                  ++attempts, now - previousAttemptStart);
+          previousAttemptStart = now;
+        }
         applyCommonClientSetup(http);
         // Credentials and caller headers stay with the starting origin; a
         // redirect elsewhere (or to plain http) gets neither.
@@ -72,6 +85,11 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::st
       },
       sink, [cancelFlag] { return cancelFlag && *cancelFlag; });
   if (bytesOut) *bytesOut = result.bytes;
+  if (extensionZip) {
+    LOG_INF("EXT", "HTTP final status=%d bytes=%u complete=%d requests=%u duration=%lu ms",
+            result.status, static_cast<unsigned>(result.bytes), result.complete, attempts,
+            millis() - fetchStart);
+  }
   // FetchResult::status is -1 when no response arrived (bad URL, DNS, connect, TLS).
   g_lastStatus = result.status < 0 ? 0 : result.status;
   g_lastRedirected = !answeredBySameOrigin;

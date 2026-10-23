@@ -1,5 +1,7 @@
 #include "ExtensionPackages.h"
 
+#include <Arduino.h>
+
 #include <Bitmap.h>
 #include <HalStorage.h>
 #include <JsonListParser.h>
@@ -19,6 +21,7 @@
 #include <vector>
 
 #include "util/FirmwareIdentity.h"
+#include "util/ExtensionRequiredFiles.h"
 
 namespace extensionpackages {
 namespace {
@@ -173,7 +176,7 @@ bool readManifest(ZipFile& archive, const Release& release, JsonDocument& manife
     return false;
   JsonArrayConst declared = manifest["files"].as<JsonArrayConst>();
   if (declared.isNull() || declared.size() < 2 || declared.size() > MAX_FILES) return false;
-  bool readme = false, manifestFound = false;
+  bool readme = false, manifestFound = false, detailsFound = false;
   files.reserve(declared.size());
   for (JsonVariantConst element : declared) {
     const char* path = element.as<const char*>();
@@ -182,8 +185,14 @@ bool readManifest(ZipFile& archive, const Release& release, JsonDocument& manife
     files.emplace_back(path);
     if (strcmp(path, "README.md") == 0) readme = true;
     if (strcmp(path, "manifest.json") == 0) manifestFound = true;
+    if (strcmp(path, "DETAILS.md") == 0) detailsFound = true;
   }
-  return readme && manifestFound;
+  if (!readme || !manifestFound || !detailsFound ||
+      !extensionrequiredfiles::hasRequiredMetadata(files)) {
+    LOG_ERR("EXT", "Package missing required metadata: manifest.json, README.md, DETAILS.md");
+    return false;
+  }
+  return true;
 }
 
 bool prepareExisting(const std::string& dest, const std::string& backup) {
@@ -300,10 +309,12 @@ bool selectRelease(const std::string& path, const Kind kind, const std::string& 
 }
 
 bool installVerifiedZip(const std::string& archivePath, const Release& release) {
+  const unsigned long verifyStarted = millis();
   if (!validRelease(release) || !digestMatches(archivePath, release.sha256)) {
     LOG_ERR("EXT", "Package SHA-256 or release metadata invalid: %s", release.name.c_str());
     return false;
   }
+  LOG_INF("EXT", "Verified SHA-256 %s in %lu ms", release.name.c_str(), millis() - verifyStarted);
   ZipFile zip(archivePath);
   JsonDocument manifest;
   std::vector<std::string> files;
@@ -316,7 +327,11 @@ bool installVerifiedZip(const std::string& archivePath, const Release& release) 
     if (images.isNull() || images.size() == 0 || images.size() > 32 ||
         resolution["width"].as<int>() != release.width || resolution["height"].as<int>() != release.height)
       return false;
-    if (files.size() != images.size() + 2) return false;
+    if (!extensionrequiredfiles::wallpaperCountMatches(files, images.size())) {
+      LOG_ERR("EXT", "Wallpaper ZIP must contain exactly 3 metadata files and %u BMP images",
+              static_cast<unsigned>(images.size()));
+      return false;
+    }
     for (JsonVariantConst value : images) {
       const char* image = value.as<const char*>();
       if (!image || strncmp(image, "wallpapers/", 11) != 0 ||
@@ -336,6 +351,11 @@ bool installVerifiedZip(const std::string& archivePath, const Release& release) 
     }
     if (!compatible) return false;
   }
+  // Keep the archive handle open only during central-directory checks.
+  // ZipFile supports cursor reuse for consecutive size lookups; closing
+  // between files forces a fresh ZIP scan for each member.
+  const unsigned long metadataStarted = millis();
+  if (!zip.open()) return false;
   size_t seen = 0;
   bool validEntries = true;
   const bool scanned = zip.enumerateFilePaths([&](std::string_view entry) {
@@ -348,15 +368,24 @@ bool installVerifiedZip(const std::string& archivePath, const Release& release) 
     if (!safeRelative(relative) || std::find(files.begin(), files.end(), relative) == files.end())
       validEntries = false;
   });
-  if (!scanned || !validEntries || seen != files.size()) return false;
+  if (!scanned || !validEntries || seen != files.size()) {
+    zip.close();
+    return false;
+  }
   size_t expanded = 0;
   for (const auto& path : files) {
     size_t bytes = 0;
     if (!zip.getInflatedFileSize((top + path).c_str(), &bytes) || bytes > MAX_FILE_BYTES ||
-        expanded > MAX_EXPANDED_BYTES - bytes)
+        expanded > MAX_EXPANDED_BYTES - bytes) {
+      zip.close();
       return false;
+    }
     expanded += bytes;
   }
+  // Explicitly release the ZIP handle before any inflation. The zip library
+  // discourages holding it open while allocating decompression buffers.
+  zip.close();
+  LOG_INF("EXT", "ZIP metadata verification %s: %lu ms", release.name.c_str(), millis() - metadataStarted);
 
   const std::string dest = destination(release);
   const std::string temp = dest + ".installing";
@@ -367,6 +396,13 @@ bool installVerifiedZip(const std::string& archivePath, const Release& release) 
       !hasRoomForPackage(release)) return false;
   if (Storage.exists(temp.c_str()) && !Storage.removeDir(temp.c_str())) return false;
   if (!Storage.mkdir(temp.c_str())) return false;
+  // Use larger SD/inflate buffers where heap permits, but retain the
+  // previous conservative setting for low-memory X3 installations.
+  const size_t chunkSize = ESP.getFreeHeap() >= 90000 && ESP.getMaxAllocHeap() >= 45000 ? 4096 : 1024;
+  LOG_INF("EXT", "Extracting %s: %u files, %u expanded bytes, chunk=%u",
+          release.name.c_str(), static_cast<unsigned>(files.size()), static_cast<unsigned>(expanded),
+          static_cast<unsigned>(chunkSize));
+  const unsigned long extractStarted = millis();
   bool allWritten = true;
   for (const auto& relative : files) {
     const std::string full = temp + "/" + relative;
@@ -377,7 +413,7 @@ bool installVerifiedZip(const std::string& archivePath, const Release& release) 
     }
     HalFile out;
     if (!Storage.openFileForWrite("EXT", full, out) ||
-        !zip.readFileToStream((top + relative).c_str(), out, 1024)) {
+        !zip.readFileToStream((top + relative).c_str(), out, chunkSize)) {
       allWritten = false;
       break;
     }
@@ -397,6 +433,8 @@ bool installVerifiedZip(const std::string& archivePath, const Release& release) 
       }
     }
   }
+  LOG_INF("EXT", "ZIP extraction %s: %lu ms (%s)",
+          release.name.c_str(), millis() - extractStarted, allWritten ? "ok" : "failed");
   if (!allWritten) {
     Storage.removeDir(temp.c_str());
     return false;

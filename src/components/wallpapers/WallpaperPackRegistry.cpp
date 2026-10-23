@@ -8,6 +8,9 @@
 
 #include <cstring>
 
+#include "CrossPointSettings.h"
+#include "components/wallpapers/WallpaperPackSelection.h"
+
 namespace {
 constexpr char ROOT[] = "/.crosspoint/wallpapers";
 constexpr char SUFFIX[] = ".crosspoint-wallpaper";
@@ -129,6 +132,14 @@ void WallpaperPackRegistry::scan() {
     installed.push_back({id, doc["title"].as<std::string>()});
   }
   LOG_INF("WPK", "Found %u valid wallpaper packs", static_cast<unsigned>(installed.size()));
+}
+
+bool WallpaperPackRegistry::reconcileSelection() {
+  if (!Storage.ready() || !wallpaperselection::isUnavailable(SETTINGS.wallpaperPackId, installed)) return false;
+  LOG_INF("WPK", "Selected wallpaper pack %s is unavailable; switching to All Wallpapers", SETTINGS.wallpaperPackId);
+  SETTINGS.wallpaperPackId[0] = '\0';
+  SETTINGS.saveToFile();
+  return true;
 }
 
 bool WallpaperPackRegistry::selectImage(const char* id, std::string& path) const {

@@ -155,6 +155,7 @@ void CatalogActivity::beginDownload(const std::string& title, const char* headin
 void CatalogActivity::onDownloadProgress(const size_t downloaded, const size_t total) {
   downloadProgress = downloaded;
   downloadTotal = total;
+  if (!downloadFirstChunkMs && downloaded > 0) downloadFirstChunkMs = millis();
   // Home cancels immediately; other configured actions are deferred to the
   // next main-loop pass by the transfer input pump.
   mappedInput.update(true);
@@ -163,8 +164,8 @@ void CatalogActivity::onDownloadProgress(const size_t downloaded, const size_t t
   routeTouch(mappedInput);
   const int percent = total > 0 ? static_cast<int>(static_cast<uint64_t>(downloaded) * 100 / total) : 0;
   const unsigned long now = millis();
-  if (percent >= 100 || lastRenderedPercent < 0 || percent >= lastRenderedPercent + 5 ||
-      now - lastProgressUpdateMs >= 5000) {
+  if (catalogprogress::shouldRefresh(percent, lastRenderedPercent, now - lastProgressUpdateMs,
+                                     {downloadPercentStep, downloadRefreshIntervalMs})) {
     lastRenderedPercent = percent;
     lastProgressUpdateMs = now;
     requestUpdate(true);
@@ -178,6 +179,7 @@ HttpDownloader::DownloadError CatalogActivity::downloadFile(const std::string& u
   downloadProgress = downloadTotal = 0;
   lastRenderedPercent = -1;
   lastProgressUpdateMs = 0;
+  downloadFirstChunkMs = 0;
   // Rebuildable SD-font caches can hold tens of KB the TLS session needs for
   // a multi-MB file; release them up front (they repopulate on demand) and
   // refuse to start below the floor. A doomed transfer otherwise dies

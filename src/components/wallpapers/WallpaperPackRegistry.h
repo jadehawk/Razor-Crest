@@ -14,6 +14,9 @@ class WallpaperPackRegistry {
  public:
   static WallpaperPackRegistry& getInstance();
   void scan();
+  // Clear a saved wallpaper ID that no longer exists. Empty means All Wallpapers.
+  // Only call after scan(); never discard preferences when SD is unavailable.
+  bool reconcileSelection();
   const std::vector<WallpaperPackChoice>& choices() const { return installed; }
   bool selectImage(const char* id, std::string& path) const;
 

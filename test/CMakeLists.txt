@@ -91,6 +91,24 @@ add_subdirectory(plugin_manifest_classification)
 add_subdirectory(plugin_picker_layout)
 add_subdirectory(protected_paths)
 
+# This test has no embedded/Arduino dependencies and enforces the required
+# metadata contract for all new theme and wallpaper catalog ZIP installs.
+add_executable(ExtensionRequiredFilesTest extension_packages/ExtensionRequiredFilesTest.cpp)
+target_link_libraries(ExtensionRequiredFilesTest PRIVATE crosspoint_test_common)
+add_test(NAME ExtensionRequiredFiles COMMAND ExtensionRequiredFilesTest)
+
+add_executable(ExtensionDownloadProgressPolicyTest extension_packages/DownloadProgressPolicyTest.cpp)
+target_link_libraries(ExtensionDownloadProgressPolicyTest PRIVATE crosspoint_test_common)
+add_test(NAME ExtensionDownloadProgressPolicy COMMAND ExtensionDownloadProgressPolicyTest)
+
+add_executable(WallpaperPackSelectionTest extension_packages/WallpaperPackSelectionTest.cpp)
+target_link_libraries(WallpaperPackSelectionTest PRIVATE crosspoint_test_common)
+add_test(NAME WallpaperPackSelection COMMAND WallpaperPackSelectionTest)
+
+add_executable(GithubReleaseRedirectPolicyTest extension_packages/GithubReleaseRedirectPolicyTest.cpp)
+target_link_libraries(GithubReleaseRedirectPolicyTest PRIVATE crosspoint_test_common)
+add_test(NAME GithubReleaseRedirectPolicy COMMAND GithubReleaseRedirectPolicyTest)
+
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME TrustedTimeTimezone COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_trusted_time.py)
 
