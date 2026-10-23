@@ -884,6 +884,24 @@ void PluginCatalogActivity::discoverInstalledExtensions() {
     entry.version = doc["version"] | "";
     entry.author = doc["author"] | "";
     entry.description = doc["description"] | "";
+    // Wallpaper v1 manifests cannot declare description. Use the plain
+    // package README's first descriptive line without changing that schema.
+    if (entry.description.empty()) {
+      std::string readme;
+      if (Storage.readFileToString("PCAT", dir + "/README.md", 2 * 1024, readme)) {
+        bool first = true;
+        size_t offset = 0;
+        while (offset < readme.size()) {
+          const size_t end = readme.find('\n', offset);
+          const std::string line = readme.substr(offset, end == std::string::npos ? end : end - offset);
+          offset = end == std::string::npos ? readme.size() : end + 1;
+          if (line.empty() || line == "\r") continue;
+          if (first) { first = false; continue; }  // Skip package title
+          entry.description = line.substr(0, 180);
+          break;
+        }
+      }
+    }
     installedExtensions.push_back(std::move(entry));
   };
   // Registry entries have already passed firmware-compatible payload checks.
@@ -2813,7 +2831,7 @@ bool PluginCatalogActivity::parseBrowseResponse() {
   const bool extension = currentList >= 0 && currentList < static_cast<int>(manifest.browseLists.size()) &&
                          manifest.browseLists[currentList].kind != "plugin";
   const bool filterCompatibility = !extension && manifest.filtersCompatibility();
-  const std::string extTitle = "title", extAuthor = "author", extId = "name", extUrl = "asset_url";
+  const std::string extTitle = "title", extAuthor = "description", extId = "name", extUrl = "asset_url";
   const std::string& titles = extension ? extTitle : manifest.titlePath;
   const std::string& authors = extension ? extAuthor : manifest.authorPath;
   const std::string& ids = extension ? extId : manifest.idPath;
@@ -4012,9 +4030,7 @@ void PluginCatalogActivity::activateItem(const int itemIndex) {
     fetchPage(page);
     return;
   }
-  if (!manifest.isXmlList() && manifest.hasItemDetails() &&
-      !(currentList >= 0 && currentList < static_cast<int>(manifest.browseLists.size()) &&
-        manifest.browseLists[currentList].kind != "plugin")) {
+  if (!manifest.isXmlList() && manifest.hasItemDetails()) {
     showItemDetails(itemIndex);
     return;
   }
@@ -4033,6 +4049,9 @@ void PluginCatalogActivity::activateItem(const int itemIndex) {
 bool PluginCatalogActivity::loadItemDetails(const int itemIndex, ItemDetails& details) {
   if (itemIndex < 0 || itemIndex >= static_cast<int>(items.size())) return false;
   const Item& target = items[itemIndex];
+  const bool extension = currentList >= 0 && currentList < static_cast<int>(manifest.browseLists.size()) &&
+                         manifest.browseLists[currentList].kind != "plugin";
+  const std::string& itemsPath = extension ? manifest.browseLists[currentList].itemsPath : manifest.itemsPath;
   bool found = false;
   auto capture = [&](JsonListParser::Row& row) {
     if (found) return;
@@ -4049,7 +4068,7 @@ bool PluginCatalogActivity::loadItemDetails(const int itemIndex, ItemDetails& de
                                        &manifest.detailAuthorPath, &manifest.versionPath, &manifest.repositoryPath};
   const std::string unused;
   auto parser = makeUniqueNoThrow<JsonListParser>(
-      manifest.itemsPath, fields, unused,
+      itemsPath, fields, unused,
       [](void* context, JsonListParser::Row& row) { (*static_cast<decltype(capture)*>(context))(row); }, &capture);
   const bool metadataFound = streamBrowseFile(parser.get()) && found;
 
@@ -4068,7 +4087,7 @@ bool PluginCatalogActivity::loadItemDetails(const int itemIndex, ItemDetails& de
   const std::string* const richFields[] = {&manifest.titlePath,         &manifest.idPath,      &manifest.detailsUrlPath,
                                            &manifest.detailsFormatPath, &manifest.versionPath, &unused};
   auto richParser = makeUniqueNoThrow<JsonListParser>(
-      manifest.itemsPath, richFields, unused,
+      itemsPath, richFields, unused,
       [](void* context, JsonListParser::Row& row) { (*static_cast<decltype(captureRich)*>(context))(row); },
       &captureRich);
   return (streamBrowseFile(richParser.get()) && richFound) || metadataFound;
@@ -4765,7 +4784,7 @@ void PluginCatalogActivity::rebuildRowItems() {
         rowItems.push_back(header);
       } else {
         // The version value is in the same right-aligned column as plugin versions.
-        addRow(entry.title.c_str(), entry.author.empty() ? entry.description.c_str() : entry.author.c_str(),
+        addRow(entry.title.c_str(), entry.description.empty() ? "No description available" : entry.description.c_str(),
                entry.version.empty() ? ">" : entry.version.c_str());
       }
     }

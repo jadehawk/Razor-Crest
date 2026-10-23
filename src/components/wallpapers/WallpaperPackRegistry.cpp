@@ -13,7 +13,7 @@ constexpr char ROOT[] = "/.crosspoint/wallpapers";
 constexpr char SUFFIX[] = ".crosspoint-wallpaper";
 constexpr size_t MAX_PACKS = 8;
 constexpr size_t MAX_IMAGES = 32;
-constexpr size_t MAX_FILES = MAX_IMAGES + 2;
+constexpr size_t MAX_FILES = MAX_IMAGES + 3;
 constexpr size_t MAX_JSON = 8192;
 
 bool safeId(const char* text) {
@@ -58,16 +58,23 @@ bool validManifest(const char* id, const std::string& base, JsonDocument& doc, b
   if (!*title || strlen(title) > 60 || !*version || strlen(version) > 24) return false;
   JsonArrayConst images = doc["images"].as<JsonArrayConst>();
   JsonArrayConst files = doc["files"].as<JsonArrayConst>();
+  // Keep legacy installed packs working; new package publications supply both
+  // fields but old releases have neither.
+  const char* description = doc["description"] | "";
+  if (*description && strlen(description) > 180) return false;
   if (images.isNull() || files.isNull() || images.size() == 0 || images.size() > MAX_IMAGES ||
-      files.size() != images.size() + 2 || files.size() > MAX_FILES || !declared(files, "manifest.json") ||
-      !declared(files, "README.md"))
+      (files.size() != images.size() + 2 && files.size() != images.size() + 3) ||
+       files.size() > MAX_FILES || !declared(files, "manifest.json") ||
+      !declared(files, "README.md") ||
+       (files.size() == images.size() + 3 && !declared(files, "DETAILS.md")))
     return false;
   // Enforce a complete, explicit file list. No executable files, traversal,
   // external paths, nested collections, or arbitrary SD-file references.
   for (size_t i = 0; i < files.size(); ++i) {
     const char* path = files[i].as<const char*>();
     if (!path) return false;
-    if (!imagePath(path) && strcmp(path, "manifest.json") && strcmp(path, "README.md")) return false;
+    if (!imagePath(path) && strcmp(path, "manifest.json") && strcmp(path, "README.md") &&
+        strcmp(path, "DETAILS.md")) return false;
     for (size_t j = 0; j < i; ++j) {
       const char* prior = files[j].as<const char*>();
       if (prior && strcmp(path, prior) == 0) return false;

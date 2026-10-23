@@ -25,7 +25,7 @@ For complete publisher contracts, ready-to-copy AI development instructions, cap
 |---|---|---|---|
 | Plugin | `/.crosspoint/plugins/<id>/` or supported legacy roots | `manifest.json` / `device.json` as applicable | `plugin.js` (browser code), `device.json` (declarative on-device catalog), README/assets |
 | Theme | `/.crosspoint/themes/<id>.crosspoint-theme/` | `kind: "theme-pack"`, `themes/<id>/theme.json` | bounded monochrome CPB bitmaps, optional CPFONT UI fonts, declarative regions |
-| Wallpaper pack | `/.crosspoint/wallpapers/<id>.crosspoint-wallpaper/` | `kind: "wallpaper-pack"` manifest | uncompressed BMP images and README; no CPB/theme/plugin scripts |
+| Wallpaper pack | `/.crosspoint/wallpapers/<id>.crosspoint-wallpaper/` | `kind: "wallpaper-pack"` manifest | uncompressed BMP images and declared README/DETAILS metadata; no CPB/theme/plugin scripts |
 
 Publish theme collections in individual GitHub repositories. Wallpaper pack repositories
 may instead contain up to eight independently installable collections, each
@@ -34,6 +34,13 @@ assets in one release. Multiple variants share the release version and carry
 validated `target_resolution` metadata; no ZIP should install other variants.
 The device discovers installed packs independently from the repository layout.
 No firmware name-based or all-variant automatic installer is implied.
+
+A standalone collection uses the same catalog fields as plugins: `name`, `title`,
+`description`, `author`, `version`, and a declared `DETAILS.md` inside its
+installable ZIP. Plugin Hub verifies the ZIP contents, renders that Markdown
+to safe, versioned HTML, and includes `details.url` / `details.format` in
+the catalog. Tap opens details; installation is a separate action. Older
+installed wallpaper packs without the new metadata remain usable.
 
 A standalone collection is published with a stable
 lowercase ID, a matching manifest version, tag `v<version>`, and a release
