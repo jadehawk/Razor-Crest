@@ -124,7 +124,8 @@ Advertised named capabilities include `catalog.lists`,
 `catalog.notices`, `catalog.bundle_install`,
 `catalog.version_tracking`, `catalog.compatibility`,
 `catalog.images`, `catalog.cache`, `catalog.refresh`,
-`catalog.item_details`, `stats.native.v1`, `ui.dashboard.v1`.
+`catalog.item_details`, `stats.native.v1`, `ui.dashboard.v1`
+(bounded on-device metric/hero cards, icon assets, book lists, and native progress).
 Their exact schema and limits are in [sd-plugins.md](sd-plugins.md) and
 [webserver-endpoints.md](webserver-endpoints.md).
 
@@ -181,6 +182,20 @@ regular Custom sleep and timed refresh; the default **All wallpapers**
 preserves `/.sleep` plus `/sleep` (and ordinary `/sleep.bmp` priority).
 Selecting a pack never changes the active UI theme. PNG/JPEG are authoring
 inputs that must be converted to BMP first; CPB is not required.
+
+**Live virtual collection:** when the installed and enabled Reading Statistics
+plugin exposes `dashboard.source: reading-stats.v1`, the selector additionally
+offers **Reading Statistics**. This source is not a wallpaper pack or
+an authored bitmap. Firmware uses the installed plugin's current V1 manifest
+and renders page 1 from native statistics at every normal sleep entry, without
+dashboard navigation controls. Missing or disabled plugins fall back to
+ordinary Custom wallpapers. Cover + Custom honors the selected live source;
+Quick Resume remains unchanged. With Custom timed refresh enabled, the
+selected source is redrawn on every scheduled wake: wallpaper packs rotate BMPs,
+while Reading Statistics redraws Overall Statistics from saved native data, then
+returns to deep sleep. Its sleep image omits navigation header and buttons;
+the centered page title remains. Future providers (weather/calendar) require
+their own bounded, capability-gated refresh implementation.
 
 The independent authoring reference is
 `crosspoint-wallpaper-template/docs/WALLPAPER_PACK_CONTRACT.md`.

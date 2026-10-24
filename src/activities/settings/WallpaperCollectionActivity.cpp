@@ -9,6 +9,7 @@
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "components/wallpapers/WallpaperPackRegistry.h"
+#include "util/ReadingStatsSleepSource.h"
 
 namespace fui = freeink::ui;
 
@@ -19,9 +20,11 @@ void WallpaperCollectionActivity::onEnter() {
   registry.scan();
   registry.reconcileSelection();
   choices.clear();
-  choices.reserve(registry.choices().size() + 1);
+  choices.reserve(registry.choices().size() + 2);
   // Empty ID is the original shared /.sleep + /sleep pool.
   choices.push_back({"", "All wallpapers (/.sleep + /sleep)"});
+  if (readingstatssleep::available())
+    choices.push_back({readingstatssleep::kId, readingstatssleep::kLabel});
   for (const auto& choice : registry.choices()) choices.push_back({choice.id, choice.label});
 
   items.clear();

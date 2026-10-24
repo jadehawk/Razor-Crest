@@ -33,7 +33,8 @@ offline dashboard activity with an opt-in, confirmed legacy-data import.
 
 Razor-Crest advertises `stats.native.v1` and `ui.dashboard.v1`
 through the firmware identity contract, additive to `plugin_api=1`.
-A future Plugin Hub catalog entry should require these two capabilities.
+The complete styled Reading Statistics plugin uses the single pre-release
+`ui.dashboard.v1` contract, without a separate V2 API or compatibility path.
 Stock CrossPoint cannot run the native dashboard and falls back to the
 ordinary plugin description. No browser statistics gateway is shipped
 with this native-only integration.
@@ -95,9 +96,14 @@ preview alone never writes either legacy or native files. The native host accept
   `active_days`.
 - `week_bars`: seven saved daily buckets.
 - `heatmap_28`: a 28-day e-ink activity grid.
-- `book_list`: opens a paginated on-device list of tracked books. Selecting a
-  book opens the same readable metric-card dashboard as Current Book,
-  including title, author and available EPUB series metadata.
+- `book_list`: renders compact cover-thumbnail rows directly on All Books,
+  with title, author, saved reading time and completion percentage. Selecting
+  a row opens the same detailed dashboard as Current Book. Long-press Select
+  or hold a touch row to confirm per-book BIN/index removal, leaving EPUBs and
+  global lifetime totals intact. The cover and last
+  known progress are persisted separately from EPUB cache under
+  `/.crosspoint/reading-stats/covers/`, so deletion of a source book does
+  not erase a previously captured preview. Unknown progress is never zero.
 - `legacy_import`: source discovery and bounded preview of CrossInk global
   totals or vCodex v6 per-book totals; the review activity requires choosing
   the same source a second time before any conversion starts.
@@ -108,8 +114,8 @@ Manifest labels, page sequence, and widget choices are plugin-defined.
 The dashboard host centers metric labels/values, wraps labels into up to two lines
 and presents book title, author and EPUB series metadata on multiple lines.
 Metric cards use bounded, screen-relative heights; the 7-day bars include
-weekday labels, the 28-day grid uses compact cells, and the All Books entry
-uses its plugin-defined label with the cached recorded-book count.
+weekday labels and the 28-day grid uses compact cells. All Books renders its
+thumbnail-backed reading history directly, without an extra entry screen.
 Both charts end on the latest *recorded* day, not necessarily today.
 The active-days metric covers the native 366-day history, not only the
 visible 28-day grid. Qualified page turns are not unique pages read.
@@ -128,6 +134,53 @@ The standalone installable dashboard lives in the sibling repository
 It includes `manifest.json`, `device.json`, `README.md` and `DETAILS.md`.
 Only the plugin repository controls the displayed page/metric layout.
 
+## Reusable icon and card layouts
+
+Home and Reading Statistics use native-sized 1-bit JPEG/PNG thumbnails
+dithered only once by the existing streaming Atkinson converter.
+The JPEG/PNG thumbnail converter uses cover-fill scaling (centered crop)
+instead of letterboxing, matching Home's fixed-size thumbnail frame.
+The EPUB/TXT/MD cache naming `thumb_bw_fill_<height>.bmp`
+regenerates previously experimental thumbnails from source artwork.
+The original shared UI bitmap renderer is unchanged; no second
+ordered Bayer pass is applied. XTC retains its original path.
+The Reading Statistics hero stores its 142px cover separately from
+the 68px All Books thumbnail; either can survive the EPUB being
+deleted, and explicit statistics-history removal clears both.
+The Cover sleep screen keeps its dedicated grayscale waveform.
+
+The V1 dashboard accepts plugin-supplied 80x80 packed monochrome PBM icons,
+full-width book hero cards, and square, rounded or chamfered borders. Both book
+heroes draw a real cover, right-aligned metadata column and a bottom
+progress bar with a vertically aligned completion percentage. Only one
+pre-release V1 contract is maintained. See [dashboard-cards-v1.md](dashboard-cards-v1.md)
+for its bounded asset and widget contract.
+
+## Live Custom sleep-screen source
+
+When the Reading Statistics plugin is installed and enabled, **Wallpaper
+Collection** offers `Reading Statistics` as a virtual option. Under
+Sleep Screen **Custom** or **Cover + Custom**, it paints the current first
+dashboard page from native reading statistics when the device enters sleep.
+It reuses the V1 renderer and installed manifest, with no screenshot cache,
+server connection, navigation header, or footer buttons. The centered page
+heading remains and the content expands into the reclaimed display space.
+Disabling or removing the plugin makes the source unavailable and restores
+the normal wallpaper pool. Quick Resume
+is unchanged. With **Custom** sleep and Timed Sleep-Screen Refresh enabled,
+each timer wake reloads the native stats and re-renders page one, displays
+it on e-ink, and returns straight to deep sleep. The interval is preserved
+even if reading totals have not changed: timed wake is a scheduled refresh
+primitive, not only a wallpaper carousel. Cover + Custom renders live stats
+on entry; timed refresh still requires sleep mode Custom. No Wi-Fi is
+necessary for this local statistics source.
+
+Hardware tests: select the live source and a short interval, sleep and check
+that the statistics screen repaints on timer wake, then returns to deep sleep.
+Record another reading session and confirm it is present after the next sleep
+entry. Verify ordinary power-button resume, the OFF interval, X3 battery
+and charging operation, X4Pro and missing-plugin fallback.
+
 ## How to test the firmware
 
 1. Build from the current integration branch using
@@ -137,12 +190,25 @@ Only the plugin repository controls the displayed page/metric layout.
    into `/.crosspoint/plugins/reading-statistics/` on the SD card.
    Keep `manifest.json`, `device.json`, `README.md` and `DETAILS.md` together.
 3. Enable Plugins in Settings > Connectivity > Plugins.
-4. Open Home > Plugins > Reading Statistics. Confirm six pages display,
-   including All Books and Import Statistics. On All Books, Select opens the
-   paginated book list. On Import Statistics, Select opens source review;
+4. Open Home > Plugins > Reading Statistics. Confirm six pages display
+   with centered page titles and no page counters. Both book heroes should show
+   progress bars. All Books itself contains small thumbnail rows with title,
+   author, time read and percentage; selecting a row opens the Current Book
+   detail layout. On Import Statistics, Select opens source review;
    selecting the same valid source a second time explicitly starts import.
-   Back cancels before confirmation. Navigation otherwise stays unchanged.
-5. Start an EPUB or XTC, allow two or more forward page turns after
+   Back cancels before confirmation. Verify side Up/Down moves through every
+   dashboard page, particularly 5→6 and 6→1, on both X3 and X4Pro; front
+   Previous/Next select book rows only on All Books. Horizontal swipes change
+   pages on touch boards; vertical swipes browse books.
+5. First remove an entry using All Books' long-press confirmation, then reopen
+   that same book from Home or Library and return to All Books. It must
+   reappear immediately with 0m of new reading time; new sessions only count
+   after qualifying dwell and a forward turn. Confirm the selected book row
+   has light-gray dither shading, a bold border and a dark left marker on
+   X3 and X4Pro. A deleted book does not reduce global totals. TXT/MD
+   entries are indexed on successful reader open; an absent progress percentage
+   is displayed as unknown rather than invented as 0%.
+6. Start an EPUB or XTC, allow two or more forward page turns after
    qualifying reading dwells totaling at least 10 seconds, then exit to
    Home (or sleep and wake). Reopen the plugin: the total and turn counters
    should increase. A 60+ second session increments the session count.

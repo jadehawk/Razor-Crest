@@ -28,7 +28,15 @@ bool readIndexEntry(HalFile& file, const uint32_t position, BookEntry& entry) {
 }
 }  // namespace
 
+void recoverIndex() {
+  if (!Storage.exists(kPath)) {
+    const std::string backup = std::string(kPath) + ".bak";
+    if (Storage.exists(backup.c_str())) Storage.rename(backup.c_str(), kPath);
+  }
+}
+
 uint32_t bookCount() {
+  recoverIndex();
   HalFile file;
   if (!Storage.openFileForRead("RST", kPath, file)) return 0;
   const uint32_t size = entryCount(file);
@@ -37,6 +45,7 @@ uint32_t bookCount() {
 }
 
 bool bookAt(const uint32_t index, BookEntry& entry) {
+  recoverIndex();
   if (index >= kMaxEntries) return false;
   HalFile file;
   if (!Storage.openFileForRead("RST", kPath, file)) return false;
@@ -46,6 +55,7 @@ bool bookAt(const uint32_t index, BookEntry& entry) {
 }
 
 bool ensureBookIndexed(const uint64_t hash, const char* path, const char* title, const char* author) {
+  recoverIndex();
   if (!path || !*path) return false;
   if (!Storage.exists("/.crosspoint") && !Storage.mkdir("/.crosspoint")) return false;
   if (!Storage.exists(kDir) && !Storage.mkdir(kDir)) return false;
@@ -53,11 +63,6 @@ bool ensureBookIndexed(const uint64_t hash, const char* path, const char* title,
   if (!file) return false;
   const uint64_t bytes = file.fileSize();
   const uint32_t count = entryCount(file);
-  if (count >= kMaxEntries) {
-    file.close();
-    LOG_ERR("RST", "Book index full (%u)", static_cast<unsigned>(count));
-    return false;
-  }
   BookEntry entry{};
   for (uint32_t i = 0; i < count; ++i) {
     if (!readIndexEntry(file, i, entry)) {
@@ -69,6 +74,11 @@ bool ensureBookIndexed(const uint64_t hash, const char* path, const char* title,
       file.close();
       return true;
     }
+  }
+  if (count >= kMaxEntries) {
+    file.close();
+    LOG_ERR("RST", "Book index full (%u)", static_cast<unsigned>(count));
+    return false;
   }
   // A partially appended last record is safe to discard; all complete
   // entries have their own checksums. This is not a rewrite of the catalog.
@@ -92,4 +102,54 @@ bool ensureBookIndexed(const uint64_t hash, const char* path, const char* title,
   const bool closed = file.close();
   return written && closed;
 }
+
+// Rebuild only the compact index: the book file and global snapshot are owned
+// by ReadingStatsStore. Preserve the previous valid index as a .bak until the
+// replacement is fully in place. Next reader lookup can restore a .bak if a
+// power loss interrupted the two renames.
+bool removeIndexedBook(const uint64_t hash) {
+  recoverIndex();
+  HalFile src;
+  if (!Storage.openFileForRead("RST", kPath, src)) return false;
+  if (src.fileSize() % sizeof(BookEntry) != 0 || entryCount(src) > kMaxEntries) {
+    src.close();
+    return false;
+  }
+  const uint32_t count = entryCount(src);
+  const std::string tmp = std::string(kPath) + ".tmp";
+  const std::string backup = std::string(kPath) + ".bak";
+  HalFile dst;
+  if (!Storage.openFileForWrite("RST", tmp, dst)) {
+    src.close();
+    return false;
+  }
+  bool found = false, ok = true;
+  for (uint32_t i = 0; i < count; ++i) {
+    BookEntry record{};
+    if (!readIndexEntry(src, i, record)) { ok = false; break; }
+    if (record.hash() == hash) { found = true; continue; }
+    if (dst.write(&record, sizeof(record)) != sizeof(record)) { ok = false; break; }
+  }
+  dst.flush();
+  const bool dstClosed = dst.close();
+  const bool srcClosed = src.close();
+  ok = dstClosed && srcClosed && ok;
+  if (!ok || !found) {
+    Storage.remove(tmp.c_str());
+    return false;
+  }
+  Storage.remove(backup.c_str());
+  if (!Storage.rename(kPath, backup.c_str())) {
+    Storage.remove(tmp.c_str());
+    return false;
+  }
+  if (!Storage.rename(tmp.c_str(), kPath)) {
+    Storage.rename(backup.c_str(), kPath);
+    Storage.remove(tmp.c_str());
+    return false;
+  }
+  Storage.remove(backup.c_str());
+  return true;
+}
+
 }  // namespace readingstats

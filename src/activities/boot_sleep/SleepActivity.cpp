@@ -26,6 +26,8 @@
 #include "activities/reader/ReaderUtils.h"
 #include "components/UITheme.h"
 #include "components/wallpapers/WallpaperPackRegistry.h"
+#include "activities/plugins/StatsDashboardActivity.h"
+#include "util/ReadingStatsSleepSource.h"
 #include "fontIds.h"
 #include "images/Logo120.h"
 #include "images/MoonIcon.h"
@@ -647,6 +649,8 @@ void SleepActivity::onEnter() {
     case (CrossPointSettings::SLEEP_SCREEN_MODE::COVER):
       return renderCoverSleepScreen();
     case (CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM):
+      // A selected live statistics collection always wins over cover mode.
+      if (readingstatssleep::selected(SETTINGS.wallpaperPackId)) return renderCustomSleepScreen();
       if (APP_STATE.lastSleepFromReader) {
         return renderCoverSleepScreen();
       } else {
@@ -658,6 +662,13 @@ void SleepActivity::onEnter() {
 }
 
 bool SleepActivity::renderTimedSleepScreen() const {
+  // On a timer wake, dispatch to the selected live screen source before the
+  // ordinary wallpaper pool. Rebuild page one from SD/native statistics and
+  // then return to deep sleep through the existing main.cpp timer path.
+  if (readingstatssleep::selected(SETTINGS.wallpaperPackId)) {
+    LOG_DBG("SLP", "Timed wake: refreshing live Reading Statistics screen");
+    return renderReadingStatisticsSleepScreen();
+  }
   std::string selectedPath;
   if (SETTINGS.wallpaperPackId[0] &&
       !WallpaperPackRegistry::getInstance().selectImage(SETTINGS.wallpaperPackId, selectedPath))
@@ -694,7 +705,29 @@ bool SleepActivity::renderTimedSleepScreen() const {
   return true;
 }
 
+bool SleepActivity::renderReadingStatisticsSleepScreen() const {
+  const std::string manifest = readingstatssleep::manifestPath();
+  if (manifest.empty()) return false;
+  auto dashboard = makeUniqueNoThrow<StatsDashboardActivity>(renderer, mappedInput, manifest);
+  if (!dashboard) {
+    LOG_ERR("SLP", "Insufficient memory for Reading Statistics sleep screen");
+    return false;
+  }
+  if (!dashboard->renderSleepOverview()) {
+    LOG_ERR("SLP", "Failed to render Reading Statistics overview for sleep");
+    return false;
+  }
+  // Free the temporary dashboard state before transferring the e-ink frame.
+  dashboard.reset();
+  renderer.displayBuffer(kSleepClean);
+  return true;
+}
+
 void SleepActivity::renderCustomSleepScreen() const {
+  if (readingstatssleep::selected(SETTINGS.wallpaperPackId)) {
+    if (renderReadingStatisticsSleepScreen()) return;
+    LOG_ERR("SLP", "Reading Statistics unavailable; falling back to custom wallpapers");
+  }
   std::string selectedPath;
   if (SETTINGS.wallpaperPackId[0] &&
       !WallpaperPackRegistry::getInstance().selectImage(SETTINGS.wallpaperPackId, selectedPath))

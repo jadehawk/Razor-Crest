@@ -90,7 +90,14 @@ void ReaderActivity::rememberBookOnceRendered() {
   bookRemembered = true;
   APP_STATE.openEpubPath = bookPath;
   APP_STATE.saveToFile();
-  RECENT_BOOKS.addBook(bookPath, getBookTitle(), getBookAuthor(), getBookThumbBmpPath());
+  const std::string title = getBookTitle();
+  const std::string author = getBookAuthor();
+  RECENT_BOOKS.addBook(bookPath, title, author, getBookThumbBmpPath());
+  // A deleted book returns to All Books the next time it really opens.
+  // Register only the identity; actual seconds/turns still require a
+  // qualifying session flushed on exit or sleep.
+  if (!readingstats::rememberOpenedBook(bookPath.c_str(), title.c_str(), author.c_str()))
+    LOG_ERR("RST", "Could not index opened book: %s", bookPath.c_str());
   const pluginevents::Var openVars[] = {{"book", bookPath.c_str()}};
   pluginevents::emit(pluginevents::Event::ReaderOpen, openVars, 1);
 }

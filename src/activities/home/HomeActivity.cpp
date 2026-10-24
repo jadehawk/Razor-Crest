@@ -54,6 +54,13 @@ void HomeActivity::loadRecentBooks(int maxBooks) {
     }
 
     recentBooks.push_back(book);
+    // RecentBooksStore can retain a legacy 1-bit thumb path. Resolve the
+    // current native-sized 1-bit thumbnail contract on Home entry so
+    // previous experimental grayscale covers are not reused.
+    if (FsHelpers::hasReflowableBookExtension(book.path)) {
+      auto epub = makeUniqueNoThrow<Epub>(book.path, "/.crosspoint");
+      if (epub) recentBooks.back().coverBmpPath = epub->getThumbBmpPath();
+    }
   }
 }
 

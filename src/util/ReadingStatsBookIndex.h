@@ -8,7 +8,7 @@
 
 namespace readingstats {
 
-// Compact on-SD catalog of books with recorded sessions. Fixed-size entries
+// Compact on-SD catalog of books opened or recorded. Fixed-size entries
 // allow O(1) positional paging without loading every title on a no-PSRAM X3.
 // Hash identifies the original complete path even if the display path is cut.
 struct BookEntry {

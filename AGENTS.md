@@ -20,6 +20,10 @@ Act as a senior embedded C++ engineer. Base claims on repository evidence: cite 
 
 First inspect the relevant code and current behavior to establish whether a change is needed. Before adding an API, setting, task, persistent state, driver change, or scheduling dependency, tie it to the human requirement and check existing mechanisms. Identify unexplained scope inherited from a stash or branch.
 
+## Pre-release plugin and dashboard policy
+
+Razor-Crest's Reading Statistics plugin and dashboard features are experimental, not official released contracts. **Do not spend effort on backwards compatibility with earlier development builds.** Develop the existing V1 contract in place. Do not add V2 capability names, compatibility shims, legacy renderers, migration layers, or duplicate code paths just to accommodate superseded test builds unless the human explicitly requests them. Replace obsolete experimental behavior instead of preserving it. This rule applies to these unreleased features, not unrelated upstream or published interfaces. Preserve users' existing reading-statistics records; destructive data changes still require explicit approval.
+
 Use the table to find guidance for the decisions being changed. Read relevant sections, not every file associated with a touched subsystem. Load implementation skills when implementation is needed and `firmware-handoff` at final handoff. Reuse guidance already in context unless it changed or a concrete question requires another read.
 
 | Decision being changed | Relevant guidance |

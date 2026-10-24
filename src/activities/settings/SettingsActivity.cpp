@@ -44,6 +44,7 @@
 #include "components/wallpapers/WallpaperPackRegistry.h"
 #include "fontIds.h"
 #include "util/PluginEvents.h"
+#include "util/ReadingStatsSleepSource.h"
 
 namespace fui = freeink::ui;
 
@@ -716,6 +717,11 @@ void SettingsActivity::openSleepTimeoutPicker() {
 std::string SettingsActivity::settingValueText(const SettingInfo& setting) {
   if (setting.action == SettingAction::WallpaperCollection) {
     if (!SETTINGS.wallpaperPackId[0]) return "All wallpapers";
+    // The picker/reconciliation already verifies this virtual source. Don't
+    // repeat SD manifest validation while drawing the settings value: a
+    // transient lookup error would misleadingly show "Unavailable".
+    if (readingstatssleep::selected(SETTINGS.wallpaperPackId))
+      return readingstatssleep::kLabel;
     for (const auto& pack : WallpaperPackRegistry::getInstance().choices()) {
       if (pack.id == SETTINGS.wallpaperPackId) {
         // Display settings have a right-aligned value: keep long pack titles

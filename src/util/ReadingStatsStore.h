@@ -13,10 +13,18 @@ namespace readingstats {
 bool record(const char* bookPath, uint32_t activeSeconds, uint32_t qualifiedTurns, int64_t trustedStartEpoch,
             const char* title = nullptr, const char* author = nullptr);
 
+// Register a successfully opened book immediately. This creates only its
+// catalog entry (0m until a qualifying reader session), not an invented
+// session/global-total update. Deleted history can reappear on a later open.
+bool rememberOpenedBook(const char* path, const char* title, const char* author);
+
 // Bounded book index: the UI pages by position, never loads every title.
 bool ensureBookIndexed(uint64_t hash, const char* path, const char* title, const char* author);
 uint32_t bookCount();
 bool bookAt(uint32_t index, BookEntry& out);
+// Removes book-specific history, book catalog entry, and backup. Does not
+// mutate the independent cumulative global snapshot or the source EPUB.
+bool removeBookRecord(uint64_t hash);
 bool loadBookHash(uint64_t hash, Snapshot& out);
 
 // A source record is a one-time historical snapshot. It is never imported a

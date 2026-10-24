@@ -425,6 +425,8 @@ static void deliverSleepPluginEvents(const bool allowNetwork) {
 }
 
 uint64_t timedSleepScreenRefreshUs() {
+  // The timer is a deep-sleep refresh scheduler, not just a wallpaper
+  // carousel. Virtual sources (e.g. Reading Statistics) can repaint on wake.
   if (SETTINGS.sleepScreen != CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM) return 0;
   return SETTINGS.getTimedSleepScreenRefreshUs();
 }

@@ -5,9 +5,12 @@
 #include <string>
 
 #include "activities/Activity.h"
+#include "DashboardCardAssets.h"
 #include "util/ReadingStatsBookIndex.h"
 #include "util/ReadingStatsData.h"
 #include "util/ReadingStatsLegacyPreview.h"
+
+struct Rect;  // Defined by the active UI theme; only referenced in this header.
 
 // A generic local, declarative plugin dashboard. No plugin C++/JavaScript
 // executes on the device. This host understands only bounded widget primitives.
@@ -15,13 +18,16 @@ class StatsDashboardActivity final : public Activity {
  public:
   StatsDashboardActivity(GfxRenderer& renderer, MappedInputManager& input, std::string manifest);
   StatsDashboardActivity(GfxRenderer& renderer, MappedInputManager& input, std::string manifest,
-                         readingstats::BookEntry selected);
+                         const readingstats::BookEntry& selected);
 
   static bool supportsManifest(const std::string& path);
 
   void onEnter() override;
   void loop() override;
   void render(RenderLock&&) override;
+  // Paint only dashboard page one into the current framebuffer, without
+  // activity navigation/footer or an intermediate screen refresh.
+  bool renderSleepOverview();
 
  private:
   struct Widget {
@@ -29,6 +35,11 @@ class StatsDashboardActivity final : public Activity {
     std::string label;
     std::string field;
     bool currentBook = false;
+    bool showValue = true;
+    int8_t iconIndex = -1;
+    dashboardcards::Border border = dashboardcards::Border::Square;
+    uint8_t cornerRadius = 8;
+    uint8_t iconSize = 0;  // 0 selects the largest safe size for the card.
   };
   struct Page {
     std::string title;
@@ -36,6 +47,12 @@ class StatsDashboardActivity final : public Activity {
     uint8_t count = 0;
   };
 
+  struct IconAsset {
+    std::string name;
+    dashboardcards::Icon bitmap;
+  };
+  std::array<IconAsset, dashboardcards::kMaxIcons> iconAssets{};
+  uint8_t iconCount = 0;
   std::string manifestPath;
   std::string title = "Dashboard";
   std::array<Page, 6> pages;
@@ -44,6 +61,21 @@ class StatsDashboardActivity final : public Activity {
   readingstats::Snapshot stats;
   readingstats::Snapshot bookStats;
   readingstats::BookEntry bookInfo{};
+  struct BookRow {
+    readingstats::BookEntry entry{};
+    char displayAuthor[48] = {};
+    uint64_t seconds = 0;
+    int progress = -1;
+  };
+  static constexpr uint8_t kMaxVisibleBooks = 5;
+  static constexpr int kBookRowStep = 82;
+  std::array<BookRow, kMaxVisibleBooks> visibleBooks{};
+  uint8_t visibleCount = 0;
+  uint8_t nextCoverIndex = 0;
+  uint32_t visibleStart = 0;
+  uint32_t bookCursor = 0;
+  int currentProgress = -1;
+  std::string currentAuthor;
   bool selectedBook = false;
   bool hasBookInfo = false;
   std::string seriesName;
@@ -55,14 +87,26 @@ class StatsDashboardActivity final : public Activity {
   readingstats::legacy::Preview vCodexPreview{};
   bool legacyPreviewLoaded = false;
 
+  void drawDashboardPage(bool interactive);
   bool loadManifest();
+  int8_t loadIcon(const std::string& name);
+  void drawCardBorder(const Widget& widget, int x, int y, int width, int height) const;
+  void drawCardIcon(const Widget& widget, int x, int y, int size) const;
+  void drawBookCover(uint64_t hash, Rect rect) const;
+  void drawHero(const Widget& widget, int x, int y, int width, int height) const;
   void refresh();
   void resolveBook();
   void loadSeries();
   int drawBookIdentity(int y, int width) const;
   void openBooks();
+  void promptRemoveBook();
   void openImport();
   bool booksPage() const;
+  int dashboardContentTop() const;
+  int listCapacity() const;
+  void loadVisibleBooks();
+  void moveBookCursor(int delta);
+  void drawBookList(int top, int bottom) const;
   bool importPage() const;
   void refreshLegacyPreviews();
   void drawLegacyImport(int x, int y, int width, int height) const;

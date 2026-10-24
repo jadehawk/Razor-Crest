@@ -10,6 +10,7 @@
 #include <string>
 
 #include "ReadingStatsLegacyMerge.h"
+#include "ReadingStatsBookMedia.h"
 
 namespace readingstats {
 namespace {
@@ -366,6 +367,28 @@ LegacyResult importLegacy(const LegacySource source, const char* stableKey, cons
     return LegacyResult::Error;
   }
   return LegacyResult::Imported;
+}
+
+bool rememberOpenedBook(const char* bookPath, const char* title, const char* author) {
+  if (!bookPath || !*bookPath) return false;
+  return ensureBookIndexed(pathHash(bookPath), bookPath, title, author);
+}
+
+// Implemented by the bounded book index, without loading the complete index
+// into RAM. The separate global lifetime snapshot is deliberately preserved.
+bool removeIndexedBook(uint64_t hash);
+
+bool removeBookRecord(const uint64_t hash) {
+  if (!hash || !recoverPending()) return false;
+  if (!removeIndexedBook(hash)) return false;
+  const std::string path = bookFile(hash);
+  bool ok = true;
+  for (const std::string& filename : {path, path + ".bak", path + ".tmp"}) {
+    if (Storage.exists(filename.c_str()) && !Storage.remove(filename.c_str())) ok = false;
+  }
+  if (!ok) LOG_ERR("RST", "Could not remove every snapshot for book %016llx", static_cast<unsigned long long>(hash));
+  media::remove(hash);
+  return ok;
 }
 
 bool record(const char* bookPath, const uint32_t seconds, const uint32_t turns, const int64_t trustedStartEpoch,
