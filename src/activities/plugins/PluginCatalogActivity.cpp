@@ -1,4 +1,5 @@
 #include "PluginCatalogActivity.h"
+#include "PluginCatalogPaging.h"
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -2846,30 +2847,38 @@ bool PluginCatalogActivity::parseBrowseResponse() {
   const std::string& urls = extension ? extUrl : manifest.urlPath;
   const std::string& itemsPath = extension ? manifest.browseLists[currentList].itemsPath : manifest.itemsPath;
 
-  // Compatibility is opt-in. Catalog entries that omit compatibility values
-  // remain visible; explicit restrictions must match this firmware. The extra
-  // titled row remains pagination lookahead and is never displayed.
+  // Server-paged API requests substitute {page}; static JSON feeds must
+  // advance through the streamed response locally, without retaining all rows.
+  const bool localPaging =
+      extension || plugincatalogpaging::isStaticFeed(activeBrowseUrl(), activeBrowseBody());
+  const size_t pageOffset =
+      localPaging ? static_cast<size_t>(std::max(0, page - 1)) * static_cast<size_t>(manifest.pageSize) : 0;
+
+  // Filter first, then page over the compatible items in a static feed.
+  // Both passes retain at most one page of row indexes or decoded items.
   std::vector<int> compatibleRows;
   bool rawHasMore = false;
   if (filterCompatibility) {
     compatibleRows.reserve(manifest.pageSize);
     int rowIndex = 0;
-    int titledRows = 0;
+    plugincatalogpaging::PageWindow filteredWindow(pageOffset, manifest.pageSize);
+    plugincatalogpaging::PageWindow serverWindow(0, manifest.pageSize);
     const std::string unused;
     auto selectCompatible = [&](JsonListParser::Row& row) {
       const int thisRow = rowIndex++;
       if (row.field[JsonListParser::F_TITLE].empty()) return;
-      if (++titledRows > manifest.pageSize) {
-        rawHasMore = true;
-        return;
-      }
-      if (catalogEntryCompatible(row.field[JsonListParser::F_AUTHOR], row.field[JsonListParser::F_ID],
-                                 row.field[JsonListParser::F_URL], row.field[JsonListParser::F_VERSION]))
+      const bool compatible =
+          catalogEntryCompatible(row.field[JsonListParser::F_AUTHOR], row.field[JsonListParser::F_ID],
+                                 row.field[JsonListParser::F_URL], row.field[JsonListParser::F_VERSION]);
+      if (localPaging) {
+        if (filteredWindow.take(compatible)) compatibleRows.push_back(thisRow);
+      } else if (serverWindow.take() && compatible) {
         compatibleRows.push_back(thisRow);
+      }
     };
     const std::string* const compatibilityFields[] = {&manifest.titlePath,          &manifest.compatFamilyPath,
-                                                      &manifest.compatFirmwarePath, &manifest.compatApiMinPath,
-                                                      &manifest.compatRequiresPath, &unused};
+                                                     &manifest.compatFirmwarePath, &manifest.compatApiMinPath,
+                                                     &manifest.compatRequiresPath, &unused};
     auto compatibilityParser = makeUniqueNoThrow<JsonListParser>(
         itemsPath, compatibilityFields, unused,
         [](void* context, JsonListParser::Row& row) { (*static_cast<decltype(selectCompatible)*>(context))(row); },
@@ -2878,24 +2887,24 @@ bool PluginCatalogActivity::parseBrowseResponse() {
       fail(StrId::STR_PARSE_FEED_FAILED);
       return false;
     }
+    rawHasMore = localPaging ? filteredWindow.hasMore() : serverWindow.hasMore();
   }
 
   releaseRows();
   items.clear();
   items.reserve(manifest.pageSize + 1);
   int rowIndex = 0;
-  const int extensionStartRow = extension ? std::max(0, page - 1) * manifest.pageSize : 0;
+  plugincatalogpaging::PageWindow visibleWindow(pageOffset, manifest.pageSize);
   size_t compatibleIndex = 0;
-  // The unfiltered extra row controls server pagination; compatibility only
-  // controls which rows from this page are displayed.
   auto append = [&](JsonListParser::Row& row) {
     const int thisRow = rowIndex++;
-    if (extension && thisRow < extensionStartRow) return;
     if (filterCompatibility) {
       if (compatibleIndex >= compatibleRows.size() || compatibleRows[compatibleIndex] != thisRow) return;
       compatibleIndex++;
+    } else if (!visibleWindow.take(!row.field[JsonListParser::F_TITLE].empty())) {
+      return;
     }
-    if (row.field[JsonListParser::F_TITLE].empty() || static_cast<int>(items.size()) > manifest.pageSize) return;
+    if (row.field[JsonListParser::F_TITLE].empty()) return;
     Item item;
     item.title = std::move(row.field[JsonListParser::F_TITLE]);
     item.author = std::move(row.field[JsonListParser::F_AUTHOR]);
@@ -2929,12 +2938,15 @@ bool PluginCatalogActivity::parseBrowseResponse() {
     size_t thumbnailRow = 0;
     int thumbnailSourceRow = 0;
     size_t thumbnailCompatibleIndex = 0;
+    plugincatalogpaging::PageWindow thumbnailWindow(pageOffset, manifest.pageSize);
     auto appendThumbnail = [&](JsonListParser::Row& row) {
       const int thisRow = thumbnailSourceRow++;
       if (filterCompatibility) {
         if (thumbnailCompatibleIndex >= compatibleRows.size() || compatibleRows[thumbnailCompatibleIndex] != thisRow)
           return;
         thumbnailCompatibleIndex++;
+      } else if (!thumbnailWindow.take(!row.field[JsonListParser::F_TITLE].empty())) {
+        return;
       }
       if (row.field[JsonListParser::F_TITLE].empty() || thumbnailRow >= items.size()) return;
       items[thumbnailRow++].thumbnail = std::move(row.field[JsonListParser::F_BASE]);
@@ -2949,8 +2961,7 @@ bool PluginCatalogActivity::parseBrowseResponse() {
     }
   }
 
-  hasMore = filterCompatibility ? rawHasMore : static_cast<int>(items.size()) > manifest.pageSize;
-  if (static_cast<int>(items.size()) > manifest.pageSize) items.resize(manifest.pageSize);
+  hasMore = filterCompatibility ? rawHasMore : visibleWindow.hasMore();
   computeInstallStatus();
   return true;
 }

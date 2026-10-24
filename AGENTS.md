@@ -9,8 +9,13 @@ and shared UI components. Before adding an API or device-specific code, check
 the firmware HAL and the SDK source at the revision pinned by this repository.
 Use the [SDK documentation](freeink-sdk/docs/README.md) and
 [FreeInk SDK index](https://freeink.org/llms.txt) to find the relevant contract.
-Check `git submodule status`: a different local SDK revision must be accounted
-for, not silently treated as the pinned firmware dependency.
+**Always update the FreeInk SDK submodule before firmware inspection, testing,
+and integration**, including after switching branches or syncing upstream.
+Run `git submodule update --init --recursive` in the exact checkout or worktree,
+and verify that `git submodule status --recursive` has no mismatched (`+`) or
+uninitialized (`-`) entries. Synchronize to the **firmware-pinned SDK commit**;
+do not advance its gitlink to an unrelated newer revision without approval.
+Preserve and report any pre-existing SDK modifications.
 
 ## Start here
 
