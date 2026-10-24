@@ -1,5 +1,4 @@
 #include "PluginCatalogActivity.h"
-#include "PluginCatalogPaging.h"
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -29,6 +28,7 @@
 #include "CrossPointSettings.h"
 #include "JpegToBmpConverter.h"
 #include "MappedInputManager.h"
+#include "PluginCatalogPaging.h"
 #include "PngToBmpConverter.h"
 #include "activities/reader/DictionaryDefinitionActivity.h"  // plain-text README viewer
 #include "activities/settings/PluginHubInstallActivity.h"
@@ -2850,7 +2850,7 @@ bool PluginCatalogActivity::parseBrowseResponse() {
   // Server-paged API requests substitute {page}; static JSON feeds must
   // advance through the streamed response locally, without retaining all rows.
   const bool localPaging =
-      extension || plugincatalogpaging::isStaticFeed(activeBrowseUrl(), activeBrowseBody());
+      extension || plugincatalogpaging::isStaticFeed(activeBrowseUrl(), activeBrowseBody(), manifest.browseReq.headers);
   const size_t pageOffset =
       localPaging ? static_cast<size_t>(std::max(0, page - 1)) * static_cast<size_t>(manifest.pageSize) : 0;
 
