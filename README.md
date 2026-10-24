@@ -23,7 +23,7 @@ Razor-Crest also serves as a place to develop and test ideas. **My hope is that,
 
 ## Screenshots
 
-A look at Razor-Crest's installed plugins, HALO theme, and native Reading Statistics dashboard. **Click any screenshot to open the full-size image.**
+A look at Razor-Crest's installed plugins, HALO theme, and native Reading Statistics dashboard. **The HALO appearance is based on [IOSDEC's original CrossPoint HALO project](https://github.com/iosdec/crosspoint-halo).** Click any screenshot to open the full-size image.
 
 ### Plugins and themes
 
@@ -112,6 +112,8 @@ Themes can customize supported headers, home screens, settings/library presentat
 
 [HALO](https://github.com/jadehawk/halo.crosspoint-theme) demonstrates these capabilities across supported devices. The firmware validates the theme package and falls back to its built-in appearance if a theme is unavailable or invalid.
 
+**Original HALO design credit: [IOSDEC — CrossPoint HALO](https://github.com/iosdec/crosspoint-halo).** The installable HALO theme adapts the look of IOSDEC's original firmware project for Razor-Crest's SD-card theme system.
+
 **[Watch demo 6: HALO theme](https://www.youtube.com/watch?v=j0IXO0eukL4&list=PLEZP8Igz2ssw&index=6)** · [Theme contract](https://github.com/jadehawk/halo.crosspoint-theme/blob/main/docs/THEME_CONTRACT.md)
 
 ### 6. Useful plugins, not only appearance changes
@@ -156,7 +158,7 @@ Razor-Crest is one part of a broader set of reader tools and services that I dev
 | **[Plugin Hub](https://github.com/crosspoint-reader/crosspoint-plugin-hub)** | **Originally created and still maintained by Jadehawk.** Now an **official CrossPoint-hosted project**, it discovers, installs, updates, and manages SD-card extensions. Its catalog is capability-based, not locked to Razor-Crest. |
 | [Reading Statistics](https://github.com/jadehawk/reading-statistics.crosspoint-plugin) | An on-device, offline dashboard for reading activity, book history, and supported statistics imports. |
 | [Wallpaper Downloader](https://github.com/jadehawk/wallpapers.crosspoint-plugin) | Browse, preview, cache, and download images for the reader. |
-| [HALO theme](https://github.com/jadehawk/halo.crosspoint-theme) | A complete example of an installable declarative UI theme. |
+| [HALO theme](https://github.com/jadehawk/halo.crosspoint-theme) | Installable declarative UI theme inspired by [IOSDEC's original CrossPoint HALO](https://github.com/iosdec/crosspoint-halo). |
 | [Star Wars wallpaper packs](https://github.com/jadehawk/starwars.crosspoint-wallpaper) | Installable collections of sleep-screen wallpapers with device-appropriate image variants. |
 | [Send2Ereader for CrossPoint](https://github.com/jadehawk/send2ereader.crosspoint-plugin) | An on-device plugin for transferring books through a compatible Send2Ereader service. |
 | [Send2Ereader for KOReader](https://github.com/jadehawk/send2ereader.koplugin) | A companion KOReader plugin for sending, browsing, and receiving books using session codes or QR codes. |
@@ -190,7 +192,7 @@ See [contributing guidance](docs/contributing/README.md), [project scope](SCOPE.
 
 ## Credits
 
-**Razor-Crest exists because of [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader), [FreeInk SDK](https://github.com/Free-Ink/freeink-sdk), and their contributors.** This personal fork is developed by [Jadehawk](https://github.com/jadehawk), original developer and ongoing maintainer of the now official [Plugin Hub](https://github.com/crosspoint-reader/crosspoint-plugin-hub). Other plugin/theme/pack authors retain credit in their own repositories.
+**Razor-Crest exists because of [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader), [FreeInk SDK](https://github.com/Free-Ink/freeink-sdk), and their contributors.** This personal fork is developed by [Jadehawk](https://github.com/jadehawk), original developer and ongoing maintainer of the now official [Plugin Hub](https://github.com/crosspoint-reader/crosspoint-plugin-hub). **The HALO visual design originates with [IOSDEC's CrossPoint HALO](https://github.com/iosdec/crosspoint-halo)** and is credited here as the inspiration for our installable theme. Other plugin/theme/pack authors retain credit in their own repositories.
 
 Razor-Crest is **not affiliated with Xteink or any device manufacturer** and is **not an official CrossPoint firmware distribution**.
 
