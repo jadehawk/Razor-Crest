@@ -41,6 +41,24 @@ Six views of the native, on-device statistics dashboard:
 | **Page 4** | **Page 5** | **Page 6** |
 | <a href="docs/images/razor-crest/reading-stats-04.png"><img src="docs/images/razor-crest/reading-stats-04.png" alt="Reading Statistics page 4" width="205"></a> | <a href="docs/images/razor-crest/reading-stats-05.png"><img src="docs/images/razor-crest/reading-stats-05.png" alt="Reading Statistics page 5" width="205"></a> | <a href="docs/images/razor-crest/reading-stats-06.png"><img src="docs/images/razor-crest/reading-stats-06.png" alt="Reading Statistics page 6" width="205"></a> |
 
+## What Razor-Crest Adds to CrossPoint
+
+Razor-Crest retains the original CrossPoint reading experience while introducing additional customization, statistics, and plugin capabilities not currently included in stock CrossPoint firmware.
+
+- **Installable UI Themes** — Customize the reader's interface, including the home screen, headers, settings, artwork, and compatible UI fonts. Install or switch themes without reflashing firmware. Includes support for the [HALO theme](https://github.com/jadehawk/halo.crosspoint-theme), inspired by [IOSDEC's original CrossPoint HALO](https://github.com/iosdec/crosspoint-halo).
+- **Standalone Wallpaper Packs** — Install and manage complete wallpaper collections directly from Plugin Hub. Select individual collections for the sleep screen, independently of the active UI theme.
+- **Timed Sleep-Screen Refresh** — Automatically rotate wallpapers while the reader is asleep, with configurable intervals ranging from 1 minute to 24 hours. Includes device-specific wake handling and battery-consumption warnings on the X3.
+- **Native Reading Statistics** — Collect persistent reading activity directly on the device, including reading time, sessions, and qualified page turns. Statistics are stored locally on the SD card and do not require Wi-Fi or an external server.
+- **On-Device Reading Statistics Dashboard** — Explore reading history through a six-page dashboard with statistics cards, weekly activity charts, a 28-day calendar, book covers, and detailed statistics for individual books.
+- **Live Reading Statistics Sleep Screen** — Display a personalized reading dashboard instead of a traditional sleep wallpaper. Supported timed refreshes can update the statistics display without connecting to Wi-Fi.
+- **Reading Statistics Import** — Import supported historical reading statistics from CrossInk and vCodex, preserving original records and preventing duplicate imports.
+- **Enhanced Plugin Catalog Browsing** — Additional image previews, visual catalog layouts, cached content, and refresh controls for discovering and managing supported extensions.
+- **Dedicated Plugin Management Web UI** — Manage every installed plugin from a separate Plugins page, including plugins without browser-based settings. View plugin details and use Reinstall or Remove controls.
+- **Improved KOReader Sync Interface** — Compare local and remote reading positions using visual progress cards showing percentages, pages, chapters, and device information before choosing which position to keep.
+- **Optional Techy-Notes LCP Integration** — Support an alternative LCP enrollment service through Techy-Notes when the firmware is configured with the necessary enrollment credentials.
+
+These are **Razor-Crest additions**, not a claim that the underlying Plugin System, Plugin Hub, standard plugin installation, KOReader progress sync, or the merged static-catalog pagination fix are exclusive to this fork. Plugins such as [Wallpaper Downloader](https://github.com/jadehawk/wallpapers.crosspoint-plugin) and [Send2Ereader](https://github.com/jadehawk/send2ereader.crosspoint-plugin) remain separate, capability-based projects that can work with other compatible firmware.
+
 ## See it in action
 
 The [Razor-Crest YouTube playlist](https://www.youtube.com/playlist?list=PLEZP8Igz2ssw) is deliberately arranged as a walkthrough: **install first, explore the results next**. Each image is a clickable YouTube preview. Playing a video with its playlist link preserves the sequence.
