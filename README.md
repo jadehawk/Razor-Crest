@@ -1,431 +1,204 @@
-# Razor-Crest — Personal CrossPoint Fork
+# Razor-Crest
+
+**A personal fork of [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader), built around a more customizable e-reader.**
+
+Razor-Crest keeps CrossPoint's reading experience and adds a growing ecosystem of **on-device plugins, downloadable UI themes, wallpaper collections, native reading statistics, and customizable sleep screens**. The goal is to make these additions usable directly on the reader, including on the memory-constrained X3.
+
+**Developed and maintained by [Jadehawk / Techy-Notes](https://techy-notes.com).** I also originally developed [Plugin Hub](https://github.com/crosspoint-reader/crosspoint-plugin-hub) and continue to maintain it now that it is hosted as an **official CrossPoint project**. Plugin Hub itself is firmware-agnostic; Razor-Crest is my personal firmware fork.
+
+[**Watch the demo playlist**](https://www.youtube.com/playlist?list=PLEZP8Igz2ssw) · [**Browse firmware releases**](https://github.com/jadehawk/Razor-Crest/releases) · [**Explore the extension contracts**](docs/sd-extension-contracts.md)
 
 > [!IMPORTANT]
-> This repository is a **personal fork of CrossPoint Reader**. It tracks the upstream `develop` branch, but it also carries firmware behavior and plugin-system work that is **not currently part of the baseline CrossPoint `develop` branch**. It is not an official CrossPoint release and should not be treated as an upstream-supported build.
+> **This is a personal, unofficial CrossPoint fork—not an upstream CrossPoint release.** The features below describe the current `razor-crest` development branch. **Published firmware releases can lag behind it**; check the release date and notes before assuming a feature is included in a downloadable binary.
 >
-> Razor-Crest deliberately keeps the broad firmware family as `crosspoint` for plugin compatibility, while advertising the exact firmware ID `Razor-Crest` so plugins and catalogs can distinguish this fork when needed.
-
-## Public firmware downloads
-
-Razor-Crest publishes device-specific firmware binaries through this fork's GitHub Releases. Release tags use `razor-crest-v<upstream-version>-r<revision>` (for example `razor-crest-v1.6.5-r1`), so the CrossPoint baseline and Razor-Crest revision are both visible.
-
-Each release builds and publishes firmware for every device currently covered by the upstream CrossPoint release matrix:
-
-- X3 / X4
-- Seeed reTerminal Sticky
-- X4 Pro
-- X4 Classic
-- Paper Mono
-- MetalIO EInk4
-- EEGO A4
-
-Release assets use names such as `razor-crest-1.6.5-r1-x3-x4.bin`. Use only the binary intended for your device. Each release also includes `SHA256SUMS.txt` and a machine-readable `release-manifest.json` containing the source commit, upstream baseline, firmware identity, and asset mapping.
-
-These are Razor-Crest fork builds, not official CrossPoint releases.
-
-Timed Sleep-Screen Refresh is now part of the standard `razor-crest` firmware and release channel; it no longer requires a separate experimental branch or timed-wake release workflow. On X3, enabling a new timed wallpaper interval displays a warning with the estimated **full-battery, wallpaper-only** runtime; it does **not** include reading or other daily use. See [Timed wake testing](docs/timed-wake-testing.md) and the [X3 battery drain measurements](docs/x3-timed-refresh-battery.md).
-
-## Current Razor-Crest-only additions
-
-The list below describes the current **net differences from upstream `develop`**. Intermediate experiments that were later removed or superseded are intentionally not listed.
-
-### Razor-Crest identity and branding
-
-- Adds a formal firmware identity contract with:
-  - firmware family: `crosspoint`
-  - exact firmware ID: `Razor-Crest`
-  - plugin API level: `1`
-  - advertised plugin capabilities: `catalog.lists`, `catalog.notices`, `catalog.bundle_install`, `catalog.version_tracking`, `catalog.compatibility`, `catalog.images`, `catalog.cache`, and `catalog.refresh`
-- Exposes firmware family, exact firmware ID, plugin API level, and capability list through `/api/status`.
-- Makes the same identity values available to plugin/catalog templates through `{firmware_family}`, `{firmware_id}`, `{firmware_version}`, `{plugin_api}`, and `{plugin_capabilities}`.
-- Replaces the stock CrossPoint branding artwork with the Razor-Crest logo in firmware/web assets.
-- Uses a larger 200×200 Razor-Crest logo on the boot and default sleep screens and labels those screens with the exact firmware ID instead of the stock CrossPoint name.
+> Plugins should remain **firmware-agnostic**. A plugin, theme, or wallpaper pack declares the firmware capabilities it needs; it should not require the name `Razor-Crest`. Stock CrossPoint does not currently implement this fork's SD-theme or standalone wallpaper-pack loaders.
 
-### Experimental timed sleep-screen refresh
+## Project philosophy: stay close to CrossPoint
 
-- Adopts the optional one-shot timer-wake primitive from upstream CrossPoint PR [#3820](https://github.com/crosspoint-reader/crosspoint-reader/pull/3820) without adding a scheduler or new plugin API.
-- Adds **Timed Sleep-Screen Refresh** for **Custom** sleep screens, defaulting to Off with 1 minute, 15 minute, 30 minute, 1 hour, 3 hour, 6 hour, 12 hour, and 24 hour intervals.
-- Timer wakes perform only local SD/display maintenance: select another valid BMP from `.sleep`, refresh the retained e-ink image, and immediately return to deep sleep without Wi-Fi or plugin execution.
-- X3 requires a board-specific power detail because GPIO13 switches its SD-card rail; the rail remains powered only when a timer wake is successfully armed. X3 battery-only functional testing passes, while standby-current measurement remains in progress.
-- See [Timed wake testing](docs/timed-wake-testing.md) for the validation matrix and test procedure.
+**The goal is not to create a completely different firmware.** I want Razor-Crest to remain as close as practical to the original CrossPoint firmware, retain upstream fixes and device compatibility, and avoid permanently maintaining a large, divergent codebase.
 
-### Global Plugin System control
+Where possible, new functionality should live in **standalone plugins, themes, or wallpaper packs**, using small, reusable firmware capabilities rather than hard-coded integrations. That lets extensions work with any firmware that exposes the required features, not just Razor-Crest.
 
-- Uses upstream **Settings → Connectivity → Plugins** as the global enable/disable switch for SD-card plugins.
-- New installations default the Plugin System to **Disabled**.
-- Firmware upgrades automatically preserve an existing plugin setup by enabling the Plugin System when plugin folders are already present on disk and the setting did not previously exist.
-- When enabled, **Plugins** is shown on the Home screen even if no plugin is installed yet.
-- Disabling the Plugin System leaves plugin files untouched but stops normal plugin discovery and execution.
-- Plugin-backed web endpoints are gated while the Plugin System is disabled, including relay/fetch/crypto, plugin filesystem access, book-key handling, the headless plugin runner, and plugin jobs.
-- Internal plugin-system settings are persisted but intentionally hidden from the generic Web Settings API.
-- Adds raw on-disk plugin probes for migration/bootstrap/recovery while keeping normal discovery subject to the Plugin System state and installation quarantine.
+Razor-Crest also serves as a place to develop and test ideas. **My hope is that, over time, useful changes and extension primitives can be proposed upstream and—if accepted—become part of official CrossPoint.** Ideally, users will eventually be able to install the same plugins, themes, and packs on stock CrossPoint without needing this fork. Upstream acceptance is entirely up to the CrossPoint maintainers.
 
-### Optional Plugin Hub bootstrap
+## Screenshots
 
-- Adds a synthetic **Plugin Hub — Download, discover, and update plugins** entry under **Home → Plugins** when the Plugin System is enabled but a usable Plugin Hub is not installed.
-- The synthetic Hub entry supports **Install**, **Hide**, and **Cancel**.
-- **Hide** affects only the synthetic installer row and persists across reboots; enabling Plugins again restores the install row.
-- Re-enabling **Plugins** under Connectivity restores a previously hidden Plugin Hub installer, matching upstream behavior.
-- The built-in installer downloads the Plugin Hub manifest/device/plugin/README files over Wi-Fi using staged replacement rather than exposing a half-installed plugin.
-- Cancelling out of Wi-Fi selection cleanly aborts the Hub install flow and returns to the plugin picker.
-- A manually sideloaded Plugin Hub is recognized from any supported plugin root when it has a valid `device.json` and is not quarantined by an in-progress install marker.
+A look at Razor-Crest's installed plugins, HALO theme, and native Reading Statistics dashboard. **Click any screenshot to open the full-size image.**
 
-### Plugin installation, update, and removal hardening
+### Plugins and themes
 
-- Continues to support all three plugin roots: `/.crosspoint/plugins`, `/plugins`, and `/.plugins`.
-- Adds `.installing` transaction markers so partially installed plugins are quarantined from normal discovery and file resolution until installation completes.
-- Generic bundle updates reuse an already installed same-named plugin directory from any supported root instead of creating a duplicate in the preferred root, preserving that plugin's local settings and tokens.
-- Multi-file bundle downloads are staged to `.new` files and swapped into place only after the complete bundle has downloaded successfully.
-- Rejects unsafe bundle subdirectories and entries, including traversal, absolute paths, ambiguous backslash paths, and writes outside protected plugin paths.
-- Adds plugin uninstall from the plugin picker by holding **Confirm** for one second, followed by an explicit confirmation before recursively deleting that plugin directory.
-- Extends confirmation dialogs so callers can provide custom Confirm/Cancel labels.
-- Shared plugin HTTP/download helpers now refuse network requests when Wi-Fi is not actually connected instead of attempting a request against a disabled/disconnected interface.
+| Plugins screen | HALO theme |
+| :---: | :---: |
+| <a href="docs/images/razor-crest/plugins-page.png"><img src="docs/images/razor-crest/plugins-page.png" alt="Razor-Crest Plugins screen" width="280"></a> | <a href="docs/images/razor-crest/halo-theme.png"><img src="docs/images/razor-crest/halo-theme.png" alt="Razor-Crest HALO theme" width="280"></a> |
 
-### Generic plugin catalog platform extensions
+### Reading Statistics
 
-These capabilities are implemented as **plugin-agnostic firmware features**. Plugin Hub uses several of them, but any plugin/catalog can use the same contracts.
+Six views of the native, on-device statistics dashboard:
 
-- **Dynamic named catalogs** — supports static `browse.lists` plus remote `browse.lists_url` indexes, allowing catalog groups to be generated or split without rebuilding firmware or the plugin.
-- **Per-list notices** — a named list can show an optional notice with custom title, message, Confirm, and Cancel labels before entering that catalog.
-- **Bundle installation** — catalog items can install a complete multi-file plugin or supported bundle from a base URL plus a declared file list.
-- **Version tracking** — catalog versions are compared with installed plugin manifests so rows can show Installed/Update state.
-- **Compatibility filtering** — catalog entries can be restricted by firmware family, exact firmware ID, minimum plugin API, and required capabilities; incompatible entries are omitted while entries without compatibility metadata remain backward-compatible.
-- **Additional template values** — catalog templates can consume firmware identity/capability values and item thumbnail URLs in addition to the existing token/config/item fields.
-- **Native plugin tabs** — manifests can expose a bounded native tab shell for Browse, Settings, and legacy Cache views.
-- **Native plugin settings** — declarative `choice` and `toggle` settings can edit a plugin's existing JSON config file and immediately drive presentation through `{cfg.KEY}` values.
-- **Grid/list presentation controls** — manifests can independently configure grid/list page sizes, 1–4 grid columns, 1–4 visible grid rows, list thumbnails, selection style, and rounded preview corners.
-- **Native footer pagination** — enhanced catalog UIs use Previous/Next footer actions instead of consuming catalog rows for paging.
-- **Catalog refresh action** — manifests can opt into a native Refresh footer action that refetches the current catalog page; it is separate from Previous/Next pagination and also works when only one page exists.
-- **Image-backed catalogs** — items can declare thumbnail/image requests using BMP, JPEG, or PNG sources, or `auto` to detect those formats from the downloaded bytes. JPEG/PNG previews are converted to display-ready BMP data on SD and failed previews fall back to the normal placeholder.
-- **Full-screen image preview before save** — direct image downloads can opt into a Close/Save preview flow before the final file is published to its destination. Grayscale previews show a Processing state until the final action footer is safe to reveal.
-- **Image format-aware publishing** — downloaded image content is signature-checked and can be converted to BMP when the destination requires BMP rather than trusting the remote filename alone.
-- **Bitmap upscaling support** — the renderer can optionally upscale bitmap content to a requested target instead of only downscaling, supporting larger native image previews.
+| Page 1 | Page 2 | Page 3 |
+| :---: | :---: | :---: |
+| <a href="docs/images/razor-crest/reading-stats-01.png"><img src="docs/images/razor-crest/reading-stats-01.png" alt="Reading Statistics page 1" width="205"></a> | <a href="docs/images/razor-crest/reading-stats-02.png"><img src="docs/images/razor-crest/reading-stats-02.png" alt="Reading Statistics page 2" width="205"></a> | <a href="docs/images/razor-crest/reading-stats-03.png"><img src="docs/images/razor-crest/reading-stats-03.png" alt="Reading Statistics page 3" width="205"></a> |
+| **Page 4** | **Page 5** | **Page 6** |
+| <a href="docs/images/razor-crest/reading-stats-04.png"><img src="docs/images/razor-crest/reading-stats-04.png" alt="Reading Statistics page 4" width="205"></a> | <a href="docs/images/razor-crest/reading-stats-05.png"><img src="docs/images/razor-crest/reading-stats-05.png" alt="Reading Statistics page 5" width="205"></a> | <a href="docs/images/razor-crest/reading-stats-06.png"><img src="docs/images/razor-crest/reading-stats-06.png" alt="Reading Statistics page 6" width="205"></a> |
 
-### Progressive plugin catalog cache
+## See it in action
 
-- Adds an optional per-plugin SD cache for JSON catalog pages and converted preview images.
-- Fresh cached pages can open directly from SD without turning on Wi-Fi.
-- Cache fill is progressive: only pages the user actually reaches are fetched and stored; browsing past the cached frontier fetches the next missing page and appends it to the cache.
-- Catalog-page freshness is configurable, including Always, 3 days, 7 days, and 14 days.
-- Cached images are keyed independently from page freshness, so unchanged image URLs can be reused across catalog refreshes.
-- If a network refresh fails, an existing stale page can be used as a fallback.
-- Per-plugin cache storage is bounded to configurable limits between 8 MB and 128 MB, with image entries evicted before catalog pages while protecting the currently displayed page/images.
-- Adds cache statistics and controls for last refresh, cached pages, cached images, storage usage, Refresh now, and Clear cache.
-- Cache controls can appear as an expandable section inside a plugin's native Settings tab; the legacy dedicated Cache tab remains supported.
-- Supports an optional downloadable cache-seed ZIP for pre-populating plugin image/catalog cache data.
-- Search results are intentionally not cached.
+The [Razor-Crest YouTube playlist](https://www.youtube.com/playlist?list=PLEZP8Igz2ssw) is deliberately arranged as a walkthrough: **install first, explore the results next**. Each image is a clickable YouTube preview. Playing a video with its playlist link preserves the sequence.
 
-### Supporting documentation and development differences
+| In playlist order | Video demo |
+| --- | --- |
+| **1. Install plugins, themes, and packs**<br>Enable the plugin system and use the on-device catalog to add extensions. | <a href="https://www.youtube.com/watch?v=aG037VmTO5E&amp;list=PLEZP8Igz2ssw&amp;index=1"><img src="https://i.ytimg.com/vi/aG037VmTO5E/mqdefault.jpg" alt="Installing Plugins Themes Packs demo" width="240"></a> |
+| **2. Reading Statistics overview**<br>Browse the offline reading dashboard and per-book information. | <a href="https://www.youtube.com/watch?v=3cCaplvtFcY&amp;list=PLEZP8Igz2ssw&amp;index=2"><img src="https://i.ytimg.com/vi/3cCaplvtFcY/mqdefault.jpg" alt="Reading Statistics Overview demo" width="240"></a> |
+| **3. Reading Statistics sleep screen**<br>Use the live dashboard as a custom sleep-screen source. | <a href="https://www.youtube.com/watch?v=UPD7VzZ3orI&amp;list=PLEZP8Igz2ssw&amp;index=3"><img src="https://i.ytimg.com/vi/UPD7VzZ3orI/mqdefault.jpg" alt="Sleep Reading Stats demo" width="240"></a> |
+| **4. Sleep-screen wallpaper packs**<br>Select an installed collection for Custom sleep. | <a href="https://www.youtube.com/watch?v=FmqKx7wb4OU&amp;list=PLEZP8Igz2ssw&amp;index=4"><img src="https://i.ytimg.com/vi/FmqKx7wb4OU/mqdefault.jpg" alt="Sleep Wallpaper Pack demo" width="240"></a> |
+| **5. Wallpaper downloader plugin**<br>Browse and save additional wallpapers on the device. | <a href="https://www.youtube.com/watch?v=ddZdS-gFEOo&amp;list=PLEZP8Igz2ssw&amp;index=5"><img src="https://i.ytimg.com/vi/ddZdS-gFEOo/mqdefault.jpg" alt="Wallpaper Plugin demo" width="240"></a> |
+| **6. HALO theme**<br>See a complete UI appearance change, not just a sleep wallpaper. | <a href="https://www.youtube.com/watch?v=j0IXO0eukL4&amp;list=PLEZP8Igz2ssw&amp;index=6"><img src="https://i.ytimg.com/vi/j0IXO0eukL4/mqdefault.jpg" alt="Halo Theme demo" width="240"></a> |
+| **7. Send2Ereader**<br>See an example of a functional plugin that goes beyond visual customization. | <a href="https://www.youtube.com/watch?v=8MzyZ73z02g&amp;list=PLEZP8Igz2ssw&amp;index=7"><img src="https://i.ytimg.com/vi/8MzyZ73z02g/mqdefault.jpg" alt="Send2Ereader demo" width="240"></a> |
 
-- Expands the SD-plugin documentation for the Plugin System, Hub bootstrap, firmware identity/capabilities, dynamic lists/notices, compatibility filtering, native tabs/settings, image layouts, progressive caching, bundle update behavior, and related manifest schema.
-- Expands the User Guide with the Connectivity/Plugins control and Plugin Hub workflow.
-- Expands the webserver endpoint documentation with the firmware identity/plugin capability fields returned by `/api/status`.
-- Adds/updates plugin manifest classification tests for the extended plugin discovery behavior.
-- Adds a repository-local build policy in `AGENTS.md` requiring this workstation's canonical `C:\XP-FW` build environment for firmware builds instead of ad-hoc/direct PlatformIO builds.
+## What's different in Razor-Crest?
 
----
+### 1. Extensions you can install from the reader
 
-# CrossPoint Reader
+The **Plugin System** is enabled under **Settings → Connectivity → Plugins**. When enabled, **Home → Plugins** lists the installed extensions. If Plugin Hub is missing, the firmware offers to download it; Plugin Hub itself remains optional for manually installed plugins.
 
-[![Fund contributors](https://img.shields.io/badge/%F0%9F%91%91_Fund_contributors-royalty.dev-BB953A?style=for-the-badge&labelColor=1a1a1a)](https://app.royalty.dev/crosspoint-reader/crosspoint-reader)
+From there, the capability-aware Community catalog can present compatible extensions by type:
 
-CrossPoint is open-source e-reader firmware - community-built, fully hackable, free forever. It's maintained by a growing community of developers and readers who believe your device should do what you want - not what a manufacturer decided for you.
+| Extension type | What it does | Examples |
+| --- | --- | --- |
+| **Plugins** | Add on-device catalogs, dashboards, network workflows, or browser-side features without reflashing the firmware. | [Reading Statistics](https://github.com/jadehawk/reading-statistics.crosspoint-plugin), [Wallpapers](https://github.com/jadehawk/wallpapers.crosspoint-plugin), [Send2Ereader](https://github.com/jadehawk/send2ereader.crosspoint-plugin) |
+| **Themes** | Change the appearance of supported firmware screens: layouts, headers, artwork, and compatible UI fonts. | [HALO theme](https://github.com/jadehawk/halo.crosspoint-theme) |
+| **Wallpaper packs** | Supply named, device-resolution-compatible BMP collections for Custom sleep screens. These are independent of UI themes. | [Star Wars wallpaper collections](https://github.com/jadehawk/starwars.crosspoint-wallpaper) |
 
-### Now running on:
+The native installer uses declared package contents and staged updates, with compatibility filtering. Installed extensions can display update status and be managed from the reader. A press-and-hold on a plugin entry offers uninstall with confirmation; active themes must be deselected before removal.
 
-- **ESP32C3-based** Xteink X4 and X3.
-- **ESP32S3-based** Xteink X4Pro and X4Classic, Seeed reTerminal Sticky, M5PaperMono, Metalio E-Ink 4, EEGOREAD A4 and Boox Picco.
+**[Watch demo 1: Installing plugins, themes, and packs](https://www.youtube.com/watch?v=aG037VmTO5E&list=PLEZP8Igz2ssw&index=1)**
 
-Check [our Devices page](https://crosspointreader.com/devices) for the full list.
+### 2. Native, offline Reading Statistics
 
-![CrossPoint Reader running on Xteink device](./docs/images/cover.jpg)
+Razor-Crest records native reading activity to compact binary files on the SD card—even if plugins are disabled. With the [Reading Statistics plugin](https://github.com/jadehawk/reading-statistics.crosspoint-plugin) installed, you can view a styled on-device dashboard with:
 
-> If you're planning to buy an Xteink device, consider purchasing an **X3/X4 Developer Edition** through https://crosspointreader.com. CrossPoint receives a small share of each sale, helping fund development costs.
+- Overall and current-book statistics, reading time, sessions, and qualified forward page turns.
+- Recent activity visualizations, including weekly bars and a 28-day history grid.
+- An **All Books** view with saved cover thumbnails, titles, authors, progress, and per-book detail pages.
+- An optional, reviewed import of supported **CrossInk** or **vCodex** legacy reading statistics. Original files are preserved and previously imported records are not silently duplicated.
 
-## What can CrossPoint do?
+Collection and display are local; the native dashboard does **not** require a cloud account, external statistics server, or Wi-Fi. Native statistics and the dashboard integration are still a **development V1 contract**, not a promise of compatibility with every CrossPoint build.
 
-- **Reader engine**: EPUB 2/3 rendering with embedded-style option, image handling, hyphenation, kerning, adaptive table layouts, native CJK ruby annotations, chapter navigation, footnotes, bookmarks, dictionary lookups ([StarDict](docs/dictionary.md)), go-to-percent, auto page turn, orientation control, focus reading, KOReader progress sync and more.
+**[Watch demo 2: Reading Statistics overview](https://www.youtube.com/watch?v=3cCaplvtFcY&list=PLEZP8Igz2ssw&index=2)** · [Technical details](docs/reading-stats-plugin-architecture.md)
 
-- **Various formats**: native handling for `.epub`, `.xtc/.xtch`, `.txt`, and `.bmp`.
+### 3. A live statistics sleep screen
 
-- **Touch reading**: follow EPUB links and look up words in the dictionary on touch-enabled devices.
+With Reading Statistics installed and enabled, **Settings → Display → Sleep Screen → Custom → Wallpaper Collection** can offer **Reading Statistics** as a virtual source. Instead of an image file, the firmware draws the latest overview using locally saved reading data whenever the device enters Custom sleep.
 
-- **Highlights and clippings**: highlight text in EPUBs and save excerpts as clippings. Use the reader menu on button devices, or hold a word and drag the selection handles on touch devices. Look up selected words or phrases in the dictionary. Enable Sync Clippings to sync saved excerpts through a compatible CrossPoint Sync server. See [Clippings and Highlights](USER_GUIDE.md#53-clippings-and-highlights).
+The display has no dashboard navigation controls. On supported timed refresh, the overview can be redrawn on a timer wake **without starting Wi-Fi**. If the plugin is unavailable, the selector falls back to regular wallpapers.
 
-- **Screenshots.**
+**[Watch demo 3: Reading Statistics on the sleep screen](https://www.youtube.com/watch?v=UPD7VzZ3orI&list=PLEZP8Igz2ssw&index=3)**
 
-- **Custom fonts**: install your favorite fonts on the SD card.
+### 4. Wallpaper collections and timed sleep refresh
 
-- **Tilt page turn (X3 and Sticky)**.
+Custom sleep screens can use **All wallpapers** (the combined `/.sleep` and `/sleep` folders) or a named, installed wallpaper pack. The **Wallpaper Collection** selector appears when you choose Custom sleep; collections are resolution-aware, and the chosen collection stays separate from your UI theme.
 
-- **Bluetooth page turners**: pair a remote under Settings → Connectivity → Bluetooth Page Turner. Map short and long presses to page turns, chapter navigation, the reader menu, or clipping selection.
+**Timed Sleep-Screen Refresh** can rotate locally saved wallpaper images while the reader remains asleep. The current menu offers **Off, 1 minute, 15 minutes, 30 minutes, 1 hour, 3 hours, 6 hours, 12 hours, and 24 hours**. Timer wakes perform SD/display work and return to deep sleep—not background plugin jobs or internet downloads. On X3, the firmware displays a battery-use warning; actual drain depends on the interval and hardware.
 
-- **USB Drive mode (X4Pro)**: access the SD card as USB mass storage.
+The separate [Wallpapers plugin](https://github.com/jadehawk/wallpapers.crosspoint-plugin) can browse image catalogs, preview/download wallpapers, and reuse an optional SD cache. A wallpaper **plugin** downloads images; a wallpaper **pack** is an installable collection for sleep-screen selection.
 
-- **Library workflow**: indexed title/author search, recently-added and alphabetical views, multilingual grouping, folder browser, recent books, and SD-cache management.
+**[Watch demo 4: Wallpaper packs](https://www.youtube.com/watch?v=FmqKx7wb4OU&list=PLEZP8Igz2ssw&index=4)** · **[Watch demo 5: Wallpaper plugin](https://www.youtube.com/watch?v=ddZdS-gFEOo&list=PLEZP8Igz2ssw&index=5)**
 
-- **Wireless workflows**:
-  
-  - File transfer web UI
-  - EPUB Optimizer
-  - Web settings UI/API (edit many device settings from browser)
-  - WebSocket fast uploads
-  - WebDAV handler
-  - AP mode (hotspot) and STA mode (join existing Wi-Fi), both with QR helpers
-  - Calibre wireless connect flow
-  - OPDS browser with saved servers (up to 8), search, pagination, and direct download
-  - OTA update checks and installs from GitHub releases
+[Timed wake testing](docs/timed-wake-testing.md) · [X3 battery measurements](docs/x3-timed-refresh-battery.md)
 
-- **Customization**: night mode, multiple themes (Classic, Lyra, Lyra Extended, RoundedRaff), sleep screen modes including transparent overlays, front/side button remapping, status bar controls, power-button behavior, refresh cadence, and more.
+### 5. Full SD-card UI themes
 
-- **Localization**: 34 UI languages and counting, including CJK font fallback and RTL support.
+Themes can customize supported headers, home screens, settings/library presentation, boot/sleep artwork, layout metrics, and validated monochrome UI fonts. They are **declarative appearance packages**, not executable plugins, and cannot change firmware reading/navigation behavior.
 
+[HALO](https://github.com/jadehawk/halo.crosspoint-theme) demonstrates these capabilities across supported devices. The firmware validates the theme package and falls back to its built-in appearance if a theme is unavailable or invalid.
 
-- **SD card plugins**: Optional plugin support can be enabled from **Settings → Connectivity → Plugins**. Sideloaded plugins work independently of Plugin Hub; a hidden Hub installer can be restored by disabling and re-enabling Plugins. See the [User Guide](USER_GUIDE.md) and [SD-card plugin documentation](docs/sd-plugins.md). See the [User Guide](USER_GUIDE.md) and [SD-card plugin documentation](docs/sd-plugins.md).
+**[Watch demo 6: HALO theme](https://www.youtube.com/watch?v=j0IXO0eukL4&list=PLEZP8Igz2ssw&index=6)** · [Theme contract](https://github.com/jadehawk/halo.crosspoint-theme/blob/main/docs/THEME_CONTRACT.md)
 
-- On-device plugins use firmware-provided screens and operations. Browser-side JavaScript plugins require their browser page to remain open; see the [reading-focused scope](SCOPE.md#out-of-scope).
+### 6. Useful plugins, not only appearance changes
 
+[Send2Ereader](https://github.com/jadehawk/send2ereader.crosspoint-plugin) illustrates how an extension can provide a connected workflow without hardcoding a particular service into the firmware. Browser-based plugins can also expose settings or actions in the device Web UI; native on-device plugins use the firmware's declared capabilities.
 
-### Coming soon:
+**[Watch demo 7: Send2Ereader](https://www.youtube.com/watch?v=8MzyZ73z02g&list=PLEZP8Igz2ssw&index=7)**
 
-- More themes.
+## Install Razor-Crest
 
-- Much more! stay tuned.
+1. Open [**Razor-Crest Releases**](https://github.com/jadehawk/Razor-Crest/releases) and check the **release notes** and the asset for your exact device. Not every feature visible in the development demos will necessarily be in the latest published release.
+2. Connect the reader with a data-capable USB cable, then open the [CrossPoint web flash tools](https://crosspointreader.com/#flash-tools).
+3. Select the **correct device** and use **Custom .bin** to flash the downloaded Razor-Crest binary. Do not choose an official upstream release when intending to install this fork.
+4. After flashing, enable **Settings → Connectivity → Plugins** if you want plugins and Plugin Hub. New installations default to disabled; existing plugin setups are preserved on upgrade.
 
----
+The fork's release workflow covers the upstream release device matrix, including X3/X4, X4 Pro, X4 Classic, Seeed reTerminal Sticky, Paper Mono, MetalIO EInk4, and EEGO A4. **Check the individual release assets** for actual availability and device naming; a listed build target is not a claim that every extension has been hardware-validated on that model. Use the firmware file built for your board only.
 
-## USB-locked devices (Xteink Unlocker)
+> [!CAUTION]
+> Some USB-locked Xteink devices have special recovery restrictions. The upstream [Xteink Unlocker](https://crosspointreader.com/#unlock-tool) officially supports **CrossPoint and CrossInk**, not arbitrary forks. Flashing an unsupported image to a device that is re-locked can make it unrecoverable. Understand your device's unlock/recovery state before attempting to install Razor-Crest.
 
-Some Xteink units purchased from third-party stores (e.g. AliExpress) ship with USB flashing locked from the factory.
-If your device is locked, you will need to use the **Xteink Unlocker** tool available at
-https://crosspointreader.com/#unlock-tool before you can flash CrossPoint.
+### Install plugins, themes, and wallpaper packs
 
-**You do not need this tool if you bought your device directly from xteink.com.** Those units are not locked.
+1. Enable the Plugin System at **Settings → Connectivity → Plugins**, then open **Home → Plugins**.
+2. Choose **Plugin Hub**. If it is not installed, use the built-in installer while connected to Wi-Fi.
+3. In Plugin Hub, browse the available **compatible** community extensions, select an item, inspect its details, and install it. The catalog only shows theme/wallpaper types when firmware advertises the necessary capabilities.
+4. Activate a theme from the firmware's theme selection controls, or choose **Settings → Display → Sleep Screen → Custom → Wallpaper Collection** for a wallpaper pack. Plugins appear under **Home → Plugins**.
 
-**Not sure if your device is locked?** Power it on, connect the USB-C cable, and try flashing via the web flasher first (see
-[Install firmware](#install-firmware) below). If the browser's serial device picker does not show your device, try a different
-USB port or browser before assuming the device is locked. Only reach for the unlocker if the device still doesn't appear.
+Plugin Hub is not required for manual installation. See [SD-card plugins](docs/sd-plugins.md) and [SD extension packages](docs/sd-extension-contracts.md) for the accepted package roots and formats.
 
-> ### ⚠️ WARNING: READ THIS BEFORE USING THE UNLOCKER ⚠️
-> 
-> **The only officially supported firmwares in the unlock tool are CrossPoint and CrossInk.**
-> 
-> Flashing any other firmware on a USB-locked device may **permanently brick the device** or leave it **permanently
-> stuck on that firmware with no recovery path**. Once USB flashing is re-locked, your only way back is via OTA, and if
-> the firmware you flashed doesn't support OTA, **there is no way out**.
+## What you still get from CrossPoint
 
-## Install firmware
+Razor-Crest builds on the ongoing work of the upstream [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader) project: EPUB and other supported book formats, bookmarks and highlights, dictionary lookups, library browsing, wireless file transfer, OPDS, KOReader-compatible progress sync, device-specific controls, custom fonts, and the reader's existing web interface. These upstream features continue to evolve; see the [CrossPoint README](https://github.com/crosspoint-reader/crosspoint-reader#readme) and this repository's [User Guide](USER_GUIDE.md) for the complete baseline documentation.
 
-### Web installer (recommended)
+This fork also maintains the firmware identity `Razor-Crest` while keeping the shared `crosspoint` firmware family and plugin API compatibility. Extensions should discover `pluginCapabilities` from `/api/status` rather than checking fork branding.
 
-1. Connect your device to your computer via USB-C and wake/unlock the device
-2. Go to https://crosspointreader.com/#flash-tools, select your device (X3, X4, Xteink X4Pro, Seeed reTerminal Sticky, or M5PaperMono), and choose an official CrossPoint release.
+## Related Techy-Notes projects
 
-### Web installer (specific version)
+Razor-Crest is one part of a broader set of reader tools and services that I develop or maintain. Most are independent of the fork and can be used with compatible CrossPoint or KOReader devices.
 
-1. Connect your device to your computer via USB-C and wake/unlock the device
-2. Download the firmware file for your device from [Releases](https://github.com/crosspoint-reader/crosspoint-reader/releases), or compile yourself.
-3. Go to https://crosspointreader.com/#flash-tools, select your device, click "Custom .bin" and upload the firmware file.
+| Project | What it provides |
+| --- | --- |
+| **[Plugin Hub](https://github.com/crosspoint-reader/crosspoint-plugin-hub)** | **Originally created and still maintained by Jadehawk.** Now an **official CrossPoint-hosted project**, it discovers, installs, updates, and manages SD-card extensions. Its catalog is capability-based, not locked to Razor-Crest. |
+| [Reading Statistics](https://github.com/jadehawk/reading-statistics.crosspoint-plugin) | An on-device, offline dashboard for reading activity, book history, and supported statistics imports. |
+| [Wallpaper Downloader](https://github.com/jadehawk/wallpapers.crosspoint-plugin) | Browse, preview, cache, and download images for the reader. |
+| [HALO theme](https://github.com/jadehawk/halo.crosspoint-theme) | A complete example of an installable declarative UI theme. |
+| [Star Wars wallpaper packs](https://github.com/jadehawk/starwars.crosspoint-wallpaper) | Installable collections of sleep-screen wallpapers with device-appropriate image variants. |
+| [Send2Ereader for CrossPoint](https://github.com/jadehawk/send2ereader.crosspoint-plugin) | An on-device plugin for transferring books through a compatible Send2Ereader service. |
+| [Send2Ereader for KOReader](https://github.com/jadehawk/send2ereader.koplugin) | A companion KOReader plugin for sending, browsing, and receiving books using session codes or QR codes. |
+| [Deluxe-Sync for KOReader](https://github.com/jadehawk/deluxe-sync.koplugin) | A separate KOReader plugin that supports progress sync with multiple KOSync-compatible servers, including the Techy-Notes service. |
 
-### Revert to Official Firmware
+### Complimentary compatible servers
 
-To revert to the official firmware, you can also flash the latest official firmware using https://crosspointreader.com/#flash-tools.
+I also operate optional services under [Techy-Notes.com](https://techy-notes.com) that work with supported CrossPoint devices. **Neither server is required to use Razor-Crest**; they are independent of the firmware, and you can choose other compatible services or self-host.
 
-### Command line
+- **[Techy-Notes Sync Server](https://sync.techy-notes.com)** — a CrossPoint/KOReader-compatible progress-sync service. Configure it as a custom sync server under **Settings → Connectivity → CrossPoint Sync** to synchronize reading progress across compatible devices. It also supports enhanced metadata and library features for clients that understand them. This is an alternative to, not a replacement for, CrossPoint's official sync server.
+- **[Techy-Notes Send2Ereader Server](https://send.techy-notes.com)** — a book-transfer service for compatible Send2Ereader clients, including the CrossPoint and KOReader plugins linked above. Create or join a transfer session, then share books through its session code or QR workflow. This transfers books; it does **not** synchronize reading positions.
 
-1. Install [`esptool`](https://github.com/espressif/esptool):
+The servers, the Plugin Hub catalog, and the downloadable packages are deliberately kept outside the core reading firmware wherever possible.
 
-```bash
-pip install esptool
-```
+## For extension authors and contributors
 
-2. Download the firmware file for your device from the [releases page](https://github.com/crosspoint-reader/crosspoint-reader/releases).
-3. Connect your device via USB-C.
-4. Find the device port. On Linux, run `dmesg` after connecting. On macOS:
+Want to build your own plugin, theme, or wallpaper pack? The formats are intentionally separate and capability-gated:
 
-```bash
-log stream --predicate 'subsystem == "com.apple.iokit"' --info
-```
+- [**Plugin Hub extension creation and publishing guide**](https://github.com/crosspoint-reader/crosspoint-plugin-hub/blob/main/docs/BUILD_AND_PUBLISH_EXTENSIONS.md) — authoring, catalog eligibility, and publication.
+- [**SD-card plugin contract**](docs/sd-plugins.md) — on-device `device.json` catalogs, browser-side plugins, networking, and events.
+- [**Theme and wallpaper package contracts**](docs/sd-extension-contracts.md) — package structure, runtime capabilities, validation, and compatibility.
+- [**HALO theme reference**](https://github.com/jadehawk/halo.crosspoint-theme/blob/main/docs/THEME_CONTRACT.md) and [**Star Wars wallpaper reference**](https://github.com/jadehawk/starwars.crosspoint-wallpaper/blob/main/docs/WALLPAPER_PACK_CONTRACT.md) — independent examples and AI-assisted authoring instructions.
 
-5. Flash an X3 or X4:
-
-```bash
-esptool.py --chip esp32c3 --port /dev/ttyACM0 --baud 921600 write_flash 0x10000 /path/to/firmware.bin
-```
-
-   Flash an Xteink X4Pro, Seeed reTerminal Sticky, or M5PaperMono:
-
-```bash
-esptool.py --chip esp32s3 --port /dev/ttyACM0 --baud 921600 write_flash 0x10000 /path/to/firmware.bin
-```
-
-### Manual
-
-See [Development quick start](#development-quick-start) below.
-
----
-
-## Custom SD-card fonts
-
-On devices with external RAM enabled in CrossPoint, copy `.ttf`, `.otf`, or `.ttc` files to the SD card and select them as reader fonts. Put one file in `/fonts/` or `/.fonts/`, or put one family's files in a subfolder. See the [SD card font guide](./docs/sd-card-fonts.md) for the folder layout and styles.
-
-On other devices, convert the font to `.cpfont` first. `.cpfont` files also work on devices with external RAM enabled and have better performance. No firmware reflash is needed to add fonts.
-
-To make `.cpfont` files:
-
-1. Go to https://crosspointreader.com/fonts and open the "SD-card font builder" form.
-2. Upload up to four styles (regular, bold, italic, bold-italic), set the family name, point sizes, and Unicode range.
-3. Download the generated `.cpfont` files.
-4. Copy them to your SD card under `/fonts/YourFont/` (or `/.fonts/YourFont/` to hide the folder).
-5. Select the font on the device from the font settings.
-
-Conversion runs the firmware repo's `lib/EpdFont/scripts/fontconvert_sdcard.py` script unmodified, so output matches a local host build.
-
----
-
-## Documentation
-
-- [User Guide](./USER_GUIDE.md)
-- [Web server usage](./docs/webserver.md)
-- [Web server endpoints](./docs/webserver-endpoints.md)
-- [Project scope](./SCOPE.md)
-- [Contributing docs](./docs/contributing/README.md)
-- [Touch and UI development](./docs/contributing/touch-and-ui.md) - how to build new screens on the FreeInkUI activity bases (UiListActivity and friends), plus build envs for the non-Xteink touch devices
-
----
-
-## Development quick start
-
-### Prerequisites
-
-- [pioarduino PlatformIO Core](https://github.com/pioarduino/platformio-core) or [VS Code + pioarduino IDE](https://github.com/pioarduino/pioarduino-vscode-ide)
-- Python 3.8+
-- `clang-format` 21
-- USB-C cable supporting data transfer
-
-### Setup
-
-```bash
-git clone --recursive https://github.com/crosspoint-reader/crosspoint-reader
-cd crosspoint-reader
-
-# if cloned without --recursive:
-git submodule update --init --recursive
-```
-
-### Nix/NixOS
-
-Nix/NixOS users can enter the development shell with either `nix develop` (flakes) or `nix-shell`:
-
-```bash
-nix develop -f nix
-# or
-nix-shell nix
-```
-
-To flash a connected ESP32-C3 device, enable PlatformIO's udev rules in your NixOS configuration:
-
-```nix
-services.udev.packages = with pkgs; [ platformio-core.udev ];
-```
-
-After rebuilding the system configuration, reconnect the device or reload udev rules.
-
-### Build / flash / monitor
-
-```bash
-pio run --target upload
-```
-
-### Contributor pre-PR checks
-
-```bash
-./bin/clang-format-fix
-pio check -e default
-pio run -e default
-```
-
-### Debugging
-
-After flashing the new features, it’s recommended to capture detailed logs from the serial port.
-
-First, make sure all required Python packages are installed:
-
-```python
-python3 -m pip install pyserial colorama matplotlib
-```
-
-After that run the script:
+For firmware development, clone **this fork**, not the upstream repository:
 
 ```sh
-# For Linux
-# This was tested on Debian and should work on most Linux systems.
-python3 scripts/debugging_monitor.py
-
-# For macOS
-python3 scripts/debugging_monitor.py /dev/cu.usbmodem2101
+git clone --recursive https://github.com/jadehawk/Razor-Crest.git
 ```
 
-Minor adjustments may be required for Windows.
+See [contributing guidance](docs/contributing/README.md), [project scope](SCOPE.md), [device/user guide](USER_GUIDE.md), and [firmware testing notes](docs/timed-wake-testing.md). The branch `razor-crest` contains the fork's customizations; the `develop` branch tracks upstream development.
 
----
+## Credits
 
-## Internals
+**Razor-Crest exists because of [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader), [FreeInk SDK](https://github.com/Free-Ink/freeink-sdk), and their contributors.** This personal fork is developed by [Jadehawk](https://github.com/jadehawk), original developer and ongoing maintainer of the now official [Plugin Hub](https://github.com/crosspoint-reader/crosspoint-plugin-hub). Other plugin/theme/pack authors retain credit in their own repositories.
 
-CrossPoint Reader is pretty aggressive about caching data down to the SD card to minimise RAM usage. The ESP32-C3 only has ~380KB of usable RAM, so we have to be careful. A lot of the decisions made in the design of the firmware were based on this constraint.
+Razor-Crest is **not affiliated with Xteink or any device manufacturer** and is **not an official CrossPoint firmware distribution**.
 
-### Data caching
+## Follow and support Techy-Notes
 
-The first time chapters of a book are loaded, they are cached to the SD card. Subsequent loads are served from the
-cache. This cache directory exists at `.crosspoint` on the SD card. The structure is as follows:
+If you find these projects useful, you can follow the demos and tutorials, read more about the projects, or support their continued development:
 
-```text
-.crosspoint/
-├── epub_<hash>/         # one directory per book, named by content hash
-│   ├── progress.bin     # reading position (chapter, page, etc.)
-│   ├── cover.bmp        # generated cover image
-│   ├── book.bin         # metadata: title, author, spine, TOC
-│   ├── css_rules.cache  # parsed CSS rule cache
-│   ├── img_*            # rendered image cache files
-│   └── sections/        # per-chapter layout cache
-│       ├── 0.bin
-│       ├── 1.bin
-│       └── ...
-├── settings.json        # device settings
-├── state.json           # resume/runtime state
-└── recent.json          # recent books list
-```
-
-Removing `/.crosspoint` clears all cached metadata and forces a full regeneration on next open. Book deletes, overwrites, and moves done through the firmware or web UI clear or re-key matching caches; manual SD-card edits may leave stale cache directories behind.
-
-For more details on the internal file structures, see the [file formats document](./docs/file-formats.md).
-
----
-
-## Contributing
-
-Contributions are welcome. If you're new to the codebase, start with the [contributing docs](./docs/contributing/README.md). For things to work on, check the [ideas discussion board](https://github.com/crosspoint-reader/crosspoint-reader/discussions/categories/ideas) — leave a comment before starting so we don't duplicate effort.
-
-Everyone here is a volunteer, so please be respectful and patient. For governance and community expectations, see [GOVERNANCE.md](./GOVERNANCE.md).
-
----
-
-## Community forks
-
-One of the best things about open source is that anyone can take the code in a different direction. If you need something outside CrossPoint's [scope](./SCOPE.md), check out the community forks:
-
-- [CrossInk](https://github.com/uxjulia/CrossInk) — UX focused with minimal reading stats and broader customizations for the reading experience.
-
-- [papyrix-reader](https://github.com/bigbag/papyrix-reader) — Adds FB2 and MD format support. Actively maintained with Arabic script support. Custom themes.
-
-- [inx](https://github.com/obijuankenobiii/inx) — Completely reimagines the user interface with tabbed navigation.
-
-- [Witch(hunt) Reader](https://github.com/jpirnay/witchhunt-reader) — More faithful CSS styling and background work for slightly snappier interaction. Weather information panel. Markdown support.
-
-**Note:** Many of these features will make their way into CrossPoint over time. Each project chooses its own priorities and tradeoffs.
-
-Want to build your own device? Be sure to check out the [Silkscreen](https://silkscreenreader.com) project or [OnePage Reader](https://github.com/MoveCall/onepage-reader).
-
----
-
-CrossPoint Reader is **not affiliated with Xteink or any device manufacturer**.
+- **[Techy-Notes.com](https://techy-notes.com)** — project news, guides, and tutorials.
+- **[YouTube — Techy-Notes / Jadehawk](https://www.youtube.com/@jadehawk)** — videos, demonstrations, and walkthroughs, including the [Razor-Crest playlist](https://www.youtube.com/playlist?list=PLEZP8Igz2ssw).
+- **[Buy Me a Coffee — Support Techy-Notes](https://buymeacoffee.com/jadehawk)** — optional support for independent development.
+- **[GitHub — Jadehawk](https://github.com/jadehawk)** — source code and other projects.
