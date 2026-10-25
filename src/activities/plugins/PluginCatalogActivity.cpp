@@ -47,6 +47,8 @@
 #include "network/HttpDownloader.h"
 #include "network/ProtectedPaths.h"
 #include "util/BookCacheUtils.h"
+#include "util/CatalogHardwareCompatibility.h"
+#include "util/DeviceHardwareProfile.h"
 #include "util/ExtensionPackages.h"
 #include "util/FirmwareIdentity.h"
 #include "util/PluginEvents.h"
@@ -255,10 +257,11 @@ bool matchesCapabilities(const std::string& required) {
 }
 
 bool catalogEntryCompatible(const std::string& family, const std::string& firmware, const std::string& apiMin,
-                            const std::string& requiredCapabilities) {
+                            const std::string& requiredCapabilities, const std::string& advisory) {
   return matchesCsvRestriction(family, firmwareidentity::FAMILY) &&
          matchesCsvRestriction(firmware, firmwareidentity::ID) && matchesPluginApiMinimum(apiMin) &&
-         matchesCapabilities(requiredCapabilities);
+         matchesCapabilities(requiredCapabilities) &&
+         cataloghardware::matches(advisory, devicehardware::model(), devicehardware::psramBytes());
 }
 
 // Plugin folder name from its "<root>/<name>/device.json" manifest path.
@@ -402,6 +405,7 @@ bool PluginCatalogActivity::loadManifest() {
   manifest.compatFirmwarePath = compatibility["firmware"] | "";
   manifest.compatApiMinPath = compatibility["plugin_api_min"] | "";
   manifest.compatRequiresPath = compatibility["requires"] | "";
+  manifest.compatAdvisoryPath = compatibility["advisory"] | "";
   const std::string legacyPageSizeTpl = variantToString(browse["page_size"]);
   manifest.viewTpl = variantToString(browse["view"]);
   if (manifest.viewTpl.empty()) manifest.viewTpl = "list";
@@ -2844,7 +2848,7 @@ bool PluginCatalogActivity::parseBrowseResponse() {
   const char* source = browseSourcePath.empty() ? BROWSE_TMP_PATH : browseSourcePath.c_str();
   const bool extension = currentList >= 0 && currentList < static_cast<int>(manifest.browseLists.size()) &&
                          manifest.browseLists[currentList].kind != "plugin";
-  const bool filterCompatibility = !extension && manifest.filtersCompatibility();
+  const bool filterCompatibility = manifest.filtersCompatibility();
   const std::string extTitle = "title", extAuthor = "description", extId = "name", extUrl = "asset_url";
   const std::string& titles = extension ? extTitle : manifest.titlePath;
   const std::string& authors = extension ? extAuthor : manifest.authorPath;
@@ -2872,18 +2876,21 @@ bool PluginCatalogActivity::parseBrowseResponse() {
     auto selectCompatible = [&](JsonListParser::Row& row) {
       const int thisRow = rowIndex++;
       if (row.field[JsonListParser::F_TITLE].empty()) return;
-      const bool compatible =
-          catalogEntryCompatible(row.field[JsonListParser::F_AUTHOR], row.field[JsonListParser::F_ID],
-                                 row.field[JsonListParser::F_URL], row.field[JsonListParser::F_VERSION]);
+      const bool compatible = catalogEntryCompatible(
+          row.field[JsonListParser::F_AUTHOR], row.field[JsonListParser::F_ID], row.field[JsonListParser::F_URL],
+          row.field[JsonListParser::F_VERSION], row.field[JsonListParser::F_BASE]);
       if (localPaging) {
         if (filteredWindow.take(compatible)) compatibleRows.push_back(thisRow);
       } else if (serverWindow.take() && compatible) {
         compatibleRows.push_back(thisRow);
       }
     };
-    const std::string* const compatibilityFields[] = {&manifest.titlePath,          &manifest.compatFamilyPath,
-                                                     &manifest.compatFirmwarePath, &manifest.compatApiMinPath,
-                                                     &manifest.compatRequiresPath, &unused};
+    const std::string* const compatibilityFields[] = {&titles,
+                                                      &manifest.compatFamilyPath,
+                                                      &manifest.compatFirmwarePath,
+                                                      &manifest.compatApiMinPath,
+                                                      &manifest.compatRequiresPath,
+                                                      &manifest.compatAdvisoryPath};
     auto compatibilityParser = makeUniqueNoThrow<JsonListParser>(
         itemsPath, compatibilityFields, unused,
         [](void* context, JsonListParser::Row& row) { (*static_cast<decltype(selectCompatible)*>(context))(row); },

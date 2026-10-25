@@ -52,6 +52,7 @@
 #include "html/assets/webCss.generated.h"
 #include "html/js/jszip_minJs.generated.h"
 #include "util/BookCacheUtils.h"
+#include "util/DeviceHardwareProfile.h"
 #include "util/DictionaryRegistry.h"
 #include "util/FirmwareIdentity.h"
 #include "util/PluginEvents.h"
@@ -542,6 +543,8 @@ void CrossPointWebServer::handleStatus() const {
   doc["firmwareId"] = firmwareidentity::ID;
   doc["pluginApi"] = firmwareidentity::PLUGIN_API_VERSION;
   doc["pluginCapabilities"] = firmwareidentity::PLUGIN_CAPABILITIES;
+  doc["deviceModel"] = devicehardware::model();
+  doc["psramBytes"] = devicehardware::psramBytes();
   doc["ip"] = ipAddr;
   doc["mode"] = apMode ? "AP" : "STA";
   doc["rssi"] = apMode ? 0 : WiFi.RSSI();

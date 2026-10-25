@@ -84,14 +84,14 @@ class PluginCatalogActivity : public CatalogActivity {
     std::string versionPath;
     // Optional catalog-entry compatibility fields. Empty paths mean no
     // restriction; entries that omit the mapped values remain visible.
-    std::string compatFamilyPath, compatFirmwarePath, compatApiMinPath, compatRequiresPath;
+    std::string compatFamilyPath, compatFirmwarePath, compatApiMinPath, compatRequiresPath, compatAdvisoryPath;
     bool tracksInstalls() const { return !versionPath.empty(); }
     bool hasItemDetails() const {
       return tracksInstalls() || !descriptionPath.empty() || !repositoryPath.empty() || !detailsUrlPath.empty();
     }
     bool filtersCompatibility() const {
       return !compatFamilyPath.empty() || !compatFirmwarePath.empty() || !compatApiMinPath.empty() ||
-             !compatRequiresPath.empty();
+             !compatRequiresPath.empty() || !compatAdvisoryPath.empty();
     }
     enum class ImageFormat : uint8_t { Bmp, Jpeg, Png, Auto };
     enum class SelectionStyle : uint8_t { Theme, Light, Dark, Outline };
