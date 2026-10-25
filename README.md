@@ -1,5 +1,7 @@
 # Razor-Crest
 
+<img width="720" height="525" alt="Hero Image" src="https://github.com/user-attachments/assets/2097cc6c-fa88-4a97-a32f-0069de12d889" />
+
 **A personal fork of [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader), built around a more customizable e-reader.**
 
 Razor-Crest keeps CrossPoint's reading experience and adds a growing ecosystem of **on-device plugins, downloadable UI themes, wallpaper collections, native reading statistics, and customizable sleep screens**. The goal is to make these additions usable directly on the reader, including on the memory-constrained X3.
