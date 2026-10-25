@@ -60,7 +60,9 @@ Response:
 | `freeHeap` | number | Free heap in bytes |
 | `uptime` | number | Seconds since boot |
 | `deviceId` | string | With `?plugin=<name>`: 64 hex chars, stable per device and plugin (SHA-256 of an on-device NVS secret and the name); omitted if NVS is unavailable |
-| `device` | string | `"X3"` or `"X4"` hardware detection |
+| `device` | string | Human-readable detected hardware description (legacy field) |
+| `deviceModel` | string | Stable active hardware profile ID used for advisory catalog discovery (e.g., `x3`, `x4`, `x4pro`, `sticky`) |
+| `psramBytes` | number | Installed PSRAM capacity in bytes (zero when absent); not current free heap |
 
 ## File Management
 
