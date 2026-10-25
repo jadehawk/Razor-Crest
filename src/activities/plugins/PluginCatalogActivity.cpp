@@ -1072,6 +1072,11 @@ void PluginCatalogActivity::confirmUninstallPlugin(const int pickerIndex) {
   if (pluginIndex < 0 || pluginIndex >= static_cast<int>(installedPlugins.size())) return;
 
   const PluginRef plugin = installedPlugins[pluginIndex];
+  if (plugin.name.empty() || plugin.name == "." || plugin.name == ".." ||
+      plugin.name.find_first_of("/\\") != std::string::npos) {
+    LOG_ERR("PCAT", "Refusing unsafe plugin name: %s", plugin.name.c_str());
+    return;
+  }
   bool safeDir = false;
   for (const char* root : PluginLocations::ROOTS) {
     if (plugin.dir == std::string(root) + "/" + plugin.name) {
