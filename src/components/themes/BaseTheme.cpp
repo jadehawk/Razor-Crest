@@ -407,7 +407,7 @@ freeink::ui::Rect BaseTheme::headerBand(const GfxRenderer& renderer, const freei
 
 bool BaseTheme::drawExternalHeaderScene(const GfxRenderer& renderer, Rect area, const char* title) {
   if (!UITheme::getInstance().renderExternalScene(ThemeScene::Region::Header, renderer, area,
-                                                   title ? title : "UNSC"))
+                                                   title ? title : I18N.get(StrId::STR_HOME_SHORTCUT)))
     return false;
   const int bx = area.x + area.width - 40;
   const int middle = area.y + area.height / 2;
