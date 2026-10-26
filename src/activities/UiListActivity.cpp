@@ -8,6 +8,7 @@
 
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
+#include "util/ScreenDecorationLayout.h"
 #if FREEINK_CAP_TOUCH
 #include "components/UiAppHelpers.h"
 #endif
@@ -260,6 +261,14 @@ void UiListActivity::render(RenderLock&&) {
     drawChrome();
     renderUi();
   }
+  // Decorate only the verified spare lower band of short, non-scrolling lists.
+  // Never draw over native list rows, selection, headers, or button hints.
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const auto band =
+      screendecor::forList(renderer.getScreenHeight(), metrics.buttonHintsHeight,
+                           metrics.topPadding + metrics.headerHeight, metrics.tabBarHeight, listCount(),
+                           std::max(metrics.listRowHeight, metrics.listWithSubtitleRowHeight), metrics.listRowGap);
+  if (band.valid()) UITheme::getInstance().renderScreenDecoration(renderer, band.top, band.bottom);
   drawFooter();
   renderer.displayBuffer();
 }

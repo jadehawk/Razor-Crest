@@ -26,7 +26,7 @@
 
 namespace {
 constexpr size_t MAX_SCENE_JSON = 12288;
-constexpr const char* REGION_NAMES[] = {"header", "home", "boot", "sleep", "hints"};
+constexpr const char* REGION_NAMES[] = {"header", "home", "boot", "sleep", "hints", "screen"};
 
 // These are generic visual primitives driven by the selected theme's style values.
 void drawChamfer(const GfxRenderer& renderer, int x, int y, int w, int h, int cut, bool black, bool filled) {
@@ -260,7 +260,7 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
   }
   JsonObjectConst assets = doc["assets"].as<JsonObjectConst>();
   JsonObjectConst rawRegions = doc["regions"].as<JsonObjectConst>();
-  if (assets.isNull() || rawRegions.isNull() || assets.size() > 16 || rawRegions.size() > 5) return false;
+  if (assets.isNull() || rawRegions.isNull() || assets.size() > 16 || rawRegions.size() > 6) return false;
 
   std::string manifestRaw;
   if (!Storage.readFileToString("THEME", base + "/manifest.json", MAX_SCENE_JSON, manifestRaw)) return false;
@@ -286,6 +286,7 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
   bool advertisedSettingsLayout = false;
   bool advertisedFontFamily = false;
   bool advertisedMenuDecor = false;
+  bool advertisedScreenDecor = false;
   JsonArrayConst themeEntries = manifest["themes"].as<JsonArrayConst>();
   if (themeEntries.isNull()) return false;
   for (JsonVariantConst entry : themeEntries) {
@@ -297,6 +298,7 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
       if (name && strcmp(name, "theme.settings-navigation.v1") == 0) advertisedSettingsLayout = true;
       if (name && strcmp(name, "theme.font-family.v1") == 0) advertisedFontFamily = true;
       if (name && strcmp(name, "theme.menu-decoration.v1") == 0) advertisedMenuDecor = true;
+      if (name && strcmp(name, "theme.screen-decoration.v1") == 0) advertisedScreenDecor = true;
     }
     break;
   }
@@ -348,12 +350,26 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
     }
   }
 
+  const JsonArrayConst screenOps = rawRegions["screen"].as<JsonArrayConst>();
+  const bool requestedScreenDecor = !screenOps.isNull() && screenOps.size() != 0;
+  if (requestedScreenDecor != advertisedScreenDecor) return false;
+  // Only a transparent 1-bit bitmap is permitted behind native screens.
+  // No full-page fill, text, custom input or arbitrary compositing here.
+  if (requestedScreenDecor) {
+    if (screenOps.size() != 1) return false;
+    JsonObjectConst screenOp = screenOps[0].as<JsonObjectConst>();
+    if (strcmp(screenOp["op"] | "", "bitmap") != 0 || strcmp(screenOp["paint"] | "", "ink-only") != 0) return false;
+    if (!screenOp["max_height"].is<int>() || screenOp["max_height"].as<int>() < 1 ||
+        screenOp["max_height"].as<int>() > 128 || strcmp(screenOp["asset"] | "", "screen_art") != 0)
+      return false;
+  }
+
   size_t total = 0;
   for (JsonPairConst item : rawRegions) {
-    size_t regionIndex = 5;
-    for (size_t i = 0; i < 5; ++i)
+    size_t regionIndex = 6;
+    for (size_t i = 0; i < 6; ++i)
       if (!strcmp(item.key().c_str(), REGION_NAMES[i])) regionIndex = i;
-    if (regionIndex == 5) return false;
+    if (regionIndex == 6) return false;
     JsonArrayConst list = item.value().as<JsonArrayConst>();
     if (list.isNull() || list.size() > 16 || total + list.size() > 48) return false;
     auto& operations = regions[regionIndex];

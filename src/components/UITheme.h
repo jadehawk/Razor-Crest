@@ -56,6 +56,9 @@ class UITheme {
     // Follow theme (default): undeclared preference and built-in themes use List.
     return externalActive && externalScene.prefersTabbedSettings();
   }
+  // Draws one optional monochrome decorative asset only inside an explicitly
+  // reported blank region; native UI/controls remain above and untouched.
+  bool renderScreenDecoration(const GfxRenderer& renderer, int blankTop, int blankBottom) const;
   bool renderExternalScene(ThemeScene::Region region, const GfxRenderer& renderer, Rect area,
                            const char* title = nullptr, const std::vector<RecentBook>* books = nullptr,
                            int selection = 0, ThemeScene::Phase phase = ThemeScene::Phase::Full) const;

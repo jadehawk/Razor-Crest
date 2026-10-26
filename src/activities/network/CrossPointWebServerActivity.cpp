@@ -19,6 +19,7 @@
 #include "fontIds.h"
 #include "util/PluginEvents.h"
 #include "util/QrUtils.h"
+#include "util/ScreenDecorationLayout.h"
 #include "util/TaskWatchdog.h"
 
 namespace {
@@ -540,6 +541,12 @@ void CrossPointWebServerActivity::renderServerRunning() const {
     renderer.drawCenteredText(SMALL_FONT_ID, startY, hostnameUrl.c_str(), true);
   }
 
+  // Both AP and STA screens can have QR codes: use the measured last row
+  // rather than painting underneath codes or URLs.
+  const int endOfContent =
+      isApMode ? startY + QR_CODE_HEIGHT + 18 : startY + renderer.getLineHeight(SMALL_FONT_ID) + 18;
+  const auto band = screendecor::afterContent(renderer.getScreenHeight(), metrics.buttonHintsHeight, endOfContent);
+  if (band.valid()) UITheme::getInstance().renderScreenDecoration(renderer, band.top, band.bottom);
   const auto labels = mappedInput.mapLabels(tr(STR_EXIT), "", "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
