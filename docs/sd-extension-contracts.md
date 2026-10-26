@@ -150,8 +150,9 @@ validate and use these independent names:
 | `theme.book-cover.v1` | Native Home `book-card` cover variant: saved cover BMP, title/author, and genuine progress bar if known; the featured book remains firmware-controlled |
 | `theme.menu-decoration.v1` | Optional native Home double-framed button panels and validated decorative footer above the hardware hints |
 | `theme.screen-decoration.v1` | One opt-in, one-bit ink-only decorative bitmap in the verified empty lower band of non-reading screens (lists and File Transfer) |
+| `theme.screen-background.v1` | Experimental sparse full-screen ink-only underlay painted before native list/File Transfer content; separate from the safe lower-band decoration |
 
-Non-reading screen art is a **bounded decoration, not a full-page content wallpaper**: the `screen` region accepts one `bitmap` with `paint: "ink-only"` and `max_height` no greater than 128px. The shared UI list renderer and File Transfer pass only spare lower-screen bounds. It skips crowded/scrolling pages, QR codes, Home, reading, and sleep; text, selection, and control hitboxes are never modified. Theme compatibility is negotiated through `theme.screen-decoration.v1`, not a firmware brand or board name.
+The legacy `theme.screen-decoration.v1` region remains a **bounded decoration**: the `screen` region accepts one `bitmap` with `paint: "ink-only"` and `max_height` no greater than 128px. The shared UI list renderer and File Transfer pass only spare lower-screen bounds. It skips crowded/scrolling pages, QR codes, Home, reading, and sleep; text, selection, and control hitboxes are never modified. Theme compatibility is negotiated through `theme.screen-decoration.v1`, not a firmware brand or board name.
 
 
 The declarative `header` region is used on button and touch UI screens,

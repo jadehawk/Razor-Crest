@@ -59,6 +59,8 @@ class UITheme {
   // Draws one optional monochrome decorative asset only inside an explicitly
   // reported blank region; native UI/controls remain above and untouched.
   bool renderScreenDecoration(const GfxRenderer& renderer, int blankTop, int blankBottom) const;
+  // Opt-in sparse underlay for non-reading screens; draw immediately after clear.
+  bool renderScreenBackground(const GfxRenderer& renderer) const;
   bool renderExternalScene(ThemeScene::Region region, const GfxRenderer& renderer, Rect area,
                            const char* title = nullptr, const std::vector<RecentBook>* books = nullptr,
                            int selection = 0, ThemeScene::Phase phase = ThemeScene::Phase::Full) const;

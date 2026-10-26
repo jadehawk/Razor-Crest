@@ -26,7 +26,7 @@
 
 namespace {
 constexpr size_t MAX_SCENE_JSON = 12288;
-constexpr const char* REGION_NAMES[] = {"header", "home", "boot", "sleep", "hints", "screen"};
+constexpr const char* REGION_NAMES[] = {"header", "home", "boot", "sleep", "hints", "screen", "screen_background"};
 
 // These are generic visual primitives driven by the selected theme's style values.
 void drawChamfer(const GfxRenderer& renderer, int x, int y, int w, int h, int cut, bool black, bool filled) {
@@ -260,7 +260,7 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
   }
   JsonObjectConst assets = doc["assets"].as<JsonObjectConst>();
   JsonObjectConst rawRegions = doc["regions"].as<JsonObjectConst>();
-  if (assets.isNull() || rawRegions.isNull() || assets.size() > 16 || rawRegions.size() > 6) return false;
+  if (assets.isNull() || rawRegions.isNull() || assets.size() > 16 || rawRegions.size() > 7) return false;
 
   std::string manifestRaw;
   if (!Storage.readFileToString("THEME", base + "/manifest.json", MAX_SCENE_JSON, manifestRaw)) return false;
@@ -287,6 +287,7 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
   bool advertisedFontFamily = false;
   bool advertisedMenuDecor = false;
   bool advertisedScreenDecor = false;
+  bool advertisedScreenBackground = false;
   JsonArrayConst themeEntries = manifest["themes"].as<JsonArrayConst>();
   if (themeEntries.isNull()) return false;
   for (JsonVariantConst entry : themeEntries) {
@@ -299,6 +300,7 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
       if (name && strcmp(name, "theme.font-family.v1") == 0) advertisedFontFamily = true;
       if (name && strcmp(name, "theme.menu-decoration.v1") == 0) advertisedMenuDecor = true;
       if (name && strcmp(name, "theme.screen-decoration.v1") == 0) advertisedScreenDecor = true;
+      if (name && strcmp(name, "theme.screen-background.v1") == 0) advertisedScreenBackground = true;
     }
     break;
   }
@@ -364,12 +366,24 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
       return false;
   }
 
+  const JsonArrayConst backgroundOps = rawRegions["screen_background"].as<JsonArrayConst>();
+  const bool requestedBackground = !backgroundOps.isNull() && backgroundOps.size() != 0;
+  if (requestedBackground != advertisedScreenBackground) return false;
+  if (requestedBackground) {
+    if (backgroundOps.size() != 1) return false;
+    JsonObjectConst image = backgroundOps[0].as<JsonObjectConst>();
+    if (strcmp(image["op"] | "", "bitmap") != 0 || strcmp(image["asset"] | "", "screen_background_art") != 0 ||
+        strcmp(image["paint"] | "", "ink-only") != 0 || !image["max_height"].is<int>() ||
+        image["max_height"].as<int>() < 1 || image["max_height"].as<int>() > 1024)
+      return false;
+  }
+
   size_t total = 0;
   for (JsonPairConst item : rawRegions) {
-    size_t regionIndex = 6;
-    for (size_t i = 0; i < 6; ++i)
+    size_t regionIndex = 7;
+    for (size_t i = 0; i < 7; ++i)
       if (!strcmp(item.key().c_str(), REGION_NAMES[i])) regionIndex = i;
-    if (regionIndex == 6) return false;
+    if (regionIndex == 7) return false;
     JsonArrayConst list = item.value().as<JsonArrayConst>();
     if (list.isNull() || list.size() > 16 || total + list.size() > 48) return false;
     auto& operations = regions[regionIndex];
@@ -588,9 +602,19 @@ bool ThemeScene::draw(const GfxRenderer& renderer, Region region, Rect area, con
         const int coverHeight = std::min(area.height, 166);
         const int coverY = anchored(area.y, area.height, coverHeight, op.anchorY, op.offsetY);
         const int coverX = x;
-        renderer.fillRect(coverX, coverY, width, coverHeight, selected);
-        renderer.drawRect(coverX, coverY, width, coverHeight, !selected);
+        // Keep the actual cover pane white, regardless of selection. The
+        // selected ink inversion belongs exclusively to the metadata pane.
+        const int textX = coverX + 128;
+        renderer.fillRect(coverX, coverY, width, coverHeight, false);
+        if (selected) {
+          renderer.fillRect(coverX + 122, coverY + 4, width - 126, coverHeight - 8, true);
+          renderer.drawRect(coverX, coverY, width, coverHeight, true);
+          renderer.drawRect(coverX + 2, coverY + 2, width - 4, coverHeight - 4, true);
+        } else {
+          renderer.drawRect(coverX, coverY, width, coverHeight, true);
+        }
         const Rect imageSlot{coverX + 10, coverY + 9, 102, std::max(1, coverHeight - 18)};
+        renderer.fillRect(imageSlot.x, imageSlot.y, imageSlot.width, imageSlot.height, false);
         bool coverDrawn = false;
         if (first && !first->coverBmpPath.empty()) {
           // Use the sized thumb first, then the underlying cached BMP.
@@ -612,12 +636,10 @@ bool ThemeScene::draw(const GfxRenderer& renderer, Region region, Rect area, con
         if (!coverDrawn) {
           // Light card stays light when unfocused; the generic placeholder
           // painted its lower two-thirds solid black and looked selected.
-          renderer.fillRect(imageSlot.x, imageSlot.y, imageSlot.width, imageSlot.height, selected);
           paintIcon(renderer, BookIcon, imageSlot.x + (imageSlot.width - 32) / 2,
-                    imageSlot.y + (imageSlot.height - 32) / 2, !selected);
+                    imageSlot.y + (imageSlot.height - 32) / 2, true);
         }
-        renderer.drawRect(imageSlot.x, imageSlot.y, imageSlot.width, imageSlot.height, !selected);
-        const int textX = coverX + 128;
+        renderer.drawRect(imageSlot.x, imageSlot.y, imageSlot.width, imageSlot.height, true);
         const int available = std::max(1, width - 146);
         const auto titleText = upperAscii(renderer.truncatedText(
             UI_12_FONT_ID,

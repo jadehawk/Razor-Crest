@@ -14,7 +14,7 @@ struct RecentBook;
 // Declarative, executable-code-free scenes, decoded once on theme activation.
 class ThemeScene {
  public:
-  enum class Region : uint8_t { Header, Home, Boot, Sleep, Hints, Screen };
+  enum class Region : uint8_t { Header, Home, Boot, Sleep, Hints, Screen, ScreenBackground };
   enum class Phase : uint8_t { Full, Background, Foreground };
   bool load(const std::string& themeJsonPath);
   bool draw(const GfxRenderer& renderer, Region region, Rect area, const char* screenTitle = nullptr,
@@ -51,7 +51,7 @@ class ThemeScene {
     std::string font;
     std::vector<std::string> gallery;
   };
-  std::array<std::vector<Op>, 6> regions{};
+  std::array<std::vector<Op>, 7> regions{};
   std::array<std::string, 4> fonts{};
   bool uiFamilyVariants_ = false;
   int cornerCut = 0;  // Text plates and legacy fallback.

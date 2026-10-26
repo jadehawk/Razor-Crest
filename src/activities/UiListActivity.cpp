@@ -249,6 +249,7 @@ void UiListActivity::drawFooter() {
 
 void UiListActivity::render(RenderLock&&) {
   renderer.clearScreen();
+  UITheme::getInstance().renderScreenBackground(renderer);
   drawChrome();
   renderUi();
   // Wrapped labels grow rows, so fewer rows can fit than the fixed-height
@@ -258,6 +259,7 @@ void UiListActivity::render(RenderLock&&) {
   // strictly advances toward the selection each pass.
   for (int pass = 0; activeNav().consumeRebuildNeeded() && pass < 8; ++pass) {
     renderer.clearScreen();
+    UITheme::getInstance().renderScreenBackground(renderer);
     drawChrome();
     renderUi();
   }

@@ -92,6 +92,13 @@ bool UITheme::hasCoverGridHome() { return SETTINGS.uiTheme == CrossPointSettings
 
 void UITheme::drawCoverGridHome(CoverGridHomeUi& home) { home.renderUi(); }
 
+bool UITheme::renderScreenBackground(const GfxRenderer& renderer) const {
+  if (!externalActive || !externalScene.hasRegion(ThemeScene::Region::ScreenBackground)) return false;
+  const Rect content = getContentArea(renderer);
+  if (content.width <= 0 || content.height <= 0) return false;
+  return externalScene.draw(renderer, ThemeScene::Region::ScreenBackground, content);
+}
+
 bool UITheme::renderScreenDecoration(const GfxRenderer& renderer, int blankTop, int blankBottom) const {
   if (!externalActive || !externalScene.hasRegion(ThemeScene::Region::Screen)) return false;
   const Rect content = getContentArea(renderer);

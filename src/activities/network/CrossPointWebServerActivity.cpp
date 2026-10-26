@@ -446,6 +446,7 @@ void CrossPointWebServerActivity::render(RenderLock&&) {
   // Subactivities handle their own rendering
   if (state == WebServerActivityState::SERVER_RUNNING || state == WebServerActivityState::AP_STARTING) {
     renderer.clearScreen();
+    UITheme::getInstance().renderScreenBackground(renderer);
     const auto& metrics = UITheme::getInstance().getMetrics();
     const auto pageWidth = renderer.getScreenWidth();
     const auto pageHeight = renderer.getScreenHeight();
