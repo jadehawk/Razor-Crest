@@ -60,4 +60,6 @@ class ThemeScene {
   int hintCut = 0;
   bool rowSeparators = false;
   bool settingsNavigationTabs = false;
+  bool menuDoubleOutline = false;
+  std::string menuFooterFile;
 };

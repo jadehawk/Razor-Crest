@@ -594,11 +594,9 @@ void HomeActivity::render(RenderLock&&) {
     requestUpdate();
   } else if (!recentsLoaded && !recentsLoading) {
     recentsLoading = true;
-    if (themedHome) {
-      recentsLoaded = true;
-      recentsLoading = false;
-      return;
-    }
+    // A themed Home still needs real cover thumbnails. Previously an
+    // external scene short-circuited this entire generation path, leaving
+    // its native cover card stuck on the placeholder forever.
     const int themeThumbHeight = GUI.homeCoverThumbHeight(renderer);
     loadRecentCovers(themeThumbHeight > 0 ? themeThumbHeight : metrics.homeCoverHeight);
   }

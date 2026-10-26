@@ -148,6 +148,7 @@ validate and use these independent names:
 | `theme.font-family.v1` | Bounded single-`ui` file or four-size `ui` family declaration with demand-loaded glyph caches; requires `theme.fonts.v1` |
 | `theme.settings-navigation.v1` | List/Tabs theme preference, subject to user override |
 | `theme.book-cover.v1` | Native Home `book-card` cover variant: saved cover BMP, title/author, and genuine progress bar if known; the featured book remains firmware-controlled |
+| `theme.menu-decoration.v1` | Optional native Home double-framed button panels and validated decorative footer above the hardware hints |
 
 The declarative `header` region is used on button and touch UI screens,
 including Settings, Library and Plugin Catalog. For pushed touch screens,

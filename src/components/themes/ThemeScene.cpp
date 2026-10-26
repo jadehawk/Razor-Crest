@@ -208,6 +208,8 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
   hintCut = 0;
   rowSeparators = false;
   settingsNavigationTabs = false;
+  menuDoubleOutline = false;
+  menuFooterFile.clear();
   fonts = {};
   const size_t index = themeJsonPath.rfind("/themes/");
   if (index == std::string::npos) return false;
@@ -253,6 +255,8 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
     const char* navigation = styles["settings_navigation"] | "list";
     if (strcmp(navigation, "list") && strcmp(navigation, "tabs")) return false;
     settingsNavigationTabs = strcmp(navigation, "tabs") == 0;
+    if (!styles["menu_double_outline"].isNull() && !styles["menu_double_outline"].is<bool>()) return false;
+    menuDoubleOutline = styles["menu_double_outline"] | false;
   }
   JsonObjectConst assets = doc["assets"].as<JsonObjectConst>();
   JsonObjectConst rawRegions = doc["regions"].as<JsonObjectConst>();
@@ -265,12 +269,23 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
     return false;
   JsonArrayConst files = manifest["files"].as<JsonArrayConst>();
   if (files.isNull() || files.size() > 64) return false;
+  // Additional artwork is declared, validated and cached like every other
+  // theme asset. It must be a scalar path under this package.
+  const char* footerRole = styles.isNull() ? nullptr : styles["menu_footer_asset"].as<const char*>();
+  if (!styles.isNull() && !styles["menu_footer_asset"].isNull() && !footerRole) return false;
+  if (footerRole) {
+    JsonVariantConst resource = assets[footerRole];
+    const char* path = resource.as<const char*>();
+    if (!path || !safeResource(path, id) || !isDeclared(files, path)) return false;
+    menuFooterFile = base + "/" + path;
+  }
 
   // A theme may request its Settings presentation only when it advertises
   // the corresponding generic firmware capability in its own manifest entry.
   const bool declaredSettingsLayout = !styles.isNull() && !styles["settings_navigation"].isNull();
   bool advertisedSettingsLayout = false;
   bool advertisedFontFamily = false;
+  bool advertisedMenuDecor = false;
   JsonArrayConst themeEntries = manifest["themes"].as<JsonArrayConst>();
   if (themeEntries.isNull()) return false;
   for (JsonVariantConst entry : themeEntries) {
@@ -281,10 +296,12 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
       const char* name = cap.as<const char*>();
       if (name && strcmp(name, "theme.settings-navigation.v1") == 0) advertisedSettingsLayout = true;
       if (name && strcmp(name, "theme.font-family.v1") == 0) advertisedFontFamily = true;
+      if (name && strcmp(name, "theme.menu-decoration.v1") == 0) advertisedMenuDecor = true;
     }
     break;
   }
   if (declaredSettingsLayout != advertisedSettingsLayout) return false;
+  if ((menuDoubleOutline || !menuFooterFile.empty()) != advertisedMenuDecor) return false;
 
   JsonObjectConst fontRoles = doc["fonts"].as<JsonObjectConst>();
   if (!doc["fonts"].isNull()) {
@@ -560,10 +577,16 @@ bool ThemeScene::draw(const GfxRenderer& renderer, Region region, Rect area, con
         const Rect imageSlot{coverX + 10, coverY + 9, 102, std::max(1, coverHeight - 18)};
         bool coverDrawn = false;
         if (first && !first->coverBmpPath.empty()) {
+          // Use the sized thumb first, then the underlying cached BMP.
+          // The second candidate supports legacy paths that do not carry
+          // the [HEIGHT] template. Don't generate thumbnails in a render.
           const std::string thumb =
               UITheme::getCoverThumbPath(first->coverBmpPath, UITheme::getInstance().getMetrics().homeCoverHeight);
-          HalFile file;
-          if (Storage.openFileForRead("HOME", thumb, file)) {
+          const std::string candidates[2] = {thumb, first->coverBmpPath};
+          for (const auto& candidate : candidates) {
+            if (coverDrawn || candidate.empty()) break;
+            HalFile file;
+            if (!Storage.openFileForRead("HOME", candidate, file)) continue;
             Bitmap bitmap(file);
             if (bitmap.parseHeaders() == BmpReaderError::Ok)
               coverDrawn = BaseTheme::drawCoverThumbFill(renderer, bitmap, imageSlot);
@@ -571,10 +594,13 @@ bool ThemeScene::draw(const GfxRenderer& renderer, Region region, Rect area, con
           }
         }
         if (!coverDrawn) {
-          renderer.fillRect(imageSlot.x, imageSlot.y, imageSlot.width, imageSlot.height, false);
-          BaseTheme::drawCoverPlaceholder(renderer, imageSlot);
+          // Light card stays light when unfocused; the generic placeholder
+          // painted its lower two-thirds solid black and looked selected.
+          renderer.fillRect(imageSlot.x, imageSlot.y, imageSlot.width, imageSlot.height, selected);
+          paintIcon(renderer, BookIcon, imageSlot.x + (imageSlot.width - 32) / 2,
+                    imageSlot.y + (imageSlot.height - 32) / 2, !selected);
         }
-        renderer.drawRect(imageSlot.x, imageSlot.y, imageSlot.width, imageSlot.height, true);
+        renderer.drawRect(imageSlot.x, imageSlot.y, imageSlot.width, imageSlot.height, !selected);
         const int textX = coverX + 128;
         const int available = std::max(1, width - 146);
         const auto titleText = upperAscii(renderer.truncatedText(
@@ -599,12 +625,13 @@ bool ThemeScene::draw(const GfxRenderer& renderer, Region region, Rect area, con
           if (cachedPercent >= 0 && cachedPercent <= 100) {
             char percent[8];
             snprintf(percent, sizeof(percent), "%d%%", cachedPercent);
-            renderer.drawText(UI_10_FONT_ID, textX, coverY + 88, percent, !selected);
-            const int barWidth = std::min(available, 202);
-            const int barY = coverY + coverHeight - 30;
+            // Percentage and bar share the same baseline and never overlap.
+            const int barWidth = std::max(28, std::min(available - 58, 206));
+            const int barY = coverY + coverHeight - 40;
             renderer.drawRect(textX, barY, barWidth, 12, !selected);
             if (cachedPercent > 0 && barWidth > 4)
               renderer.fillRect(textX + 2, barY + 2, (barWidth - 4) * cachedPercent / 100, 8, !selected);
+            renderer.drawText(UI_10_FONT_ID, textX + barWidth + 9, barY - 8, percent, !selected);
           }
         }
         continue;

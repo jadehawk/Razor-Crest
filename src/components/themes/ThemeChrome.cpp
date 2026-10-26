@@ -77,18 +77,32 @@ std::string uppercase(std::string input) {
 bool ThemeScene::drawMenu(const GfxRenderer& renderer, const Rect area, int itemCount, int selected,
                           const std::function<std::string(int)>& label, const std::function<UIIcon(int)>& icon) const {
   if (rowCut <= 0 || itemCount < 0 || area.width < 80 || area.height < 30) return false;
-  const int rowHeight = std::max(32, UITheme::getInstance().getMetrics().menuRowHeight);
-  const int pageItems = std::max(1, area.height / rowHeight);
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int rowHeight = std::max(32, metrics.menuRowHeight);
+  const int rowStep = rowHeight + metrics.menuSpacing;
+  const int pageItems = std::max(1, area.height / rowStep);
   const int pageStart = std::max(0, selected) / pageItems * pageItems;
   const int x = area.x + 12;
   const int width = area.width - 24;
   for (int i = pageStart; i < itemCount && i < pageStart + pageItems; ++i) {
-    const int y = area.y + (i - pageStart) * rowHeight;
+    const int y = area.y + (i - pageStart) * rowStep;
     const bool active = i == selected;
-    if (active)
+    if (menuDoubleOutline) {
+      // Two bounded chamfer outlines give a Peanuts-inspired panel treatment
+      // without altering the touch hitboxes or making regular rows look active.
+      if (active) {
+        chamfer(renderer, x, y, width, rowHeight - 2, rowCut, true);
+      } else {
+        chamfer(renderer, x, y, width, rowHeight - 2, rowCut, true);
+        chamfer(renderer, x + 2, y + 2, width - 4, rowHeight - 6, rowCut - 2, false);
+        chamfer(renderer, x + 5, y + 5, width - 10, rowHeight - 12, rowCut - 5, true);
+        chamfer(renderer, x + 6, y + 6, width - 12, rowHeight - 14, rowCut - 6, false);
+      }
+    } else if (active) {
       chamfer(renderer, x, y, width, rowHeight - 2, rowCut, true);
-    else if (rowSeparators && i + 1 != selected && i + 1 < itemCount)
+    } else if (rowSeparators && i + 1 != selected && i + 1 < itemCount) {
       renderer.drawLine(x + 12, y + rowHeight - 1, x + width - 1, y + rowHeight - 1, true);
+    }
 
     int tx = x + 14;
     const uint8_t* picture = icon ? menuIcon(icon(i)) : nullptr;
@@ -96,7 +110,7 @@ bool ThemeScene::drawMenu(const GfxRenderer& renderer, const Rect area, int item
       coloredIcon(renderer, picture, tx, y + (rowHeight - 34) / 2, !active);
       tx += 46;
     }
-    const std::string text = uppercase(label(i));
+    const std::string text = menuDoubleOutline ? label(i) : uppercase(label(i));
     const auto fitted = renderer.truncatedText(UI_12_FONT_ID, text.c_str(), std::max(1, x + width - tx - 42));
     const int lineY = y + (rowHeight - renderer.getLineHeight(UI_12_FONT_ID)) / 2;
     renderer.drawText(UI_12_FONT_ID, tx, lineY, fitted.c_str(), !active);
@@ -104,6 +118,24 @@ bool ThemeScene::drawMenu(const GfxRenderer& renderer, const Rect area, int item
     const int cy = y + (rowHeight - 2) / 2;
     renderer.drawLine(cx - 4, cy - 6, cx + 2, cy, 2, !active);
     renderer.drawLine(cx + 2, cy, cx - 4, cy + 6, 2, !active);
+  }
+  if (!menuFooterFile.empty() && pageStart == 0) {
+    // Footer is decoration only. Restrict it to the unused lane above
+    // physical button hints so it never covers navigation or menu rows.
+    constexpr int kFooterHeight = 46;
+    const int afterRows = area.y + itemCount * rowStep + 4;
+    const int lowest = renderer.getScreenHeight() - metrics.buttonHintsHeight - kFooterHeight - 4;
+    if (afterRows <= lowest) {
+      themebitmap::Options footer;
+      footer.x = area.x;
+      footer.y = lowest;
+      footer.width = area.width;
+      footer.height = kFooterHeight;
+      footer.fit = themebitmap::Fit::Contain;
+      footer.inkOnly = true;
+      footer.inkBlack = true;
+      themebitmap::draw(renderer, menuFooterFile, footer);
+    }
   }
   return true;
 }
