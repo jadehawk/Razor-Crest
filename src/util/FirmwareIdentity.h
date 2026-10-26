@@ -18,7 +18,7 @@
   "images,"                                                                                                        \
   "catalog.cache,catalog.refresh,catalog.item_details,catalog.hardware_filter.v1,stats.native.v1,ui.dashboard.v1," \
   "theme.sd.v1,theme.metrics.v1,theme.images.v1,theme.composition.v1,theme.fonts.v1,"                              \
-  "theme.font-family.v1,theme.settings-navigation.v1,wallpaper.packs.v1"
+  "theme.font-family.v1,theme.settings-navigation.v1,theme.book-cover.v1,wallpaper.packs.v1"
 #endif
 
 namespace firmwareidentity {

@@ -1,6 +1,7 @@
 #include "ThemeScene.h"
 
 #include <ArduinoJson.h>
+#include <Bitmap.h>
 #include <BoardConfig.h>
 #include <GfxRenderer.h>
 #include <HalClock.h>
@@ -18,8 +19,10 @@
 #include "CrossPointSettings.h"
 #include "RecentBooksStore.h"
 #include "ThemeFonts.h"
+#include "components/UITheme.h"
 #include "components/icons/book.h"
 #include "fontIds.h"
+#include "util/BookProgress.h"
 
 namespace {
 constexpr size_t MAX_SCENE_JSON = 12288;
@@ -296,8 +299,8 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
     for (int i = 0; i < (sharedUiFont ? 1 : 4); ++i) {
       const char* role = sharedUiFont ? "ui" : roleNames[i];
       const char* variantNames[] = {"small", "regular", "large", "display"};
-      const char* relative = familyVariants ? variants[variantNames[i]].as<const char*>()
-                                            : fontRoles[role].as<const char*>();
+      const char* relative =
+          familyVariants ? variants[variantNames[i]].as<const char*>() : fontRoles[role].as<const char*>();
       if (!safeFontPath(relative, id) || !isDeclared(files, relative) || !checkFontHeader(base + "/" + relative)) {
         LOG_ERR("THEME", "Invalid external font role %s", role);
         return false;
@@ -422,9 +425,11 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
       } else if (!strcmp(kind, "book-card") && regionIndex == 1) {
         op.kind = Kind::BookCard;
         const char* variant = json["variant"] | "outlined";
-        if (strcmp(variant, "outlined") && strcmp(variant, "filled")) return false;
+        if (strcmp(variant, "outlined") && strcmp(variant, "filled") && strcmp(variant, "cover")) return false;
+        if (!strcmp(variant, "cover")) op.data = "@native-cover";
         const char* badge = json["badge_asset"] | "";
         if (*badge) {
+          if (op.data == "@native-cover") return false;
           JsonVariantConst asset = assets[badge];
           if (!asset.is<const char*>() || !safeResource(asset.as<const char*>(), id)) return false;
           op.data = base + "/" + asset.as<const char*>();
@@ -543,6 +548,67 @@ bool ThemeScene::draw(const GfxRenderer& renderer, Region region, Rect area, con
       const int x = anchored(area.x, area.width, width, op.anchorX, op.offsetX);
       const int y = anchored(area.y, area.height, height, op.anchorY, op.offsetY);
       const int cut = cardCut;
+      if (op.data == "@native-cover") {
+        // Featured native thumbnail, title and saved progress; never bake cover
+        // artwork into the theme. The theme owns the geometry only.
+        const RecentBook* first = hasBook ? &(*recentBooks)[0] : nullptr;
+        const int coverHeight = std::min(area.height, 166);
+        const int coverY = anchored(area.y, area.height, coverHeight, op.anchorY, op.offsetY);
+        const int coverX = x;
+        renderer.fillRect(coverX, coverY, width, coverHeight, selected);
+        renderer.drawRect(coverX, coverY, width, coverHeight, !selected);
+        const Rect imageSlot{coverX + 10, coverY + 9, 102, std::max(1, coverHeight - 18)};
+        bool coverDrawn = false;
+        if (first && !first->coverBmpPath.empty()) {
+          const std::string thumb =
+              UITheme::getCoverThumbPath(first->coverBmpPath, UITheme::getInstance().getMetrics().homeCoverHeight);
+          HalFile file;
+          if (Storage.openFileForRead("HOME", thumb, file)) {
+            Bitmap bitmap(file);
+            if (bitmap.parseHeaders() == BmpReaderError::Ok)
+              coverDrawn = BaseTheme::drawCoverThumbFill(renderer, bitmap, imageSlot);
+            file.close();
+          }
+        }
+        if (!coverDrawn) {
+          renderer.fillRect(imageSlot.x, imageSlot.y, imageSlot.width, imageSlot.height, false);
+          BaseTheme::drawCoverPlaceholder(renderer, imageSlot);
+        }
+        renderer.drawRect(imageSlot.x, imageSlot.y, imageSlot.width, imageSlot.height, true);
+        const int textX = coverX + 128;
+        const int available = std::max(1, width - 146);
+        const auto titleText = upperAscii(renderer.truncatedText(
+            UI_12_FONT_ID,
+            first ? (first->title.empty() ? first->path.c_str() : first->title.c_str()) : tr(STR_NO_OPEN_BOOK),
+            available));
+        renderer.drawText(UI_12_FONT_ID, textX, coverY + 25, titleText.c_str(), !selected, EpdFontFamily::BOLD);
+        if (first) {
+          const auto author = renderer.truncatedText(UI_10_FONT_ID, first->author.c_str(), available);
+          renderer.drawText(UI_10_FONT_ID, textX, coverY + 58, author.c_str(), !selected);
+          // Cached briefly to avoid constructing EPUB metadata on every arrow
+          // repaint. Refresh periodically so progress is updated after reading.
+          static std::string cachedBook;
+          static uint32_t lastRead = 0;
+          static int cachedPercent = -1;
+          const uint32_t now = millis();
+          if (first->path != cachedBook || now - lastRead > 10000u) {
+            cachedBook = first->path;
+            cachedPercent = loadBookProgress(first->path);
+            lastRead = now;
+          }
+          if (cachedPercent >= 0 && cachedPercent <= 100) {
+            char percent[8];
+            snprintf(percent, sizeof(percent), "%d%%", cachedPercent);
+            renderer.drawText(UI_10_FONT_ID, textX, coverY + 88, percent, !selected);
+            const int barWidth = std::min(available, 202);
+            const int barY = coverY + coverHeight - 30;
+            renderer.drawRect(textX, barY, barWidth, 12, !selected);
+            if (cachedPercent > 0 && barWidth > 4)
+              renderer.fillRect(textX + 2, barY + 2, (barWidth - 4) * cachedPercent / 100, 8, !selected);
+          }
+        }
+        continue;
+      }
       drawChamfer(renderer, x, y, width, height, cut, true, true);
       if (selected)
         drawChamfer(renderer, x + 3, y + 3, width - 6, height - 6, cut, false, true);
