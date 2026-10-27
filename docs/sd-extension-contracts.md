@@ -229,6 +229,21 @@ Only supported lists appear. If the new index is unavailable over HTTP, the
 firmware falls back to the legacy list URL. Themes require the declared
 `themes[].requires` capabilities; unknown requirements are rejected.
 
+### Razor-Crest advisory hardware discovery
+
+Razor-Crest advertises `catalog.hardware_filter.v1`. Its `GET /api/status`
+provides `deviceModel` (stable hardware profile, e.g. `x3`, `x4`, `x4pro`,
+`sticky`) and `psramBytes` (installed physical PSRAM capacity, not free
+heap). Plugin Hub's optional `compatibility.advisory` is a compact,
+publisher-generated discovery hint, e.g.
+`models=x4pro|sticky;exclude=x3;psram_mb=2`. Razor-Crest filters catalog
+entries by model/PSRAM *before paging* when the metadata is available;
+packages with no advisory remain visible. WebUI discovery can use the same
+status fields. **No hardware recommendation blocks explicit/manual
+installation, reinstall, or updates.** Required firmware capabilities and
+ZIP integrity are enforced separately. Stock CrossPoint is not assumed to
+implement this advisory-filter primitive.
+
 The device chooses **both wallpaper and theme variants** using measured display
 pixels, never model names. A theme is one collection with a catalog `variants[]`
 array containing the exact `target_resolution`, release URL, SHA-256, and byte
@@ -254,8 +269,10 @@ fallback. The firmware **does not parse or sanitize Markdown/emoji**; the
 publisher must ship concise printable ASCII package READMEs and short titles.
 Theme selector labels come directly from `themes[].title`, without joining in
 the collection title. No `device.json` is used for these extension types. A one-second press-and-hold on a package row
-offers removal, with confirmation. Active themes and selected wallpaper packs
-cannot be removed or overwritten until a different selection is made in Settings.
+offers removal, with confirmation. Active themes cannot be removed or updated
+until another theme is selected. Selected wallpaper packs can be removed;
+the firmware clears the missing selection and falls back to All Wallpapers,
+as described above.
 The online Community catalog also shows **Installed** or **Update Available**
 based on the matching local manifest, including the portrait-resolution-specific
 wallpaper ZIP that is compatible with this display.
@@ -266,3 +283,4 @@ a substitute for a capability check.
 X3 firmware and HALO/wallpaper work was hardware-tested by its author.
 Other devices, stock CrossPoint, and existing public releases must not
 be assumed compatible until separately verified.
+
