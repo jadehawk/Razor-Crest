@@ -9,6 +9,7 @@
 #include <HalGPIO.h>
 #include <HalMemory.h>
 #include <HalStorage.h>
+#include <HiddenItems.h>
 #include <I18n.h>
 #include <LibraryBuilder.h>
 #include <Logging.h>
@@ -91,10 +92,6 @@ void releaseRequestArguments(WebServer* server) {
   static_cast<CrossPointHttpServer*>(server)->releaseRequestArguments();
 }
 
-// Folders/files to hide from the web interface file browser
-// Note: Items starting with "." are automatically hidden
-constexpr const char* HIDDEN_ITEMS[] = {"System Volume Information", "XTCache"};
-
 constexpr uint16_t UDP_PORTS[] = {54982, 48123, 39001, 44044, 59678};
 constexpr uint16_t LOCAL_UDP_PORT = 8134;
 
@@ -137,7 +134,7 @@ bool isProtectedItemName(const String& name) {
   if (name.startsWith(".")) {
     return true;
   }
-  for (const auto* item : HIDDEN_ITEMS) {
+  for (const auto* item : FsHelpers::HIDDEN_ITEMS) {
     if (name.equals(item)) {
       return true;
     }
@@ -624,7 +621,7 @@ void CrossPointWebServer::scanFiles(const char* path, const std::function<void(F
 
     // Check against explicitly hidden items list
     if (!shouldHide) {
-      for (const auto* item : HIDDEN_ITEMS) {
+      for (const auto* item : FsHelpers::HIDDEN_ITEMS) {
         if (fileName.equals(item)) {
           shouldHide = true;
           break;
@@ -750,7 +747,7 @@ void CrossPointWebServer::handleDownload() const {
     server->send(403, "text/plain", "Cannot access system files");
     return;
   }
-  for (const auto* item : HIDDEN_ITEMS) {
+  for (const auto* item : FsHelpers::HIDDEN_ITEMS) {
     if (itemName.equals(item)) {
       server->send(403, "text/plain", "Cannot access protected items");
       return;
@@ -815,13 +812,22 @@ static bool flushUploadBuffer(CrossPointWebServer::UploadState& state) {
   return true;
 }
 
-// Drop a partially written upload so a truncated book never lands in the library.
-// The file is new: uploads refuse to overwrite an existing name.
-static void removeUploadedFile(const CrossPointWebServer::UploadState& state) {
+static String uploadDestPath(const CrossPointWebServer::UploadState& state) {
   String filePath = state.path;
   if (!filePath.endsWith("/")) filePath += "/";
   filePath += state.fileName;
-  Storage.remove(filePath.c_str());
+  return filePath;
+}
+
+// The path being written: the destination itself, or "<dest>.part" while overwriting.
+static String uploadWritePath(const CrossPointWebServer::UploadState& state) {
+  return state.staged ? uploadDestPath(state) + ".part" : uploadDestPath(state);
+}
+
+// Drop a partially written upload so a truncated book never lands in the library.
+// An overwritten file is untouched: only its staged copy is removed.
+static void removeUploadedFile(const CrossPointWebServer::UploadState& state) {
+  Storage.remove(uploadWritePath(state).c_str());
 }
 
 void CrossPointWebServer::handleUpload(UploadState& state) const {
@@ -846,6 +852,7 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
     state.size = 0;
     state.success = false;
     state.error = "";
+    state.staged = false;
     uploadStartTime = millis();
     lastLoggedSize = 0;
     state.bufferPos = 0;
@@ -882,9 +889,20 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
     // Check if file already exists - SD operations can be slow
     resetTaskWatchdogIfSubscribed();
     if (Storage.exists(filePath.c_str())) {
-      state.error = "File already exists: " + state.fileName;
-      LOG_DBG("WEB", "[UPLOAD] Collision: %s", filePath.c_str());
-      return;
+      const String overwrite = server->arg("overwrite");
+      if (overwrite != "1" && overwrite != "true") {
+        state.error = "File already exists: " + state.fileName;
+        LOG_DBG("WEB", "[UPLOAD] Collision: %s", filePath.c_str());
+        return;
+      }
+      HalFile existing = Storage.open(filePath.c_str());
+      if (existing && existing.isDirectory()) {
+        state.error = "A folder with this name already exists: " + state.fileName;
+        LOG_DBG("WEB", "[UPLOAD] Folder collision: %s", filePath.c_str());
+        return;
+      }
+      existing.close();
+      state.staged = true;
     }
 
     // The buffer spans upload callbacks; keep it off the task stack and release it at the end.
@@ -897,15 +915,15 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
 
     // Open file for writing - this can be slow due to FAT cluster allocation
     resetTaskWatchdogIfSubscribed();
-    if (!Storage.openFileForWrite("WEB", filePath, state.file)) {
+    if (!Storage.openFileForWrite("WEB", uploadWritePath(state), state.file)) {
       state.error = "Failed to create file on SD card";
-      LOG_DBG("WEB", "[UPLOAD] FAILED to create file: %s", filePath.c_str());
+      LOG_DBG("WEB", "[UPLOAD] FAILED to create file: %s", uploadWritePath(state).c_str());
       state.buffer.reset();
       return;
     }
     resetTaskWatchdogIfSubscribed();
 
-    LOG_DBG("WEB", "[UPLOAD] File created successfully: %s", filePath.c_str());
+    LOG_DBG("WEB", "[UPLOAD] File created successfully: %s", uploadWritePath(state).c_str());
   } else if (upload.status == UPLOAD_FILE_WRITE) {
     if (dropUploadIfCancelled()) return;
     if (state.file && state.error.isEmpty()) {
@@ -953,8 +971,27 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
       if (!flushUploadBuffer(state)) {
         state.error = "Failed to write final data to SD card";
       }
-      state.file.close();
-      if (!state.error.isEmpty()) removeUploadedFile(state);
+      // close() writes the final size: a failed close must not replace the original.
+      if (!state.file.close() && state.error.isEmpty()) state.error = "Failed to write final data to SD card";
+      bool keepStaged = false;
+      if (state.error.isEmpty() && state.staged) {
+        resetTaskWatchdogIfSubscribed();  // removing a large original walks its cluster chain
+        const String dest = uploadDestPath(state);
+        if (!Storage.replaceFile(uploadWritePath(state).c_str(), dest.c_str())) {
+          LOG_ERR("WEB", "[UPLOAD] Replace failed: %s", dest.c_str());
+          // replaceFile removes the original before the rename: if it is gone,
+          // the staged copy is the only one left, so keep it.
+          keepStaged = !Storage.exists(dest.c_str());
+          state.error = keepStaged ? "Replace failed; the new file is kept as " + state.fileName + ".part"
+                                   : "Failed to replace the existing file";
+          if (keepStaged) {
+            // The original is gone: drop its cache and Library entry.
+            clearBookCache(dest.c_str());
+            if (library::isLibraryBookFile(dest.c_str())) library::markLibraryIndexDirty();
+          }
+        }
+      }
+      if (!state.error.isEmpty() && !keepStaged) removeUploadedFile(state);
 
       if (state.error.isEmpty()) {
         state.success = true;
@@ -1298,7 +1335,7 @@ void CrossPointWebServer::handleDelete() const {
 
     // Check against explicitly protected items
     bool isProtected = false;
-    for (const auto* item : HIDDEN_ITEMS) {
+    for (const auto* item : FsHelpers::HIDDEN_ITEMS) {
       if (itemName.equals(item)) {
         isProtected = true;
         break;
@@ -2378,6 +2415,14 @@ void CrossPointWebServer::handleFetch() {
     written = 0;
     return Storage.openFileForWrite("PLG", part, file);
   };
+  // The write callback only runs when bytes arrive; with the 60s no-data
+  // timeout a server stall would starve this task's WDT subscription.
+  // shouldAbort is polled in every wait loop, and by connect().
+  const auto feedWatchdog = [&] {
+    resetTaskWatchdogIfSubscribed();
+    keepBrowserAlive();
+    return false;  // never aborts; only feeds
+  };
   const freeink::FetchResult result = freeink::fetchResumable(
       url, options,
       [&](freeink::SecureHttpClient& http, const bool sameOrigin) {
@@ -2391,19 +2436,15 @@ void CrossPointWebServer::handleFetch() {
         http.setTimeout(60000);
         // The plugin's headers (typically its Authorization) stay with the
         // starting origin; a redirect to another server gets none of them.
-        if (sameOrigin) {
+        if (sameOrigin && !requestHeaders.empty()) {
+          // Handshake before the client copies the headers: a several-KB session
+          // cookie would otherwise take heap the handshake needs. A failed connect
+          // is retried, and reported, by the request itself.
+          http.connect(feedWatchdog);
           for (const auto& header : requestHeaders) http.addHeader(header.first, header.second);
         }
       },
-      sink,
-      // The write callback only runs when bytes arrive; with the 60s no-data
-      // timeout a server stall would starve this task's WDT subscription.
-      // shouldAbort is polled in every wait loop.
-      [&] {
-        resetTaskWatchdogIfSubscribed();
-        keepBrowserAlive();
-        return false;  // never aborts; only feeds
-      });
+      sink, feedWatchdog);
   if (file.isOpen()) {
     file.flush();
     file.close();
