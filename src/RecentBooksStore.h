@@ -2,6 +2,7 @@
 #include <ArduinoJson.h>
 #include <PersistableStore.h>
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -10,6 +11,9 @@ struct RecentBook {
   std::string title;
   std::string author;
   std::string coverBmpPath;
+  // Transient Home card metadata; not persisted in recent.json.
+  std::string series{};
+  std::optional<float> seriesIndex{};
 
   bool operator==(const RecentBook& other) const { return path == other.path; }
 };

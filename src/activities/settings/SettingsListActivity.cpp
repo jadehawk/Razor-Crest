@@ -76,12 +76,13 @@ void SettingsListActivity::buildScreen(UiScreen& screen) {
   props.count = static_cast<uint16_t>(rowItems_.size());
   props.action = ACTION_ROW;
   props.inputMask = fui::InputTouch;  // physical buttons stay in loop()
-  // Rows are as tall as a label plus a small second line, giving the icons air.
-  const auto& theme = screen.theme();
-  const int16_t textHeight = static_cast<int16_t>(screen.target().lineHeight(theme.bodyText.font) +
-                                                  screen.target().lineHeight(theme.smallText.font));
-  const int16_t paddingY = mappedInput.hasTouch() ? theme.listTouchRowPaddingY : theme.listRowPaddingY;
-  props.rowHeight = static_cast<int16_t>(std::max<int16_t>(textHeight, ICON_SIZE) + 2 * paddingY);
+  // Match Settings subpage rows on touch. Keep the original X3 row height.
+  if (!mappedInput.hasTouch()) {
+    const auto& theme = screen.theme();
+    const int16_t textHeight = static_cast<int16_t>(screen.target().lineHeight(theme.bodyText.font) +
+                                                    screen.target().lineHeight(theme.smallText.font));
+    props.rowHeight = static_cast<int16_t>(std::max<int16_t>(textHeight, ICON_SIZE) + 2 * theme.listRowPaddingY);
+  }
   syncListViewport(screen, props);
   screen.list(props);
 }

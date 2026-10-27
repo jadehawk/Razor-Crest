@@ -65,6 +65,7 @@ class FileBrowserActivity final : public UiListActivity {
   // footer labels depend on path depth and picker mode.
   void drawChrome() override;
   void drawFooter() override;
+  int footerStatusHeight() const override;
   void activateSelected();
 
   // Data loading

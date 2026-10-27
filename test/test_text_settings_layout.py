@@ -91,10 +91,12 @@ struct GfxRenderer {
   void setClipRect(int x, int y, int w, int h) const { clip = {x, y, w, h}; }
 };
 struct UITheme {
+  bool externalTheme = false;
   ThemeMetrics metrics;
   static UITheme& getInstance() { static UITheme instance; return instance; }
   const ThemeMetrics& getMetrics() const { return metrics; }
   bool hasExternalListSeparators() const { return false; }
+  const void* activeExternalScene() const { return externalTheme ? this : nullptr; }
   Rect getContentArea(const GfxRenderer&);
   Rect getScreenSafeArea(const GfxRenderer&, bool, bool);
   Rect getHeaderRect(const GfxRenderer&, bool, bool);
@@ -387,7 +389,27 @@ void checkSharedPartialRows() {
     }
   }
 }
+void checkSharedTouchListDensity() {
+  Target target;
+  auto& activeTheme = UITheme::getInstance();
+  activeTheme.metrics = RoundedRaffMetrics::values;
+  activeTheme.metrics.listRowHeight = 62;
+  activeTheme.metrics.listRowGap = 8;
+  activeTheme.externalTheme = true;
+  BoardConfig::ACTIVE = BoardConfig::XTEINK_X4_PRO;
+  const auto touch = uiThemeTokens(target);
+  assert(touch.listTouchMinRowHeight == 56);
+  assert(touch.listTouchRowPaddingY == 3);
+  assert(touch.listRowGap == 4);
+  assert(touch.listTouchRowGap == 4);
+  BoardConfig::ACTIVE = BoardConfig::XTEINK_X3;
+  const auto buttons = uiThemeTokens(target);
+  assert(buttons.listRowGap == 8);
+  assert(buttons.listMinRowHeight == 62);
+  activeTheme.externalTheme = false;
+}
 int main() {
+  checkSharedTouchListDensity();
   using Tab = TextSettingsActivity::Tab;
   for (const auto& profile : {BoardConfig::XTEINK_X3, BoardConfig::XTEINK_X3_UC8279,
                               BoardConfig::XTEINK_X4, BoardConfig::XTEINK_X4_CLASSIC})

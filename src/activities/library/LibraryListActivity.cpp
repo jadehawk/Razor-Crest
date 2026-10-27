@@ -843,7 +843,10 @@ void LibraryListActivity::buildRows(UiScreen& screen) {
   props.labelText.maxLines = 1;
   // Breathing room between rows; the dense theme default packs the two-line
   // rows edge-to-edge.
-  props.rowGap = std::max<int16_t>(screen.theme().listRowGap, 6);
+  // Preserve original button-device spacing, but share the compact touch
+  // gap with Settings and Browse Files when an external theme is active.
+  const bool themedTouch = mappedInput.hasTouch() && UITheme::getInstance().activeExternalScene();
+  props.rowGap = themedTouch ? screen.theme().listRowGap : std::max<int16_t>(screen.theme().listRowGap, 6);
   props.headerUnderline = false;
   syncTabListViewport(screen, props);
 
@@ -944,8 +947,7 @@ void LibraryListActivity::buildHeader(UiScreen& screen) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   // Theme artwork is authoritative; retain interactive touch actions.
   if (BaseTheme::drawExternalHeaderScene(
-          renderer, Rect{0, 0, renderer.getScreenWidth(), metrics.topPadding + metrics.headerHeight},
-          headerTitle())) {
+          renderer, Rect{0, 0, renderer.getScreenWidth(), metrics.topPadding + metrics.headerHeight}, headerTitle())) {
     HeaderBackTapTarget::clear();
     if (mappedInput.hasTouch())
       screen.frame().hit(fui::Rect{0, 0, 58, static_cast<int16_t>(metrics.topPadding + metrics.headerHeight)},
@@ -957,13 +959,12 @@ void LibraryListActivity::buildHeader(UiScreen& screen) {
       const int16_t y = static_cast<int16_t>(metrics.topPadding + (metrics.headerHeight - 48) / 2);
       action.icon = fui::bitmapFromIcon(icon_search_32);
       action.action = ACTION_SEARCH;
-      fui::button(screen.frame(),
-                  fui::Rect{static_cast<int16_t>(renderer.getScreenWidth() - 164), y, 48, 48}, action);
+      fui::button(screen.frame(), fui::Rect{static_cast<int16_t>(renderer.getScreenWidth() - 164), y, 48, 48}, action);
       if (mappedInput.hasTouch()) {
         action.icon = fui::bitmapFromIcon(icon_refresh_cw_32);
         action.action = ACTION_REBUILD;
-        fui::button(screen.frame(),
-                    fui::Rect{static_cast<int16_t>(renderer.getScreenWidth() - 220), y, 48, 48}, action);
+        fui::button(screen.frame(), fui::Rect{static_cast<int16_t>(renderer.getScreenWidth() - 220), y, 48, 48},
+                    action);
       }
     }
     return;
@@ -1093,6 +1094,8 @@ void LibraryListActivity::render(RenderLock&& lock) {
   if (optionPopup.processRender(renderer, mappedInput)) return;
   UiTabListActivity::render(std::move(lock));
 }
+
+int LibraryListActivity::footerStatusHeight() const { return renderer.getLineHeight(SMALL_FONT_ID) + 4; }
 
 void LibraryListActivity::drawFooter() {
   drawPositionReadout();

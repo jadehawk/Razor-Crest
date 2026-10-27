@@ -248,8 +248,16 @@ void UiListActivity::drawFooter() {
 }
 
 void UiListActivity::render(RenderLock&&) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const auto band =
+      screendecor::forList(renderer.getScreenHeight(), metrics.buttonHintsHeight + footerStatusHeight(),
+                           metrics.topPadding + metrics.headerHeight, metrics.tabBarHeight, listCount(),
+                           std::max(metrics.listRowHeight, metrics.listWithSubtitleRowHeight), metrics.listRowGap);
+  const auto* scene = UITheme::getInstance().activeExternalScene();
+  const bool hasFooter = scene && scene->hasRegion(ThemeScene::Region::Screen);
+  const int footerTop = band.valid() && hasFooter ? band.bottom - std::min(128, band.bottom - band.top) : 0;
   renderer.clearScreen();
-  UITheme::getInstance().renderScreenBackground(renderer);
+  UITheme::getInstance().renderScreenBackground(renderer, footerTop);
   drawChrome();
   renderUi();
   // Wrapped labels grow rows, so fewer rows can fit than the fixed-height
@@ -259,18 +267,12 @@ void UiListActivity::render(RenderLock&&) {
   // strictly advances toward the selection each pass.
   for (int pass = 0; activeNav().consumeRebuildNeeded() && pass < 8; ++pass) {
     renderer.clearScreen();
-    UITheme::getInstance().renderScreenBackground(renderer);
+    UITheme::getInstance().renderScreenBackground(renderer, footerTop);
     drawChrome();
     renderUi();
   }
-  // Decorate only the verified spare lower band of short, non-scrolling lists.
-  // Never draw over native list rows, selection, headers, or button hints.
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const auto band =
-      screendecor::forList(renderer.getScreenHeight(), metrics.buttonHintsHeight,
-                           metrics.topPadding + metrics.headerHeight, metrics.tabBarHeight, listCount(),
-                           std::max(metrics.listRowHeight, metrics.listWithSubtitleRowHeight), metrics.listRowGap);
   if (band.valid()) UITheme::getInstance().renderScreenDecoration(renderer, band.top, band.bottom);
   drawFooter();
+  renderOverlay();
   renderer.displayBuffer();
 }

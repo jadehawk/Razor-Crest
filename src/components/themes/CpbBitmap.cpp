@@ -83,6 +83,24 @@ Placement fit(const Header& image, const Options& box) {
 }
 }  // namespace
 
+bool probe(const std::string& path) {
+  HalFile file;
+  if (!Storage.openFileForRead("THEME", path, file) || file.isDirectory()) return false;
+  uint8_t header[HEADER_SIZE] = {};
+  if (file.fileSize64() < HEADER_SIZE || !file.seek(0) ||
+      file.read(header, sizeof(header)) != static_cast<int>(sizeof(header)) || std::memcmp(header, "CPTB", 4) != 0 ||
+      header[4] != 1 || header[5] != 1)
+    return false;
+  const uint16_t width = read16(header + 6);
+  const uint16_t height = read16(header + 8);
+  const uint16_t stride = read16(header + 10);
+  const uint32_t bytes = read32(header + 12);
+  return width > 0 && height > 0 && width <= 1024 && height <= 1024 &&
+         static_cast<uint32_t>(width) * height <= MAX_PIXELS && stride == (width + 7u) / 8u &&
+         bytes == static_cast<uint32_t>(stride) * height && bytes <= MAX_BYTES &&
+         file.fileSize64() == HEADER_SIZE + bytes;
+}
+
 bool validate(const std::string& path) {
   HalFile file;
   if (!Storage.openFileForRead("THEME", path, file)) return false;

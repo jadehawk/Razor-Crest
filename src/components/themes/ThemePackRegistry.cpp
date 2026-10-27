@@ -63,7 +63,9 @@ bool supportsThemeCapabilities(JsonArrayConst capabilities) {
              strcmp(cap, "theme.fonts.v1") == 0 || strcmp(cap, "theme.font-family.v1") == 0 ||
              strcmp(cap, "theme.settings-navigation.v1") == 0 || strcmp(cap, "theme.book-cover.v1") == 0 ||
              strcmp(cap, "theme.menu-decoration.v1") == 0 || strcmp(cap, "theme.screen-decoration.v1") == 0 ||
-             strcmp(cap, "theme.screen-background.v1") == 0) {
+             strcmp(cap, "theme.screen-background.v1") == 0 || strcmp(cap, "theme.header-back.v1") == 0 ||
+             strcmp(cap, "theme.sleep-gallery.v1") == 0 || strcmp(cap, "theme.sleep-grayscale.v1") == 0 ||
+             strcmp(cap, "theme.usb-scene.v1") == 0 || strcmp(cap, "theme.usb-grayscale.v1") == 0) {
       // Fixed primitives, bounded bitmap decoder and generic scenes.
     } else
       return false;  // Unknown capabilities must not be accepted optimistically.

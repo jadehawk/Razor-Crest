@@ -21,6 +21,7 @@
 #include "CrossPointSettings.h"
 #include "FontDownloadActivity.h"
 #include "HomeButtonSettingsActivity.h"
+#include "HomeMenuButtonsActivity.h"
 #include "KOReaderSettingsActivity.h"
 #include "KeyboardLayoutsActivity.h"
 #include "LanguageSelectActivity.h"
@@ -193,6 +194,7 @@ void SettingsActivity::rebuildSettings() {
   addAction(SettingsSection::General, StrId::STR_KEYBOARD_LAYOUTS, SettingAction::KeyboardLayouts);
   addAction(SettingsSection::Reader, StrId::STR_TEXT_SETTINGS, SettingAction::TextSettings);
   addAction(SettingsSection::Reader, StrId::STR_MANAGE_FONTS, SettingAction::DownloadFonts);
+  addAction(SettingsSection::Display, StrId::STR_HOME_MENU_BUTTONS, SettingAction::HomeMenuButtons);
   if (BoardConfig::hasHomeKey()) {
     addAction(SettingsSection::Controls, StrId::STR_HOME_BUTTON, SettingAction::HomeButton);
   }
@@ -529,6 +531,11 @@ void SettingsActivity::toggleSelectedSetting() {
         requestUpdate();
         return;
       }
+      case SettingAction::HomeMenuButtons: {
+        auto activity = makeUniqueNoThrow<HomeMenuButtonsActivity>(renderer, mappedInput);
+        if (activity) startActivityForResult(std::move(activity), [this](const ActivityResult&) { requestUpdate(); });
+        return;
+      }
       case SettingAction::HomeButton: {
         // Activities must outlive this call and are owned by the activity stack.
         auto activity = makeUniqueNoThrow<HomeButtonSettingsActivity>(renderer, mappedInput);
@@ -720,8 +727,7 @@ std::string SettingsActivity::settingValueText(const SettingInfo& setting) {
     // The picker/reconciliation already verifies this virtual source. Don't
     // repeat SD manifest validation while drawing the settings value: a
     // transient lookup error would misleadingly show "Unavailable".
-    if (readingstatssleep::selected(SETTINGS.wallpaperPackId))
-      return readingstatssleep::kLabel;
+    if (readingstatssleep::selected(SETTINGS.wallpaperPackId)) return readingstatssleep::kLabel;
     for (const auto& pack : WallpaperPackRegistry::getInstance().choices()) {
       if (pack.id == SETTINGS.wallpaperPackId) {
         // Display settings have a right-aligned value: keep long pack titles

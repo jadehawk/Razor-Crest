@@ -150,10 +150,18 @@ validate and use these independent names:
 | `theme.book-cover.v1` | Native Home `book-card` cover variant: saved cover BMP, title/author, and genuine progress bar if known; the featured book remains firmware-controlled |
 | `theme.menu-decoration.v1` | Optional native Home double-framed button panels and validated decorative footer above the hardware hints |
 | `theme.screen-decoration.v1` | One opt-in, one-bit ink-only decorative bitmap in the verified empty lower band of non-reading screens (lists and File Transfer) |
-| `theme.screen-background.v1` | Experimental sparse full-screen ink-only underlay painted before native list/File Transfer content; separate from the safe lower-band decoration |
+| `theme.screen-background.v1` | Optional PSRAM-only full-screen ink-only underlay beneath native list/File Transfer content, clipped above independently reserved footer artwork |
+| `theme.header-back.v1` | Theme-selectable touch Back presentation (`arrow`, `emblem`, `both`) with firmware-owned Back hitbox and per-bitmap optional `_touch` artwork variants |
+| `theme.usb-scene.v1` | Optional full-screen graphic USB Drive scene painted before the firmware unmounts the SD filesystem for raw PC access |
 
 The legacy `theme.screen-decoration.v1` region remains a **bounded decoration**: the `screen` region accepts one `bitmap` with `paint: "ink-only"` and `max_height` no greater than 128px. The shared UI list renderer and File Transfer pass only spare lower-screen bounds. It skips crowded/scrolling pages, QR codes, Home, reading, and sleep; text, selection, and control hitboxes are never modified. Theme compatibility is negotiated through `theme.screen-decoration.v1`, not a firmware brand or board name.
 
+
+The optional `theme.sleep-grayscale.v1` capability makes a theme's existing `assets.sleep_art` gallery directory accept **only native four-tone `.bmp` images** (no mixing with `.cpb`). Put device-sized BMPs under `themes/<id>/sleep/`; the firmware validates the directory and BMP dimensions, rotates a random scene without keeping a filename array, and uses the same four-tone hardware waveform as custom sleep wallpapers. If the panel lacks grayscale, the firmware still renders a black-and-white approximation. Publish separate 528×792 and 480×800 gallery files in their respective ZIPs, with the capability declared in the theme's `requires` list.
+
+The optional `theme.usb-grayscale.v1` capability adds an independent `usb_gray_art` role: a **device-sized 4-tone grayscale BMP** under `themes/<id>/assets/` listed in `manifest.files`. Provide both `theme.usb-scene.v1` and `theme.usb-grayscale.v1` in `manifest.themes[].requires`, retain the existing `regions.usb` single-CPB operation for black/white fallback, and include `assets.usb_gray_art` pointing at the BMP. Firmware displays the BMP via the hardware grayscale planes entirely **before** SD handoff, or uses the CPB if the panel does not support native grayscale. Color source files are converted to grayscale before packing, not stored as PNG. Install a matching 528×792 or 480×800 BMP for each device ZIP. The screen contains no text or translatable strings.
+
+The optional USB Drive scene is image-only: add `"usb_art": "themes/<id>/assets/usb.cpb"` to `assets`, a single `{"op":"bitmap","asset":"usb_art","fit":"contain"}` operation to `regions.usb`, and `theme.usb-scene.v1` to the matching theme's `manifest.json` `requires` list. Include the CPB in `manifest.files` and the package archive. Drawn directly into the existing e-ink framebuffer **before** the SD filesystem is detached, the graphic remains displayed while the computer owns the card. No fonts, text, live status messages, additional framebuffer, or PSRAM are needed. Missing or unreadable theme artwork falls back to an in-firmware transfer icon; USB startup errors keep the firmware's existing error screen. USB disconnect restarts directly to Home without a Loading popup. USB art does not affect ordinary File Transfer/Join Network pages.
 
 The declarative `header` region is used on button and touch UI screens,
 including Settings, Library and Plugin Catalog. For pushed touch screens,
@@ -221,12 +229,19 @@ Only supported lists appear. If the new index is unavailable over HTTP, the
 firmware falls back to the legacy list URL. Themes require the declared
 `themes[].requires` capabilities; unknown requirements are rejected.
 
-The device chooses wallpaper variants by the renderer's actual display pixels,
-never model names. Each collection is independently installable, and only one
-matching release ZIP is selected per collection. Downloads verify SHA-256,
-manifest package identity, exact ZIP members, bounded sizes, and BMP dimensions.
-Theme packs and wallpaper packs are staged and installed under their separate
-SD roots with rollback on failed directory replacement.
+The device chooses **both wallpaper and theme variants** using measured display
+pixels, never model names. A theme is one collection with a catalog `variants[]`
+array containing the exact `target_resolution`, release URL, SHA-256, and byte
+count for each publisher-provided layout. Each ZIP's `manifest.target_resolution`
+must also match the panel. Only that device's asset ZIP is downloaded.
+
+A release asset named `<name>-x3-<version>.crosspoint-theme.zip` still unpacks
+under `<name>.crosspoint-theme/` with a manifest `name` of `<name>`; theme
+IDs, installed theme preference and shared font metadata stay stable. An X4+
+variant of the same theme contains only its 480x800 CPBs, not X3 artwork.
+The installer verifies the checksum, manifest name and resolution, bounded
+sizes and exact ZIP member paths before an atomic swap. Wallpaper BMP dimensions
+are verified separately. No migration or duplicate installed theme ID is needed.
 
 The installed extension picker retains OPDS and Plugin Hub pinned at the top.
 A shaded **Plugins** section groups any remaining installed plugins; separate

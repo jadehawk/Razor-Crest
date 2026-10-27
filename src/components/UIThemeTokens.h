@@ -2,6 +2,8 @@
 #include <BoardConfig.h>
 #include <FreeInkUIGfxRenderer.h>
 
+#include <algorithm>
+
 #include "UITheme.h"
 
 // Merges the active UITheme's shape (row gaps, radii, insets, selection
@@ -16,8 +18,19 @@ inline freeink::ui::ThemeTokens uiThemeTokens(const freeink::ui::GfxRendererTarg
   fui::ThemeTokens tokens = fui::themeTokensForLineHeight(target.lineHeight(fui::GfxRendererTarget::FONT_BODY));
   // Button-device lists retain the theme's preferred density. The SDK still
   // grows individual rows for wrapping, subtitles and icons.
-  if (!BoardConfig::hasTouch()) tokens.listMinRowHeight = static_cast<int16_t>(metrics.listRowHeight);
-  tokens.listRowGap = static_cast<int16_t>(metrics.listRowGap);
+  if (!BoardConfig::hasTouch())
+    tokens.listMinRowHeight = static_cast<int16_t>(metrics.listRowHeight);
+  else if (UITheme::getInstance().activeExternalScene()) {
+    // SD theme geometry on touch panels should not inherit the roomy SDK
+    // defaults and expand short Settings/File Browser lists unnecessarily.
+    tokens.listTouchMinRowHeight = static_cast<int16_t>(std::clamp(metrics.listRowHeight, 44, 56));
+    tokens.listTouchRowPaddingY = 3;
+    tokens.listTouchRowGap = static_cast<int16_t>(std::min(metrics.listRowGap, 4));
+  }
+  // Honor the compact touch gap in every screen, not just top-level Settings.
+  tokens.listRowGap = BoardConfig::hasTouch() && UITheme::getInstance().activeExternalScene()
+                          ? tokens.listTouchRowGap
+                          : static_cast<int16_t>(metrics.listRowGap);
   if (UITheme::getInstance().hasExternalListSeparators()) tokens.listSeparator = fui::Paint::solid(fui::Color::Black);
   tokens.listRowRadius = static_cast<uint8_t>(metrics.listRowRadius);
   tokens.listInset = static_cast<int16_t>(metrics.listInset);

@@ -19,7 +19,11 @@ header = base.split("void BaseTheme::drawHeader(", 1)[1].split("namespace fui = 
 # No device-type gate: both touch and non-touch use the same scene and status.
 assert "renderExternalScene(ThemeScene::Region::Header" in scene
 assert "renderer.drawText(SMALL_FONT_ID" in scene
-assert "drawExternalHeaderScene(renderer, sceneArea, title)" in header
+assert "drawExternalHeaderScene(renderer, sceneArea, title, backButton)" in header
+assert "backButton && gpio.hasTouch() ? 1 : 0" in scene
+scene_renderer = read("src/components/themes/ThemeScene.cpp")
+assert 'HeaderBackStyle::Both' in scene_renderer
+assert 'paintIcon(renderer, icon_header_back_32_bits' in scene_renderer
 assert "if (gpio.hasTouch() && backButton && title)" in header
 assert "HeaderBackTapTarget::set(0, 0, 58, sceneArea.height)" in header
 assert "HeaderBackTapTarget::clear();" in header

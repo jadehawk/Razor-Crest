@@ -75,6 +75,11 @@ class UiListActivity : public Activity, protected UiAppHost {
   virtual void drawChrome();
   // Button hints, drawn after the app renders. Default: Back/Select/Up/Down.
   virtual void drawFooter();
+  // Optional modal overlay on the current list frame, after the footer but
+  // before the e-ink flush. Keeps focused rows visible behind confirmations.
+  virtual void renderOverlay() {}
+  // Height of any native status/readout above the button hints.
+  virtual int footerStatusHeight() const { return 0; }
 
   // --- helpers ---------------------------------------------------------------
   // Measure visibleRows for the screen band, apply follow-on-build, clamp the

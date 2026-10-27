@@ -1,14 +1,69 @@
 #include "UsbDriveActivity.h"
 
 #include <Arduino.h>
+#include <Bitmap.h>
+#include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
 
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
 #include "components/UITheme.h"
+#include "components/icons/transfer.h"
 
 namespace fui = freeink::ui;
+
+namespace {
+// Render all grayscale planes while the SD card still belongs to firmware.
+// No theme image, font, or open file survives the USB raw-storage handoff.
+bool drawUsbGrayscale(const std::string& path, GfxRenderer& renderer) {
+  if (path.empty()) return false;
+  const auto mode = renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Direct).supported()
+                        ? HalDisplay::GrayscaleMode::Direct
+                        : HalDisplay::GrayscaleMode::Absolute;
+  if (!renderer.grayscaleCapabilities(mode).supported()) return false;
+  HalFile file;
+  if (!Storage.openFileForRead("USB", path, file)) return false;
+  Bitmap bitmap(file, true);
+  if (bitmap.parseHeaders() != BmpReaderError::Ok || !bitmap.hasGreyscale() ||
+      bitmap.getWidth() != renderer.getScreenWidth() || bitmap.getHeight() != renderer.getScreenHeight()) {
+    LOG_ERR("USB", "Unsupported USB grayscale image dimensions or format");
+    return false;
+  }
+  renderer.clearScreen();
+  if (!renderer.drawBitmap(bitmap, 0, 0, renderer.getScreenWidth(), renderer.getScreenHeight())) return false;
+  if (!renderer.displayGrayscaleBase(mode)) return false;
+  bool complete = true;
+  for (auto plane : {GfxRenderer::GRAYSCALE_LSB, GfxRenderer::GRAYSCALE_MSB}) {
+    if (bitmap.rewindToData() != BmpReaderError::Ok) {
+      complete = false;
+      break;
+    }
+    renderer.clearScreen(mode == HalDisplay::GrayscaleMode::Absolute ? 0xFF : 0x00);
+    renderer.setRenderMode(plane);
+    if (!renderer.drawBitmap(bitmap, 0, 0, renderer.getScreenWidth(), renderer.getScreenHeight())) {
+      complete = false;
+      break;
+    }
+    if (plane == GfxRenderer::GRAYSCALE_LSB)
+      renderer.copyGrayscaleLsbBuffers();
+    else
+      renderer.copyGrayscaleMsbBuffers();
+  }
+  // Keep the grayscale render mode until displayGrayBuffer commits both planes.
+  if (!complete) {
+    renderer.setRenderMode(GfxRenderer::BW);  // Abort incomplete grayscale safely.
+    LOG_ERR("USB", "USB grayscale planes incomplete");
+    return false;
+  }
+  // The renderer cancels an unfinished absolute pass on a BW mode change.
+  // Commit LSB/MSB first, exactly as SleepActivity does.
+  renderer.displayGrayBuffer();
+  renderer.setRenderMode(GfxRenderer::BW);
+  LOG_INF("USB", "Displayed themed grayscale USB scene");
+  return true;
+}
+}  // namespace
 
 void UsbDriveActivity::onEnter() {
   Activity::onEnter();
@@ -103,6 +158,27 @@ void UsbDriveActivity::loop() {
 }
 
 void UsbDriveActivity::render(RenderLock&&) {
+  // Once USB owns the SD card, preserve the already-painted e-ink frame.
+  // Redrawing themed glyphs or art would read an unmounted filesystem.
+  if (usbFramePainted && !startFailed) return;
+  if (preparing && !startFailed) {
+    if (drawUsbGrayscale(UITheme::getInstance().usbGrayscalePath(), renderer)) {
+      usbFramePainted = true;
+      return;
+    }
+    renderer.clearScreen();
+    if (!UITheme::getInstance().renderExternalScene(
+            ThemeScene::Region::Usb, renderer, Rect{0, 0, renderer.getScreenWidth(), renderer.getScreenHeight()})) {
+      renderer.clearScreen();
+      const int centerX = renderer.getScreenWidth() / 2;
+      const int centerY = renderer.getScreenHeight() / 2;
+      renderer.drawRect(centerX - 54, centerY - 54, 108, 108);
+      renderer.drawIcon(TransferIcon, centerX - 16, centerY - 16, 32);
+    }
+    renderer.displayBuffer();
+    usbFramePainted = true;
+    return;
+  }
   renderer.clearScreen();
 
   const auto& metrics = UITheme::getInstance().getMetrics();

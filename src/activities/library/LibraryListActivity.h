@@ -58,6 +58,7 @@ class LibraryListActivity final : public UiTabListActivity {
   // The FreeInkUI header owns both the title and search touch target.
   void drawChrome() override {}
   void drawFooter() override;
+  int footerStatusHeight() const override;
   // OptionPopup is a self-contained modal: it owns rendering (and the button
   // hints) whenever it is up.
   void render(RenderLock&& lock) override;

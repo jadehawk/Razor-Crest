@@ -405,9 +405,10 @@ freeink::ui::Rect BaseTheme::headerBand(const GfxRenderer& renderer, const freei
                            static_cast<int16_t>(rect.width - l - r), static_cast<int16_t>(rect.height - offset)};
 }
 
-bool BaseTheme::drawExternalHeaderScene(const GfxRenderer& renderer, Rect area, const char* title) {
+bool BaseTheme::drawExternalHeaderScene(const GfxRenderer& renderer, Rect area, const char* title, bool backButton) {
   if (!UITheme::getInstance().renderExternalScene(ThemeScene::Region::Header, renderer, area,
-                                                   title ? title : I18N.get(StrId::STR_HOME_SHORTCUT)))
+                                                  title ? title : I18N.get(StrId::STR_HOME_SHORTCUT), nullptr,
+                                                  backButton && gpio.hasTouch() ? 1 : 0))
     return false;
   const int bx = area.x + area.width - 40;
   const int middle = area.y + area.height / 2;
@@ -420,8 +421,8 @@ bool BaseTheme::drawExternalHeaderScene(const GfxRenderer& renderer, Rect area, 
     char percent[8];
     snprintf(percent, sizeof(percent), "%u%%", static_cast<unsigned>(powerManager.getBatteryPercentage()));
     const int width = renderer.getTextWidth(SMALL_FONT_ID, percent);
-    renderer.drawText(SMALL_FONT_ID, bx - 8 - width,
-                      middle - renderer.getLineHeight(SMALL_FONT_ID) / 2, percent, false);
+    renderer.drawText(SMALL_FONT_ID, bx - 8 - width, middle - renderer.getLineHeight(SMALL_FONT_ID) / 2, percent,
+                      false);
   }
   return true;
 }
@@ -432,7 +433,7 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
   // Its emblem serves as the touch Back target; the banner is never
   // replaced by the generic FreeInkUI Back arrow.
   const Rect sceneArea{0, 0, renderer.getScreenWidth(), rect.y + rect.height};
-  if (drawExternalHeaderScene(renderer, sceneArea, title)) {
+  if (drawExternalHeaderScene(renderer, sceneArea, title, backButton)) {
     if (gpio.hasTouch() && backButton && title)
       HeaderBackTapTarget::set(0, 0, 58, sceneArea.height);
     else

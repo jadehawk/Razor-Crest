@@ -14,13 +14,17 @@ struct RecentBook;
 // Declarative, executable-code-free scenes, decoded once on theme activation.
 class ThemeScene {
  public:
-  enum class Region : uint8_t { Header, Home, Boot, Sleep, Hints, Screen, ScreenBackground };
+  enum class Region : uint8_t { Header, Home, Boot, Sleep, Hints, Screen, ScreenBackground, Usb };
   enum class Phase : uint8_t { Full, Background, Foreground };
+  enum class HeaderBackStyle : uint8_t { Emblem, Arrow, Both };
   bool load(const std::string& themeJsonPath);
   bool draw(const GfxRenderer& renderer, Region region, Rect area, const char* screenTitle = nullptr,
             const std::vector<RecentBook>* recentBooks = nullptr, int selectorIndex = 0,
             Phase phase = Phase::Full) const;
   bool hasRegion(Region region) const;
+  const std::string& usbGrayscalePath() const { return usbGrayFile; }
+  bool selectSleepGrayscalePath(std::string& path) const;
+  HeaderBackStyle headerBackStyle() const { return backStyle; }
   const std::array<std::string, 4>& fontFiles() const { return fonts; }
   // New ui-family variants retain independent raster sizes but warm on demand.
   bool usesUiFontFamilyVariants() const { return uiFamilyVariants_; }
@@ -47,11 +51,15 @@ class ThemeScene {
     bool inkOnly = false;
     themebitmap::Fit fit = themebitmap::Fit::Contain;
     std::string data;
+    std::string touchData;  // Independently authored art for touch panels.
+    bool headerEmblem = false;
     std::string source;
     std::string font;
-    std::vector<std::string> gallery;
+    bool sleepDirectory = false;
   };
-  std::array<std::vector<Op>, 7> regions{};
+  std::array<std::vector<Op>, 8> regions{};
+  // Preserve a choice only across sleep renderings, not theme reloads.
+  mutable int lastSleepIndex = -1;
   std::array<std::string, 4> fonts{};
   bool uiFamilyVariants_ = false;
   int cornerCut = 0;  // Text plates and legacy fallback.
@@ -61,5 +69,11 @@ class ThemeScene {
   bool rowSeparators = false;
   bool settingsNavigationTabs = false;
   bool menuDoubleOutline = false;
+  HeaderBackStyle backStyle = HeaderBackStyle::Emblem;
   std::string menuFooterFile;
+  std::string menuFooterTouchFile;
+  std::string screenTouchFile;
+  std::string usbGrayFile;
+  std::string sleepGrayDirectory;
+  std::string sleepGrayId;
 };

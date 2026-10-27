@@ -1,7 +1,6 @@
 #include "ExtensionPackages.h"
 
 #include <Arduino.h>
-
 #include <Bitmap.h>
 #include <HalStorage.h>
 #include <JsonListParser.h>
@@ -20,8 +19,10 @@
 #include <utility>
 #include <vector>
 
-#include "util/FirmwareIdentity.h"
+#include "components/themes/CpbBitmap.h"
 #include "util/ExtensionRequiredFiles.h"
+#include "util/FirmwareIdentity.h"
+#include "util/ThemeSleepDirectory.h"
 
 namespace extensionpackages {
 namespace {
@@ -35,8 +36,8 @@ constexpr size_t MAX_VARIANTS = 8;
 constexpr size_t HASH_CHUNK = 1024;
 
 bool safeId(const std::string& value) {
-  if (value.empty() || value.size() > 32 || !((value[0] >= 'a' && value[0] <= 'z') ||
-                                             (value[0] >= '0' && value[0] <= '9')))
+  if (value.empty() || value.size() > 32 ||
+      !((value[0] >= 'a' && value[0] <= 'z') || (value[0] >= '0' && value[0] <= '9')))
     return false;
   for (char ch : value) {
     if (!(ch >= 'a' && ch <= 'z') && !(ch >= '0' && ch <= '9') && ch != '-') return false;
@@ -45,14 +46,13 @@ bool safeId(const std::string& value) {
 }
 
 bool safeRelative(const std::string& path) {
-  if (path.empty() || path.size() > 150 || path[0] == '/' || path[0] == '.' ||
-      path.find("..") != std::string::npos || path.find("//") != std::string::npos ||
-      path.find('\\') != std::string::npos || path.find(':') != std::string::npos ||
-      path.back() == '/')
+  if (path.empty() || path.size() > 150 || path[0] == '/' || path[0] == '.' || path.find("..") != std::string::npos ||
+      path.find("//") != std::string::npos || path.find('\\') != std::string::npos ||
+      path.find(':') != std::string::npos || path.back() == '/')
     return false;
   for (char ch : path) {
-    if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-          (ch >= '0' && ch <= '9') || ch == '_' || ch == '-' || ch == '.' || ch == '/'))
+    if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-' ||
+          ch == '.' || ch == '/'))
       return false;
   }
   return true;
@@ -66,12 +66,13 @@ bool validHash(const std::string& hash) {
 }
 
 bool validRelease(const Release& release) {
-  if (!safeId(release.name) || !validHash(release.sha256) ||
-      release.version.empty() || release.version.size() > 24 ||
+  if (!safeId(release.name) || !validHash(release.sha256) || release.version.empty() || release.version.size() > 24 ||
       release.version.find_first_not_of("0123456789.") != std::string::npos)
     return false;
   const char* suffix = release.kind == Kind::Theme ? "crosspoint-theme.zip" : "crosspoint-wallpaper.zip";
-  const std::string expected = "/" + release.name + "-" + release.version + "." + suffix;
+  const std::string& asset = release.variant.empty() ? release.name : release.variant;
+  if (!safeId(asset) || (release.kind == Kind::Theme && asset.rfind(release.name + "-", 0) != 0)) return false;
+  const std::string expected = "/" + asset + "-" + release.version + "." + suffix;
   return release.url.rfind("https://github.com/", 0) == 0 &&
          release.url.find("/releases/download/v" + release.version + "/") != std::string::npos &&
          release.url.size() >= expected.size() &&
@@ -92,18 +93,16 @@ void captureRow(void* context, JsonListParser::Row& row) {
 }
 
 bool readRow(const std::string& path, const std::string& collection,
-             const std::string* const (&fields)[JsonListParser::F_COUNT],
-             const std::string& arrayPath, JsonListParser::Row& result) {
+             const std::string* const (&fields)[JsonListParser::F_COUNT], const std::string& arrayPath,
+             JsonListParser::Row& result) {
   HalFile file;
   if (!Storage.openFileForRead("EXT", path, file)) return false;
   SelectedRow selected{collection, {}, false};
-  auto parser = std::unique_ptr<JsonListParser>(
-      new (std::nothrow) JsonListParser("items", fields, arrayPath, captureRow, &selected));
+  auto parser = std::unique_ptr<JsonListParser>(new (std::nothrow)
+                                                    JsonListParser("items", fields, arrayPath, captureRow, &selected));
   if (!parser) return false;
   const bool ok = parser->parse(
-      [](void* context, char* buffer, size_t length) {
-        return static_cast<HalFile*>(context)->read(buffer, length);
-      },
+      [](void* context, char* buffer, size_t length) { return static_cast<HalFile*>(context)->read(buffer, length); },
       &file);
   if (!ok || !selected.matched) return false;
   result = std::move(selected.row);
@@ -130,14 +129,12 @@ bool digestMatches(const std::string& path, const std::string& expected) {
   mbedtls_sha256_free(&ctx);
   if (!ok) return false;
   char actual[65] = {};
-  for (size_t i = 0; i < sizeof(hash); ++i)
-    snprintf(actual + 2 * i, 3, "%02x", static_cast<unsigned>(hash[i]));
+  for (size_t i = 0; i < sizeof(hash); ++i) snprintf(actual + 2 * i, 3, "%02x", static_cast<unsigned>(hash[i]));
   return expected == actual;
 }
 
 std::string destination(const Release& release) {
-  if (release.kind == Kind::Theme)
-    return "/.crosspoint/themes/" + release.name + ".crosspoint-theme";
+  if (release.kind == Kind::Theme) return "/.crosspoint/themes/" + release.name + ".crosspoint-theme";
   return "/.crosspoint/wallpapers/" + release.name + ".crosspoint-wallpaper";
 }
 
@@ -159,10 +156,9 @@ bool hasRoomForPackage(const Release& release) {
   return true;
 }
 
-bool readManifest(ZipFile& archive, const Release& release, JsonDocument& manifest,
-                  std::vector<std::string>& files) {
-  const std::string top = release.name +
-      (release.kind == Kind::Theme ? ".crosspoint-theme/" : ".crosspoint-wallpaper/");
+bool readManifest(ZipFile& archive, const Release& release, JsonDocument& manifest, std::vector<std::string>& files) {
+  const std::string top =
+      release.name + (release.kind == Kind::Theme ? ".crosspoint-theme/" : ".crosspoint-wallpaper/");
   const std::string entry = top + "manifest.json";
   size_t len = 0;
   if (!archive.getInflatedFileSize(entry.c_str(), &len) || len < 8 || len > MAX_MANIFEST_BYTES) return false;
@@ -174,6 +170,8 @@ bool readManifest(ZipFile& archive, const Release& release, JsonDocument& manife
   if (strcmp(manifest["kind"] | "", kind) != 0 || strcmp(manifest["name"] | "", release.name.c_str()) != 0 ||
       strcmp(manifest["version"] | "", release.version.c_str()) != 0)
     return false;
+  const auto resolution = manifest["target_resolution"];
+  if (resolution["width"].as<int>() != release.width || resolution["height"].as<int>() != release.height) return false;
   JsonArrayConst declared = manifest["files"].as<JsonArrayConst>();
   if (declared.isNull() || declared.size() < 2 || declared.size() > MAX_FILES) return false;
   bool readme = false, manifestFound = false, detailsFound = false;
@@ -187,12 +185,26 @@ bool readManifest(ZipFile& archive, const Release& release, JsonDocument& manife
     if (strcmp(path, "manifest.json") == 0) manifestFound = true;
     if (strcmp(path, "DETAILS.md") == 0) detailsFound = true;
   }
-  if (!readme || !manifestFound || !detailsFound ||
-      !extensionrequiredfiles::hasRequiredMetadata(files)) {
+  if (!readme || !manifestFound || !detailsFound || !extensionrequiredfiles::hasRequiredMetadata(files)) {
     LOG_ERR("EXT", "Package missing required metadata: manifest.json, README.md, DETAILS.md");
     return false;
   }
   return true;
+}
+
+bool validThemeSleepBitmap(const std::string& path, const std::string& relative, const Release& release) {
+  if (relative.size() < 4 || relative.compare(relative.size() - 4, 4, ".bmp") != 0)
+    return themebitmap::validate(path);  // Keep legacy CPB/CRC validation.
+  HalFile image;
+  if (!Storage.openFileForRead("EXT", path, image) || image.fileSize() > 2u * 1024u * 1024u) return false;
+  Bitmap bitmap(image);
+  const auto status = bitmap.parseHeaders();
+  const bool valid = status == BmpReaderError::Ok && bitmap.hasGreyscale() && bitmap.getWidth() == release.width &&
+                     bitmap.getHeight() == release.height;
+  if (!valid)
+    LOG_ERR("EXT", "Grayscale sleep BMP rejected: %s (%s %dx%d)", relative.c_str(), Bitmap::errorToString(status),
+            bitmap.getWidth(), bitmap.getHeight());
+  return valid;
 }
 
 bool prepareExisting(const std::string& dest, const std::string& backup) {
@@ -227,40 +239,28 @@ bool supportsAll(JsonArrayConst capabilities) {
   return true;
 }
 
-bool selectRelease(const std::string& path, const Kind kind, const std::string& collection,
-                   const uint16_t width, const uint16_t height, Release& release) {
+bool selectRelease(const std::string& path, const Kind kind, const std::string& collection, const uint16_t width,
+                   const uint16_t height, Release& release) {
   if (kind == Kind::Plugin || !safeId(collection)) return false;
   const std::string name = "name";
   const std::string empty;
   Release candidate;
   candidate.kind = kind;
   unsigned matches = 0;
-  const size_t variants = kind == Kind::Wallpaper ? MAX_VARIANTS : 1;
-  for (size_t i = 0; i < variants; ++i) {
-    std::string namePath, assetPath, hashPath, versionPath, widthPath, heightPath, requiresPath;
-    if (kind == Kind::Wallpaper) {
-      const std::string prefix = "variants." + std::to_string(i) + ".";
-      namePath = prefix + "name";
-      assetPath = prefix + "asset_url";
-      hashPath = prefix + "sha256";
-      widthPath = prefix + "target_resolution.width";
-      heightPath = prefix + "target_resolution.height";
-      versionPath = "version";
-    } else {
-      namePath = "name";
-      assetPath = "asset_url";
-      hashPath = "sha256";
-      versionPath = "version";
-    }
-    const std::string* const fields[JsonListParser::F_COUNT] = {
-        &name, &namePath, &assetPath, &hashPath, &widthPath, &heightPath};
+  for (size_t i = 0; i < MAX_VARIANTS; ++i) {
+    const std::string prefix = "variants." + std::to_string(i) + ".";
+    const std::string namePath = prefix + "name";
+    const std::string assetPath = prefix + "asset_url";
+    const std::string hashPath = prefix + "sha256";
+    const std::string widthPath = prefix + "target_resolution.width";
+    const std::string heightPath = prefix + "target_resolution.height";
+    const std::string requiresPath;
+    const std::string* const fields[JsonListParser::F_COUNT] = {&name,     &namePath,  &assetPath,
+                                                                &hashPath, &widthPath, &heightPath};
     JsonListParser::Row row;
     if (!readRow(path, collection, fields, requiresPath, row)) return false;
-    if (row.field[JsonListParser::F_AUTHOR].empty()) {
-      if (kind == Kind::Wallpaper) break;  // variants are contiguous
-      continue;
-    }
-    if (kind == Kind::Wallpaper) {
+    if (row.field[JsonListParser::F_AUTHOR].empty()) break;
+    {
       const std::string& w = row.field[JsonListParser::F_VERSION];
       const std::string& h = row.field[JsonListParser::F_BASE];
       if (w.empty() || h.empty() || w.find_first_not_of("0123456789") != std::string::npos ||
@@ -270,7 +270,9 @@ bool selectRelease(const std::string& path, const Kind kind, const std::string& 
       if (strtoul(w.c_str(), nullptr, 10) != width || strtoul(h.c_str(), nullptr, 10) != height) continue;
     }
     if (++matches > 1) return false;
-    candidate.name = row.field[JsonListParser::F_AUTHOR];
+    candidate.name = kind == Kind::Theme ? collection : row.field[JsonListParser::F_AUTHOR];
+    candidate.variant = row.field[JsonListParser::F_AUTHOR];
+    if (kind == Kind::Theme && candidate.variant.rfind(collection + "-", 0) != 0) return false;
     candidate.width = width;
     candidate.height = height;
     candidate.url = row.field[JsonListParser::F_ID];
@@ -282,8 +284,8 @@ bool selectRelease(const std::string& path, const Kind kind, const std::string& 
     // At least one must be supported; the installer rechecks the ZIP manifest.
     bool compatible = false;
     const std::string emptyPath;
-    const std::string* const fields[JsonListParser::F_COUNT] = {
-        &name, &emptyPath, &emptyPath, &emptyPath, &emptyPath, &emptyPath};
+    const std::string* const fields[JsonListParser::F_COUNT] = {&name,      &emptyPath, &emptyPath,
+                                                                &emptyPath, &emptyPath, &emptyPath};
     for (size_t i = 0; i < 16; ++i) {
       const std::string requiresPath = "themes." + std::to_string(i) + ".requires";
       JsonListParser::Row theme;
@@ -298,8 +300,8 @@ bool selectRelease(const std::string& path, const Kind kind, const std::string& 
   }
   // Read release version from the same indexed collection, not from the ZIP name.
   const std::string versionPath = "version";
-  const std::string* const versionFields[JsonListParser::F_COUNT] = {
-      &name, &versionPath, &empty, &empty, &empty, &empty};
+  const std::string* const versionFields[JsonListParser::F_COUNT] = {&name,  &versionPath, &empty,
+                                                                     &empty, &empty,       &empty};
   JsonListParser::Row versionRow;
   if (!readRow(path, collection, versionFields, empty, versionRow)) return false;
   candidate.version = versionRow.field[JsonListParser::F_AUTHOR];
@@ -319,13 +321,13 @@ bool installVerifiedZip(const std::string& archivePath, const Release& release) 
   JsonDocument manifest;
   std::vector<std::string> files;
   if (!readManifest(zip, release, manifest, files)) return false;
-  const std::string top = release.name +
-      (release.kind == Kind::Theme ? ".crosspoint-theme/" : ".crosspoint-wallpaper/");
+  const std::string top =
+      release.name + (release.kind == Kind::Theme ? ".crosspoint-theme/" : ".crosspoint-wallpaper/");
   if (release.kind == Kind::Wallpaper) {
     const JsonArrayConst images = manifest["images"].as<JsonArrayConst>();
     const auto resolution = manifest["target_resolution"];
-    if (images.isNull() || images.size() == 0 || images.size() > 32 ||
-        resolution["width"].as<int>() != release.width || resolution["height"].as<int>() != release.height)
+    if (images.isNull() || images.size() == 0 || images.size() > 32 || resolution["width"].as<int>() != release.width ||
+        resolution["height"].as<int>() != release.height)
       return false;
     if (!extensionrequiredfiles::wallpaperCountMatches(files, images.size())) {
       LOG_ERR("EXT", "Wallpaper ZIP must contain exactly 3 metadata files and %u BMP images",
@@ -334,9 +336,9 @@ bool installVerifiedZip(const std::string& archivePath, const Release& release) 
     }
     for (JsonVariantConst value : images) {
       const char* image = value.as<const char*>();
-      if (!image || strncmp(image, "wallpapers/", 11) != 0 ||
-          strlen(image) < 16 || strcmp(image + strlen(image) - 4, ".bmp") != 0 ||
-          std::find(files.begin(), files.end(), image) == files.end()) return false;
+      if (!image || strncmp(image, "wallpapers/", 11) != 0 || strlen(image) < 16 ||
+          strcmp(image + strlen(image) - 4, ".bmp") != 0 || std::find(files.begin(), files.end(), image) == files.end())
+        return false;
     }
   } else {
     const JsonArrayConst themes = manifest["themes"].as<JsonArrayConst>();
@@ -346,7 +348,8 @@ bool installVerifiedZip(const std::string& archivePath, const Release& release) 
       const char* id = entry["id"] | "";
       const char* path = entry["path"] | "";
       if (!safeId(id) || strcmp(path, (std::string("themes/") + id + "/theme.json").c_str()) != 0 ||
-          std::find(files.begin(), files.end(), path) == files.end()) return false;
+          std::find(files.begin(), files.end(), path) == files.end())
+        return false;
       if (supportsAll(entry["requires"].as<JsonArrayConst>())) compatible = true;
     }
     if (!compatible) return false;
@@ -357,6 +360,7 @@ bool installVerifiedZip(const std::string& archivePath, const Release& release) 
   const unsigned long metadataStarted = millis();
   if (!zip.open()) return false;
   size_t seen = 0;
+  std::vector<std::string> observedPaths;  // Installer-local, never retained by ThemeScene.
   bool validEntries = true;
   const bool scanned = zip.enumerateFilePaths([&](std::string_view entry) {
     ++seen;
@@ -365,8 +369,29 @@ bool installVerifiedZip(const std::string& archivePath, const Release& release) 
       return;
     }
     const std::string relative(entry.substr(top.size()));
-    if (!safeRelative(relative) || std::find(files.begin(), files.end(), relative) == files.end())
+    if (!safeRelative(relative) ||
+        std::find(observedPaths.begin(), observedPaths.end(), relative) != observedPaths.end()) {
       validEntries = false;
+      return;
+    }
+    observedPaths.push_back(relative);
+    if (std::find(files.begin(), files.end(), relative) != files.end()) {
+      return;
+    }
+    bool sleepImage = false;
+    if (release.kind == Kind::Theme) {
+      for (JsonVariantConst theme : manifest["themes"].as<JsonArrayConst>()) {
+        const char* id = theme["id"].as<const char*>();
+        if (id && themesleep::image(relative, id)) {
+          sleepImage = true;
+          break;
+        }
+      }
+    }
+    if (!sleepImage)
+      validEntries = false;
+    else
+      files.emplace_back(relative);
   });
   if (!scanned || !validEntries || seen != files.size()) {
     zip.close();
@@ -392,16 +417,15 @@ bool installVerifiedZip(const std::string& archivePath, const Release& release) 
   const std::string backup = dest + ".backup";
   const size_t cut = dest.find_last_of('/');
   const std::string root = dest.substr(0, cut);
-  if (!Storage.ensureDirectoryExists(root.c_str()) || !prepareExisting(dest, backup) ||
-      !hasRoomForPackage(release)) return false;
+  if (!Storage.ensureDirectoryExists(root.c_str()) || !prepareExisting(dest, backup) || !hasRoomForPackage(release))
+    return false;
   if (Storage.exists(temp.c_str()) && !Storage.removeDir(temp.c_str())) return false;
   if (!Storage.mkdir(temp.c_str())) return false;
   // Use larger SD/inflate buffers where heap permits, but retain the
   // previous conservative setting for low-memory X3 installations.
   const size_t chunkSize = ESP.getFreeHeap() >= 90000 && ESP.getMaxAllocHeap() >= 45000 ? 4096 : 1024;
-  LOG_INF("EXT", "Extracting %s: %u files, %u expanded bytes, chunk=%u",
-          release.name.c_str(), static_cast<unsigned>(files.size()), static_cast<unsigned>(expanded),
-          static_cast<unsigned>(chunkSize));
+  LOG_INF("EXT", "Extracting %s: %u files, %u expanded bytes, chunk=%u", release.name.c_str(),
+          static_cast<unsigned>(files.size()), static_cast<unsigned>(expanded), static_cast<unsigned>(chunkSize));
   const unsigned long extractStarted = millis();
   bool allWritten = true;
   for (const auto& relative : files) {
@@ -419,6 +443,21 @@ bool installVerifiedZip(const std::string& archivePath, const Release& release) 
     }
     out.flush();
     out.close();
+    if (release.kind == Kind::Theme) {
+      bool isSleep = false;
+      for (JsonVariantConst theme : manifest["themes"].as<JsonArrayConst>()) {
+        const char* id = theme["id"].as<const char*>();
+        if (id && themesleep::image(relative, id)) {
+          isSleep = true;
+          break;
+        }
+      }
+      if (isSleep && !validThemeSleepBitmap(full, relative, release)) {
+        LOG_ERR("EXT", "Invalid streamed theme sleep bitmap: %s", relative.c_str());
+        allWritten = false;
+        break;
+      }
+    }
     if (release.kind == Kind::Wallpaper && relative.rfind("wallpapers/", 0) == 0) {
       HalFile image;
       if (!Storage.openFileForRead("EXT", full, image)) {
@@ -426,15 +465,15 @@ bool installVerifiedZip(const std::string& archivePath, const Release& release) 
         break;
       }
       Bitmap bitmap(image);
-      if (bitmap.parseHeaders() != BmpReaderError::Ok ||
-          bitmap.getWidth() != release.width || bitmap.getHeight() != release.height) {
+      if (bitmap.parseHeaders() != BmpReaderError::Ok || bitmap.getWidth() != release.width ||
+          bitmap.getHeight() != release.height) {
         allWritten = false;
         break;
       }
     }
   }
-  LOG_INF("EXT", "ZIP extraction %s: %lu ms (%s)",
-          release.name.c_str(), millis() - extractStarted, allWritten ? "ok" : "failed");
+  LOG_INF("EXT", "ZIP extraction %s: %lu ms (%s)", release.name.c_str(), millis() - extractStarted,
+          allWritten ? "ok" : "failed");
   if (!allWritten) {
     Storage.removeDir(temp.c_str());
     return false;
@@ -451,8 +490,7 @@ bool installVerifiedZip(const std::string& archivePath, const Release& release) 
     return false;
   }
   if (hadPrior) Storage.removeDir(backup.c_str());
-  LOG_INF("EXT", "Installed %s package %s", release.kind == Kind::Theme ? "theme" : "wallpaper",
-          release.name.c_str());
+  LOG_INF("EXT", "Installed %s package %s", release.kind == Kind::Theme ? "theme" : "wallpaper", release.name.c_str());
   return true;
 }
 

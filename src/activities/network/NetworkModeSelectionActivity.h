@@ -3,6 +3,9 @@
 #include <BoardConfig.h>
 
 #include "activities/UiListActivity.h"
+#if FREEINK_CAP_USB_MSC && FREEINK_DEVICE_X4PRO
+#include "components/OptionPopup.h"
+#endif
 
 enum class NetworkMode { JOIN_NETWORK, CONNECT_CALIBRE, CREATE_HOTSPOT, USB_DRIVE };
 
@@ -36,6 +39,12 @@ class NetworkModeSelectionActivity final : public UiListActivity {
   void activateIndex(int index) override;
   void onBackButton() override { onCancel(); }
   const char* headerTitle() const override;
+#if FREEINK_CAP_USB_MSC && FREEINK_DEVICE_X4PRO
+  bool handleCustomInput() override;
+  void renderOverlay() override;
+  OptionPopup usbConfirmation_;
+  bool usbConfirmed_ = false;
+#endif
 
   // Row storage: entirely static (label/subtitle/icon never change), so it's
   // built once in the constructor instead of every buildScreen() call, into

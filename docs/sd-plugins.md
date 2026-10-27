@@ -18,6 +18,14 @@ and the firmware carries no vendor names, URLs, or file-format knowledge.
     ...assets
 ```
 
+**Home shortcuts (experimental `home.shortcuts.v1`).** An installed plugin may declare a native dashboard shortcut in its `manifest.json`:
+
+```json
+"home_shortcut": { "label": "Reading Statistics", "target": "dashboard", "icon": "stats" }
+```
+
+Firmware checks the installed plugin folder, manifest ID, bounded label, and native dashboard support before offering the shortcut; no arbitrary plugin code runs. Optional `icon` names one of the firmware-owned illustrations (`stats`, `library`, `folder`, or default Book). **Settings → Display → Home Menu Buttons** allows users to show/hide/reorder shortcuts, or Restore Defaults. Settings is permanently enabled and pinned last. Capacity derives from the Home menu's actual geometry including the theme footer. Preferences live in `/.crosspoint/home-menu.json`. Removing a plugin removes its shortcut without touching reading history. Firmware without this capability ignores the optional field. The separate cover-grid Home layout retains its existing navigation.
+
 **Discovery and the on-device list.** The plugin subsystem is controlled by
 **Settings → Connectivity → Plugins**. When enabled, **Plugins** is
 shown on the Home screen even when no plugins are installed. Every plugin folder

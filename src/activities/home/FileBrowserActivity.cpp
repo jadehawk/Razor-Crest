@@ -682,6 +682,12 @@ void FileBrowserActivity::drawChrome() {
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, folderName.c_str());
 }
 
+int FileBrowserActivity::footerStatusHeight() const {
+  // buildScreen() reserves this exact native directory-path strip above hints.
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  return renderer.getLineHeight(SMALL_FONT_ID) + metrics.verticalSpacing;
+}
+
 void FileBrowserActivity::drawFooter() {
   const char* backLabel = (basepath == "/") ? (mode == Mode::PickFirmware ? tr(STR_BACK) : tr(STR_HOME)) : tr(STR_BACK);
   // In PickFirmware mode, Confirm on a .bin returns the path to the caller (not "open"); show

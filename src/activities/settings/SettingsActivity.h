@@ -32,6 +32,7 @@ enum class SettingAction {
 
   KeyboardLayouts,
   HomeButton,
+  HomeMenuButtons,
   About,
   ExpandLibrary,
   ExpandConnectivity,

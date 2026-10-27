@@ -47,6 +47,9 @@ class UITheme {
   static bool hasCoverGridHome();
   static void drawCoverGridHome(CoverGridHomeUi& home);
   void reload();
+  // Release SD-backed fonts and scene handles before replacing an active theme pack.
+  // Preserves SETTINGS.sdThemeId; call reload() after the directory swap.
+  void suspendExternalAssets();
   void syncFonts();  // Call after display/font initialization and on theme change.
   const ThemeScene* activeExternalScene() const { return externalActive ? &externalScene : nullptr; }
   bool hasExternalListSeparators() const { return externalActive && externalScene.usesRowSeparators(); }
@@ -60,7 +63,9 @@ class UITheme {
   // reported blank region; native UI/controls remain above and untouched.
   bool renderScreenDecoration(const GfxRenderer& renderer, int blankTop, int blankBottom) const;
   // Opt-in sparse underlay for non-reading screens; draw immediately after clear.
-  bool renderScreenBackground(const GfxRenderer& renderer) const;
+  bool renderScreenBackground(const GfxRenderer& renderer, int endBeforeY = -1) const;
+  const std::string& usbGrayscalePath() const;
+  bool selectSleepGrayscalePath(std::string& path) const;
   bool renderExternalScene(ThemeScene::Region region, const GfxRenderer& renderer, Rect area,
                            const char* title = nullptr, const std::vector<RecentBook>* books = nullptr,
                            int selection = 0, ThemeScene::Phase phase = ThemeScene::Phase::Full) const;

@@ -5,12 +5,14 @@
 #include <BoardConfig.h>
 #include <GfxRenderer.h>
 #include <HalClock.h>
+#include <HalGPIO.h>
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
 #include <esp_random.h>
 
 #include <algorithm>
+#include <climits>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -21,12 +23,16 @@
 #include "ThemeFonts.h"
 #include "components/UITheme.h"
 #include "components/icons/book.h"
+#include "components/icons/headerIcons.h"
 #include "fontIds.h"
 #include "util/BookProgress.h"
+#include "util/SleepGallerySelection.h"
+#include "util/ThemeSleepDirectory.h"
 
 namespace {
 constexpr size_t MAX_SCENE_JSON = 12288;
-constexpr const char* REGION_NAMES[] = {"header", "home", "boot", "sleep", "hints", "screen", "screen_background"};
+constexpr const char* REGION_NAMES[] = {"header", "home", "boot", "sleep", "hints", "screen", "screen_background",
+                                        "usb"};
 
 // These are generic visual primitives driven by the selected theme's style values.
 void drawChamfer(const GfxRenderer& renderer, int x, int y, int w, int h, int cut, bool black, bool filled) {
@@ -198,10 +204,48 @@ bool isDeclared(JsonArrayConst files, const char* path) {
   }
   return false;
 }
+// Counts verified theme CPBs without retaining filenames; the same directory
+// is scanned again to locate the randomly selected file on sleep entry.
+bool findThemeSleepImage(const std::string& fullDir, const std::string& id, const int requested, std::string& selected,
+                         int& total, const bool verify) {
+  auto dir = Storage.open(fullDir.c_str());
+  if (!dir || !dir.isDirectory()) return false;
+  total = 0;
+  selected.clear();
+  bool firstBmp = false;
+  for (auto file = dir.openNextFile(); file; file = dir.openNextFile()) {
+    if (file.isDirectory()) return false;  // No nested paths.
+    char name[96] = {};
+    file.getName(name, sizeof(name));
+    const std::string relative = themesleep::folder(id) + "/" + name;
+    if (!themesleep::image(relative, id)) return false;
+    const bool isBmp = relative.compare(relative.size() - 4, 4, ".bmp") == 0;
+    if (total == 0) firstBmp = isBmp;
+    if (isBmp != firstBmp) return false;  // Never mix grayscale and CPB galleries.
+    const std::string path = fullDir + "/" + name;
+    if (verify) {
+      if (relative.compare(relative.size() - 4, 4, ".bmp") == 0) {
+        HalFile source;
+        if (!Storage.openFileForRead("THEME", path, source) || source.fileSize() > 2 * 1024 * 1024) return false;
+        Bitmap bmp(source);
+        if (bmp.parseHeaders() != BmpReaderError::Ok || !bmp.hasGreyscale() || bmp.getWidth() > 1024 ||
+            bmp.getHeight() > 1024)
+          return false;
+      } else if (!themebitmap::probe(path)) {
+        return false;
+      }
+    }
+    if (total == requested) selected = path;
+    if (total == INT_MAX) return false;  // integer index protection, not gallery policy.
+    ++total;
+  }
+  return total > 0;
+}
 }  // namespace
 
 bool ThemeScene::load(const std::string& themeJsonPath) {
   for (auto& region : regions) region.clear();
+  lastSleepIndex = -1;
   cornerCut = 0;
   cardCut = 0;
   rowCut = 0;
@@ -209,7 +253,13 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
   rowSeparators = false;
   settingsNavigationTabs = false;
   menuDoubleOutline = false;
+  backStyle = HeaderBackStyle::Emblem;
   menuFooterFile.clear();
+  menuFooterTouchFile.clear();
+  screenTouchFile.clear();
+  usbGrayFile.clear();
+  sleepGrayDirectory.clear();
+  sleepGrayId.clear();
   fonts = {};
   const size_t index = themeJsonPath.rfind("/themes/");
   if (index == std::string::npos) return false;
@@ -257,10 +307,22 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
     settingsNavigationTabs = strcmp(navigation, "tabs") == 0;
     if (!styles["menu_double_outline"].isNull() && !styles["menu_double_outline"].is<bool>()) return false;
     menuDoubleOutline = styles["menu_double_outline"] | false;
+    if (!styles["header_back_style"].isNull()) {
+      const char* value = styles["header_back_style"].as<const char*>();
+      if (!value) return false;
+      if (!strcmp(value, "arrow"))
+        backStyle = HeaderBackStyle::Arrow;
+      else if (!strcmp(value, "emblem"))
+        backStyle = HeaderBackStyle::Emblem;
+      else if (!strcmp(value, "both"))
+        backStyle = HeaderBackStyle::Both;
+      else
+        return false;
+    }
   }
   JsonObjectConst assets = doc["assets"].as<JsonObjectConst>();
   JsonObjectConst rawRegions = doc["regions"].as<JsonObjectConst>();
-  if (assets.isNull() || rawRegions.isNull() || assets.size() > 16 || rawRegions.size() > 7) return false;
+  if (assets.isNull() || rawRegions.isNull() || assets.size() > 16 || rawRegions.size() > 8) return false;
 
   std::string manifestRaw;
   if (!Storage.readFileToString("THEME", base + "/manifest.json", MAX_SCENE_JSON, manifestRaw)) return false;
@@ -288,6 +350,11 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
   bool advertisedMenuDecor = false;
   bool advertisedScreenDecor = false;
   bool advertisedScreenBackground = false;
+  bool advertisedHeaderBack = false;
+  bool advertisedSleepGallery = false;
+  bool advertisedSleepGray = false;
+  bool advertisedUsbScene = false;
+  bool advertisedUsbGray = false;
   JsonArrayConst themeEntries = manifest["themes"].as<JsonArrayConst>();
   if (themeEntries.isNull()) return false;
   for (JsonVariantConst entry : themeEntries) {
@@ -301,11 +368,37 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
       if (name && strcmp(name, "theme.menu-decoration.v1") == 0) advertisedMenuDecor = true;
       if (name && strcmp(name, "theme.screen-decoration.v1") == 0) advertisedScreenDecor = true;
       if (name && strcmp(name, "theme.screen-background.v1") == 0) advertisedScreenBackground = true;
+      if (name && strcmp(name, "theme.header-back.v1") == 0) advertisedHeaderBack = true;
+      if (name && strcmp(name, "theme.sleep-gallery.v1") == 0) advertisedSleepGallery = true;
+      if (name && strcmp(name, "theme.sleep-grayscale.v1") == 0) advertisedSleepGray = true;
+      if (name && strcmp(name, "theme.usb-scene.v1") == 0) advertisedUsbScene = true;
+      if (name && strcmp(name, "theme.usb-grayscale.v1") == 0) advertisedUsbGray = true;
     }
     break;
   }
   if (declaredSettingsLayout != advertisedSettingsLayout) return false;
+  if ((!assets["sleep_art"].isNull()) != advertisedSleepGallery) return false;
+  if ((!assets["usb_art"].isNull()) != advertisedUsbScene) return false;
+  if ((!assets["usb_gray_art"].isNull()) != advertisedUsbGray || (advertisedUsbGray && !advertisedUsbScene))
+    return false;
+  if ((!styles.isNull() && !styles["header_back_style"].isNull()) != advertisedHeaderBack) return false;
   if ((menuDoubleOutline || !menuFooterFile.empty()) != advertisedMenuDecor) return false;
+  // Larger-panel artwork is an optional variant of the same existing
+  // capability, not a firmware-name requirement.
+  const char* footerTouchRole = styles.isNull() ? nullptr : styles["menu_footer_touch_asset"].as<const char*>();
+  if (!styles.isNull() && !styles["menu_footer_touch_asset"].isNull() && !footerTouchRole) return false;
+  if (footerTouchRole) {
+    if (!advertisedMenuDecor || menuFooterFile.empty()) return false;
+    const char* path = assets[footerTouchRole].as<const char*>();
+    if (!path || !safeResource(path, id) || !isDeclared(files, path)) return false;
+    menuFooterTouchFile = base + "/" + path;
+  }
+  if (!assets["screen_touch_art"].isNull()) {
+    if (!advertisedScreenDecor || assets["screen_art"].isNull()) return false;
+    const char* path = assets["screen_touch_art"].as<const char*>();
+    if (!path || !safeResource(path, id) || !isDeclared(files, path)) return false;
+    screenTouchFile = base + "/" + path;
+  }
 
   JsonObjectConst fontRoles = doc["fonts"].as<JsonObjectConst>();
   if (!doc["fonts"].isNull()) {
@@ -336,19 +429,42 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
   const bool familyFormat = !fontRoles.isNull() && fontRoles.size() == 1 && !fontRoles["ui"].isNull();
   if (familyFormat != advertisedFontFamily) return false;
 
-  // Validate every referenced resource before accepting a theme, not mid-render.
+  // Sleep galleries live in a dedicated directory; they do not inflate JSON,
+  // allocate a filename array or require a manifest entry per image.
   for (JsonPairConst asset : assets) {
     JsonVariantConst location = asset.value();
-    JsonArrayConst list = location.as<JsonArrayConst>();
-    if (list.isNull() && !location.is<const char*>()) return false;
-    if (!list.isNull() && (list.size() == 0 || list.size() > 8)) return false;
-    const size_t count = list.isNull() ? 1 : list.size();
-    for (size_t i = 0; i < count; ++i) {
-      const char* path = list.isNull() ? location.as<const char*>() : list[i].as<const char*>();
-      if (!safeResource(path, id) || !isDeclared(files, path) || !themebitmap::validate(base + "/" + path)) {
-        LOG_ERR("THEME", "Invalid theme asset in %s", themeJsonPath.c_str());
+    if (!location.is<const char*>()) return false;
+    const char* resource = location.as<const char*>();
+    const bool sleep = strcmp(asset.key().c_str(), "sleep_art") == 0;
+    if (!strcmp(asset.key().c_str(), "usb_gray_art")) {
+      // USB-only grayscale BMP, validated while SD is mounted.
+      std::string canonical = resource;
+      if (canonical.size() < 5 || canonical.compare(canonical.size() - 4, 4, ".bmp") != 0) return false;
+      canonical.replace(canonical.size() - 4, 4, ".cpb");
+      if (!safeResource(canonical.c_str(), id) || !isDeclared(files, resource)) return false;
+      const std::string full = base + "/" + resource;
+      HalFile file;
+      if (!Storage.openFileForRead("THEME", full, file) || file.fileSize() > 2 * 1024 * 1024) return false;
+      Bitmap bitmap(file, true);
+      if (bitmap.parseHeaders() != BmpReaderError::Ok || !bitmap.hasGreyscale() || bitmap.getWidth() > 1024 ||
+          bitmap.getHeight() > 1024)
         return false;
+      usbGrayFile = full;
+    } else if (sleep) {
+      if (!themesleep::directory(resource, id)) return false;
+      int count = 0;
+      std::string unused;
+      if (!findThemeSleepImage(base + "/" + resource, id, 0, unused, count, true)) return false;
+      const bool grayscale = unused.size() >= 4 && unused.compare(unused.size() - 4, 4, ".bmp") == 0;
+      if (grayscale != advertisedSleepGray) return false;
+      if (grayscale) {
+        sleepGrayDirectory = base + "/" + resource;
+        sleepGrayId = id;
       }
+    } else if (!safeResource(resource, id) || !isDeclared(files, resource) ||
+               !themebitmap::validate(base + "/" + resource)) {
+      LOG_ERR("THEME", "Invalid theme asset in %s", themeJsonPath.c_str());
+      return false;
     }
   }
 
@@ -378,12 +494,25 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
       return false;
   }
 
+  // The USB Drive scene is a single opaque image, painted before SD detachment.
+  const JsonArrayConst usbOps = rawRegions["usb"].as<JsonArrayConst>();
+  const bool requestedUsb = !usbOps.isNull() && usbOps.size() != 0;
+  if (requestedUsb != advertisedUsbScene) return false;
+  if (requestedUsb) {
+    if (usbOps.size() != 1) return false;
+    const JsonObjectConst op = usbOps[0].as<JsonObjectConst>();
+    if (strcmp(op["op"] | "", "bitmap") != 0 || strcmp(op["asset"] | "", "usb_art") != 0 ||
+        strcmp(op["paint"] | "opaque", "opaque") != 0 || !op["offset"].isNull() || !op["max_width"].isNull() ||
+        !op["max_height"].isNull())
+      return false;
+  }
+
   size_t total = 0;
   for (JsonPairConst item : rawRegions) {
-    size_t regionIndex = 7;
-    for (size_t i = 0; i < 7; ++i)
+    size_t regionIndex = 8;
+    for (size_t i = 0; i < 8; ++i)
       if (!strcmp(item.key().c_str(), REGION_NAMES[i])) regionIndex = i;
-    if (regionIndex == 7) return false;
+    if (regionIndex == 8) return false;
     JsonArrayConst list = item.value().as<JsonArrayConst>();
     if (list.isNull() || list.size() > 16 || total + list.size() > 48) return false;
     auto& operations = regions[regionIndex];
@@ -414,16 +543,22 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
         const char* role = json["asset"] | "";
         JsonVariantConst ref = assets[role];
         if (ref.isNull()) return false;
-        const char* resource =
-            ref.is<JsonArrayConst>() ? ref.as<JsonArrayConst>()[0].as<const char*>() : ref.as<const char*>();
-        if (!safeResource(resource, id)) return false;
+        const char* resource = ref.as<const char*>();
+        if (!resource) return false;
+        const bool sleep = regionIndex == static_cast<size_t>(Region::Sleep) && !strcmp(role, "sleep_art");
+        if (sleep ? !themesleep::directory(resource, id) : !safeResource(resource, id)) return false;
         op.data = base + "/" + resource;
-        if (ref.is<JsonArrayConst>()) {
-          for (JsonVariantConst member : ref.as<JsonArrayConst>()) {
-            const char* item = member.as<const char*>();
-            if (!safeResource(item, id)) return false;
-            op.gallery.push_back(base + "/" + item);
-          }
+        op.sleepDirectory = sleep;
+        op.headerEmblem = regionIndex == static_cast<size_t>(Region::Header) && !strcmp(role, "header_emblem");
+        // Device-specific packages have their own base images, not twin
+        // sleep galleries. Optional touch variants remain scalar bitmaps.
+        const std::string alternateRole = std::string(role) + "_touch";
+        JsonVariantConst alternate = assets[alternateRole.c_str()];
+        if (!alternate.isNull()) {
+          if (sleep || !alternate.is<const char*>()) return false;
+          const char* path = alternate.as<const char*>();
+          if (!safeResource(path, id) || !isDeclared(files, path)) return false;
+          op.touchData = base + "/" + path;
         }
         const char* mode = json["fit"] | "contain";
         if (!strcmp(mode, "cover"))
@@ -499,6 +634,19 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
   return true;
 }
 
+bool ThemeScene::selectSleepGrayscalePath(std::string& path) const {
+  path.clear();
+  if (sleepGrayDirectory.empty()) return false;
+  int count = 0;
+  std::string first;
+  if (!findThemeSleepImage(sleepGrayDirectory, sleepGrayId, 0, first, count, false)) return false;
+  const int next = sleep_gallery::chooseIndex(lastSleepIndex, count, esp_random());
+  int actual = 0;
+  if (!findThemeSleepImage(sleepGrayDirectory, sleepGrayId, next, path, actual, false) || path.empty()) return false;
+  lastSleepIndex = next;
+  return true;
+}
+
 bool ThemeScene::hasRegion(const Region region) const { return !regions[static_cast<size_t>(region)].empty(); }
 
 bool ThemeScene::draw(const GfxRenderer& renderer, Region region, Rect area, const char* screenTitle,
@@ -512,6 +660,12 @@ bool ThemeScene::draw(const GfxRenderer& renderer, Region region, Rect area, con
   if (left >= right || top >= bottom) return true;
   renderer.setClipRect(left, top, right - left, bottom - top);
   bool success = true;
+  // Alternate artwork is selected by touch support or by the independently
+  // authored 480x800 portrait canvas, never by a firmware/model name.
+  const bool alternateArt = gpio.hasTouch() || (renderer.getScreenWidth() == 480 && renderer.getScreenHeight() >= 800);
+  const bool touchBack = region == Region::Header && selectorIndex != 0 && gpio.hasTouch();
+  const bool showArrow = touchBack && backStyle != HeaderBackStyle::Emblem;
+  const int headerShift = showArrow ? (backStyle == HeaderBackStyle::Both ? 42 : -50) : 0;
   for (const auto& op : regions[static_cast<size_t>(region)]) {
     if (phase == Phase::Background && op.kind == Kind::BookCard) continue;
     if (phase == Phase::Foreground && op.kind != Kind::BookCard) continue;
@@ -524,17 +678,60 @@ bool ThemeScene::draw(const GfxRenderer& renderer, Region region, Rect area, con
       const int y = anchored(area.y, area.height, height, op.anchorY, op.offsetY);
       renderer.fillRect(x, y, width, height, op.black);
     } else if (op.kind == Kind::Bitmap) {
-      const int width = op.maxWidth > 0 ? std::min(area.width, op.maxWidth) : area.width;
-      const int height = op.maxHeight > 0 ? std::min(area.height, op.maxHeight) : area.height;
+      if (touchBack && backStyle == HeaderBackStyle::Arrow && op.headerEmblem) continue;
+      // A touch footer may fill the taller confirmed safe band even when the
+      // X3 bitmap operation advertises its original 84px maximum.
+      const bool touchFooter =
+          region == Region::Screen && alternateArt && (!screenTouchFile.empty() || !op.touchData.empty());
+      const bool touchArt = alternateArt && !op.touchData.empty();
+      const bool fullTouchCanvas = touchArt && (region == Region::Boot || region == Region::Sleep);
+      const int width = touchFooter || fullTouchCanvas
+                            ? area.width
+                            : (op.maxWidth > 0 ? std::min(area.width, op.maxWidth) : area.width);
+      const int height = fullTouchCanvas ? area.height
+                         : touchFooter   ? std::min(area.height, 128)
+                                         : (op.maxHeight > 0 ? std::min(area.height, op.maxHeight) : area.height);
       themebitmap::Options options;
-      options.x = anchored(area.x, area.width, width, op.anchorX, op.offsetX);
+      options.x = anchored(area.x, area.width, width, op.anchorX, op.offsetX) +
+                  (region == Region::Header && op.headerEmblem ? headerShift : 0);
       options.y = anchored(area.y, area.height, height, op.anchorY, op.offsetY);
       options.width = width;
       options.height = height;
       options.fit = op.fit;
       options.inkOnly = op.inkOnly;
       options.inkBlack = op.black;
-      const std::string& image = op.gallery.empty() ? op.data : op.gallery[esp_random() % op.gallery.size()];
+      std::string selectedSleep;
+      if (op.sleepDirectory) {
+        const size_t marker = op.data.rfind("/themes/");
+        if (marker == std::string::npos) {
+          success = false;
+          break;
+        }
+        const std::string local = op.data.substr(marker + 8);
+        const size_t slash = local.find('/');
+        if (slash == std::string::npos) {
+          success = false;
+          break;
+        }
+        const std::string id = local.substr(0, slash);
+        int count = 0;
+        std::string unused;
+        if (!findThemeSleepImage(op.data, id, -1, unused, count, false)) {
+          success = false;
+          break;
+        }
+        const int next = sleep_gallery::chooseIndex(lastSleepIndex, count, esp_random());
+        int actual = 0;
+        if (!findThemeSleepImage(op.data, id, next, selectedSleep, actual, false) || selectedSleep.empty()) {
+          success = false;
+          break;
+        }
+        lastSleepIndex = next;
+      }
+      const std::string& image = op.sleepDirectory ? selectedSleep
+                                 : touchArt        ? op.touchData
+                                 : touchFooter     ? screenTouchFile
+                                                   : op.data;
       if (!themebitmap::draw(renderer, image, options)) {
         success = false;
         break;
@@ -567,7 +764,11 @@ bool ThemeScene::draw(const GfxRenderer& renderer, Region region, Rect area, con
                        : op.font == "ui_bold"  ? UI_12_FONT_ID
                                                : UI_10_FONT_ID;
       const auto style = op.font == "ui_bold" ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
-      const int limit = std::max(1, op.maxWidth > 0 ? std::min(area.width, op.maxWidth) : area.width - 24);
+      int limit = std::max(1, op.maxWidth > 0 ? std::min(area.width, op.maxWidth) : area.width - 24);
+      // The optional arrow shifts the heading right; keep battery/status
+      // chrome clear instead of stretching the title into its reserved lane.
+      if (region == Region::Header && op.source == "screen_title" && headerShift > 0)
+        limit = std::max(1, std::min(limit, area.width - op.offsetX - headerShift - 112));
       const int reserve = static_cast<int>(strlen(text)) * op.tracking;
       const auto shortened = renderer.truncatedText(font, text, std::max(1, limit - reserve), style);
       const auto title = upperAscii(shortened);
@@ -577,7 +778,8 @@ bool ThemeScene::draw(const GfxRenderer& renderer, Region region, Rect area, con
       const int x = anchored(area.x, area.width, width, op.anchorX, op.offsetX);
       if (op.plate && !title.empty())
         drawChamfer(renderer, x - 8, y - 4, width + 16, height + 8, cornerCut, op.plateBlack, true);
-      renderer.drawText(font, x, y, title.c_str(), op.black, style, BidiUtils::BidiBaseDir::AUTO, op.tracking);
+      renderer.drawText(font, x + (region == Region::Header && op.source == "screen_title" ? headerShift : 0), y,
+                        title.c_str(), op.black, style, BidiUtils::BidiBaseDir::AUTO, op.tracking);
     } else if (op.kind == Kind::Line) {
       const int thickness = std::max(1, std::min(op.thickness, 12));
       const int x = anchored(area.x, area.width, thickness, op.anchorX, op.offsetX);
@@ -649,6 +851,34 @@ bool ThemeScene::draw(const GfxRenderer& renderer, Region region, Rect area, con
         if (first) {
           const auto author = renderer.truncatedText(UI_10_FONT_ID, first->author.c_str(), available);
           renderer.drawText(UI_10_FONT_ID, textX, coverY + 58, author.c_str(), !selected);
+          if (!first->series.empty()) {
+            std::string series = first->series;
+            if (first->seriesIndex) {
+              char index[24];
+              snprintf(index, sizeof(index), " #%.2f", static_cast<double>(*first->seriesIndex));
+              series += index;
+              while (series.back() == '0') series.pop_back();
+              if (series.back() == '.') series.pop_back();
+            }
+            // Keep the series index with its text while allowing two lines.
+            std::string firstLine = series;
+            std::string secondLine;
+            if (renderer.getTextWidth(UI_10_FONT_ID, firstLine.c_str()) > available) {
+              size_t split = firstLine.find_last_of(' ');
+              while (split != std::string::npos && split > 0 &&
+                     renderer.getTextWidth(UI_10_FONT_ID, firstLine.substr(0, split).c_str()) > available)
+                split = firstLine.find_last_of(' ', split - 1);
+              if (split != std::string::npos && split > 0) {
+                secondLine = firstLine.substr(split + 1);
+                firstLine.resize(split);
+              }
+            }
+            firstLine = renderer.truncatedText(UI_10_FONT_ID, firstLine.c_str(), available);
+            if (!secondLine.empty()) secondLine = renderer.truncatedText(UI_10_FONT_ID, secondLine.c_str(), available);
+            renderer.drawText(UI_10_FONT_ID, textX, coverY + 88, firstLine.c_str(), !selected);
+            if (!secondLine.empty())
+              renderer.drawText(UI_10_FONT_ID, textX, coverY + 112, secondLine.c_str(), !selected);
+          }
           // Cached briefly to avoid constructing EPUB metadata on every arrow
           // repaint. Refresh periodically so progress is updated after reading.
           static std::string cachedBook;
@@ -665,11 +895,12 @@ bool ThemeScene::draw(const GfxRenderer& renderer, Region region, Rect area, con
             snprintf(percent, sizeof(percent), "%d%%", cachedPercent);
             // Percentage and bar share the same baseline and never overlap.
             const int barWidth = std::max(28, std::min(available - 58, 206));
-            const int barY = coverY + coverHeight - 40;
+            // A second series line must never collide with the progress bar.
+            const int barY = coverY + coverHeight - 20;
             renderer.drawRect(textX, barY, barWidth, 12, !selected);
             if (cachedPercent > 0 && barWidth > 4)
               renderer.fillRect(textX + 2, barY + 2, (barWidth - 4) * cachedPercent / 100, 8, !selected);
-            renderer.drawText(UI_10_FONT_ID, textX + barWidth + 9, barY - 8, percent, !selected);
+            renderer.drawText(SMALL_FONT_ID, textX + barWidth + 9, barY - 6, percent, !selected);
           }
         }
         continue;
@@ -717,6 +948,7 @@ bool ThemeScene::draw(const GfxRenderer& renderer, Region region, Rect area, con
       renderer.drawRect(x, y, width, height, op.black);
     }
   }
+  if (showArrow) paintIcon(renderer, icon_header_back_32_bits, area.x + 10, area.y + (area.height - 32) / 2, true);
   renderer.setClipRect(clip[0], clip[1], clip[2], clip[3]);
   return success;
 }

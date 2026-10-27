@@ -20,7 +20,8 @@ class SleepActivity final : public Activity {
   void renderCustomSleepScreen() const;
   bool renderReadingStatisticsSleepScreen() const;
   void renderCoverSleepScreen() const;
-  void renderBitmapSleepScreen(const Bitmap& bitmap, bool preserveBackground = false) const;
+  void renderBitmapSleepScreen(const Bitmap& bitmap, bool preserveBackground = false,
+                               bool forceGrayscale = false) const;
   bool renderSleepOverlayFile(HalFile& file, const char* pathForLog) const;
   bool renderTransparentOverlayPng(const std::string& path) const;
   bool renderSleepOverlayPath(const std::string& path) const;

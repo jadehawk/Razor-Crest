@@ -57,7 +57,7 @@ assert "ensureSdGlyphsResident(resolvedFontId, renderedText, style, false);" in 
 # when called from an activity's already-locked onExit().
 assert "static bool heldByCurrentTask();" in render_lock
 assert "bool RenderLock::heldByCurrentTask()" in manager
-assert ui.count("if (!RenderLock::heldByCurrentTask()) lock.emplace();") == 2
+assert ui.count("if (!RenderLock::heldByCurrentTask()) lock.emplace();") == 3
 assert "#if defined(CROSSPOINT_THEME_FORCE_STOCK_UI_FONTS)" in ui
 
 print("Shared theme UI font, renderer caching, and lifecycle source checks PASS")

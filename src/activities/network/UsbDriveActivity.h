@@ -31,6 +31,7 @@ class UsbDriveActivity final : public Activity, private UiAppHost {
 
   State state = State::Unsupported;
   bool preparing = true;
+  bool usbFramePainted = false;
   bool startFailed = false;
   bool restartRequested = false;
   bool forcedDisconnectRequested = false;

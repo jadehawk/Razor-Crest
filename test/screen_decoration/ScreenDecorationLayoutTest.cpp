@@ -9,6 +9,18 @@ int main() {
   assert(root.valid());
   assert(root.top >= 76 + 58 + 6 * 80);
   assert(root.bottom <= 792 - 40);
+  // Library owns another readout row above hints. Keep the artwork above
+  // the position counter and hold-help without risking the final book row.
+  const auto library = forList(792, 40 + 24, 76, 58, 6, 72, 8);
+  assert(library.valid());
+  assert(library.bottom <= 792 - 40 - 24 - 8);
+  assert(!forList(792, 40 + 24, 76, 58, 7, 72, 8).valid());
+  // Browse Files owns a native directory-path strip above the button hints.
+  // Short folders show the theme footer; more rows reclaim the space.
+  const auto browser = forList(792, 40 + 31, 76, 58, 6, 72, 8);
+  assert(browser.valid());
+  assert(browser.bottom <= 792 - 40 - 31 - 8);
+  assert(!forList(792, 40 + 31, 76, 58, 7, 72, 8).valid());
   // A long scrolling settings page must never be decorated over text.
   assert(!forList(792, 40, 76, 58, 10, 72, 8).valid());
   // A plugin browser on an empty/status page may have centered messages.

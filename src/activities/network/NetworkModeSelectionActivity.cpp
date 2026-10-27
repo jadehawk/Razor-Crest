@@ -54,13 +54,44 @@ int NetworkModeSelectionActivity::listCount() const { return MENU_ITEM_COUNT; }
 const char* NetworkModeSelectionActivity::headerTitle() const { return tr(STR_FILE_TRANSFER); }
 
 void NetworkModeSelectionActivity::activateIndex(const int index) {
-  // Selection leaves this screen; a lingering flash would gray an unrelated
-  // element on the next render.
+  // Clear transient tap flash; keep the USB row selected behind the popup.
+  // Selection focus is retained by nav.selected until confirmation.
   app.clearTapFlash();
   nav.selected = index;
 
+#if FREEINK_CAP_USB_MSC && FREEINK_DEVICE_X4PRO
+  if (static_cast<NetworkMode>(index) == NetworkMode::USB_DRIVE) {
+    // Keep the picker on screen with the USB row selected. Draw the
+    // confirmation in the same frame so there is no premature mode switch.
+    usbConfirmed_ = false;
+    const char* choices[] = {I18N.get(StrId::STR_CANCEL), I18N.get(StrId::STR_CONFIRM)};
+    usbConfirmation_.showMessage(I18N.get(StrId::STR_USB_DRIVE), I18N.get(StrId::STR_USB_DRIVE_CONNECT_DELAY), choices,
+                                 2, 0, [this](int choice) { usbConfirmed_ = choice == 1; });
+    requestUpdate();
+    return;
+  }
+#endif
   onModeSelected(static_cast<NetworkMode>(index));
 }
+
+#if FREEINK_CAP_USB_MSC && FREEINK_DEVICE_X4PRO
+bool NetworkModeSelectionActivity::handleCustomInput() {
+  if (!usbConfirmation_.isActive()) return false;
+  const bool handled = usbConfirmation_.handleInput(mappedInput, [this] { requestUpdate(); });
+  // Complete the option popup's callback and repaint request before leaving.
+  // Calling finish() from inside the callback would destroy a live popup.
+  if (usbConfirmed_) {
+    usbConfirmed_ = false;
+    onModeSelected(NetworkMode::USB_DRIVE);
+    return true;
+  }
+  return handled;
+}
+
+void NetworkModeSelectionActivity::renderOverlay() {
+  if (usbConfirmation_.isActive()) usbConfirmation_.render(renderer);
+}
+#endif
 
 void NetworkModeSelectionActivity::buildScreen(UiScreen& screen) {
   const auto& metrics = UITheme::getInstance().getMetrics();

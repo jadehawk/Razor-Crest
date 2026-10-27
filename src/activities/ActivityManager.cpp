@@ -29,6 +29,7 @@
 #include "network/CrossPointWebServerActivity.h"
 #include "network/UsbDriveActivity.h"
 #include "plugins/PluginCatalogActivity.h"
+#include "plugins/StatsDashboardActivity.h"
 #include "plugins/StatsDashboardPluginCatalogActivity.h"
 #include "reader/ReaderActivity.h"
 #include "reader/RemoteTurnGate.h"
@@ -84,7 +85,8 @@ void ActivityManager::renderTaskLoop() {
     const uint32_t pendingRenders = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 #if FREEINK_DEVICE_X4PRO
     // Many notifications queued while painting reveal a refresh request storm.
-    if (pendingRenders >= 4) LOG_INF("UI-PERF", "queued redraw requests=%lu", static_cast<unsigned long>(pendingRenders));
+    if (pendingRenders >= 4)
+      LOG_INF("UI-PERF", "queued redraw requests=%lu", static_cast<unsigned long>(pendingRenders));
 #else
     (void)pendingRenders;
 #endif
@@ -345,6 +347,12 @@ void ActivityManager::goToBrowser() {
 void ActivityManager::goToPlugins(bool showOpds) {
   replaceActivity(std::make_unique<StatsDashboardPluginCatalogActivity>(renderer, mappedInput, showOpds,
                                                                         /*rootMode=*/true));
+}
+
+void ActivityManager::goToPluginDashboard(std::string deviceManifest) {
+  if (!SETTINGS.pluginsEnabled || !StatsDashboardActivity::supportsManifest(deviceManifest)) return;
+  auto activity = makeUniqueNoThrow<StatsDashboardActivity>(renderer, mappedInput, std::move(deviceManifest));
+  if (activity) replaceActivity(std::move(activity));
 }
 
 void ActivityManager::goToReader(std::string path, const bool allowFastInitialRefresh) {

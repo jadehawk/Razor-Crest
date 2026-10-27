@@ -122,19 +122,24 @@ bool ThemeScene::drawMenu(const GfxRenderer& renderer, const Rect area, int item
   if (!menuFooterFile.empty() && pageStart == 0) {
     // Footer is decoration only. Restrict it to the unused lane above
     // physical button hints so it never covers navigation or menu rows.
-    constexpr int kFooterHeight = 46;
+    const bool largePortrait = renderer.getScreenWidth() == 480 && renderer.getScreenHeight() >= 800;
+    const bool roomyPanel = (gpio.hasTouch() || largePortrait) && !menuFooterTouchFile.empty();
     const int afterRows = area.y + itemCount * rowStep + 4;
-    const int lowest = renderer.getScreenHeight() - metrics.buttonHintsHeight - kFooterHeight - 4;
-    if (afterRows <= lowest) {
+    const Rect panel = UITheme::getContentArea(renderer);
+    const int bottom = panel.y + panel.height - (gpio.hasTouch() ? 0 : metrics.buttonHintsHeight) - 4;
+    const int available = bottom - afterRows;
+    const int footerHeight = roomyPanel ? std::min(80, available) : 46;
+    const int lowest = bottom - footerHeight;
+    if (footerHeight >= 46 && afterRows <= lowest) {
       themebitmap::Options footer;
       footer.x = area.x;
       footer.y = lowest;
       footer.width = area.width;
-      footer.height = kFooterHeight;
+      footer.height = footerHeight;
       footer.fit = themebitmap::Fit::Contain;
       footer.inkOnly = true;
       footer.inkBlack = true;
-      themebitmap::draw(renderer, menuFooterFile, footer);
+      themebitmap::draw(renderer, roomyPanel ? menuFooterTouchFile : menuFooterFile, footer);
     }
   }
   return true;

@@ -203,8 +203,8 @@ void restartToHomeAfterStorageHandoff() {
   if (deepSleepInProgress) return;  // sleeping supersedes the storage handoff reboot
   armSilentReboot(SILENT_REBOOT_TARGET_HOME);
   LOG_DBG("MAIN", "Restart after storage handoff (target=home)");
-  GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
-  delay(50);
+  // Keep the USB artwork visible until Home redraws after restart.
+  // Theme fonts are unavailable while the SD card is owned by the USB host.
   handoffUsbOtgToSerialJtag();
   ESP.restart();
 }

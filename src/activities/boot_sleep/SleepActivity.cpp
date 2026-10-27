@@ -23,15 +23,15 @@
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+#include "activities/plugins/StatsDashboardActivity.h"
 #include "activities/reader/ReaderUtils.h"
 #include "components/UITheme.h"
 #include "components/wallpapers/WallpaperPackRegistry.h"
-#include "activities/plugins/StatsDashboardActivity.h"
-#include "util/ReadingStatsSleepSource.h"
 #include "fontIds.h"
 #include "images/Logo120.h"
 #include "images/MoonIcon.h"
 #include "util/FirmwareIdentity.h"
+#include "util/ReadingStatsSleepSource.h"
 
 namespace {
 // Metalio: B/W sleep images use the full 0xF7 waveform instead of HALF (two
@@ -782,6 +782,23 @@ void SleepActivity::renderDefaultSleepScreen() const {
   const auto pageHeight = renderer.getScreenHeight();
 
   renderer.clearScreen();
+  // Theme sleep galleries can provide native four-tone BMPs. The same tested
+  // grayscale hardware pipeline used by custom wallpapers handles them.
+  if (SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::DARK ||
+      SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::LIGHT) {
+    std::string image;
+    if (UITheme::getInstance().selectSleepGrayscalePath(image)) {
+      HalFile file;
+      if (Storage.openFileForRead("SLP", image, file)) {
+        Bitmap bitmap(file, true);
+        if (bitmap.parseHeaders() == BmpReaderError::Ok && bitmap.hasGreyscale()) {
+          renderBitmapSleepScreen(bitmap, false, true);
+          return;
+        }
+      }
+      LOG_ERR("SLP", "Unable to render themed grayscale sleep image");
+    }
+  }
   // User-selected custom pools and cover/quick-resume modes bypass this path.
   if ((SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::DARK ||
        SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::LIGHT) &&
@@ -802,7 +819,8 @@ void SleepActivity::renderDefaultSleepScreen() const {
   renderer.displayBuffer(kSleepClean);
 }
 
-void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool preserveBackground) const {
+void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool preserveBackground,
+                                            const bool forceGrayscale) const {
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
   const auto placement = calculateBitmapPlacement(bitmap.getWidth(), bitmap.getHeight(), renderer);
@@ -815,9 +833,10 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool pre
   LOG_DBG("SLP", "drawing to %d x %d", x, y);
   if (!preserveBackground) renderer.clearScreen();
 
-  const bool hasGreyscale = (bitmap.hasGreyscale() || (preserveBackground && overlayGrayCover)) &&
-                            (preserveBackground || SETTINGS.sleepScreenCoverFilter ==
-                                                       CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::NO_FILTER);
+  const bool hasGreyscale =
+      (bitmap.hasGreyscale() || (preserveBackground && overlayGrayCover)) &&
+      (preserveBackground || forceGrayscale ||
+       SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::NO_FILTER);
 
   if (!renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY, preserveBackground)) {
     renderer.displayBuffer(kSleepClean);

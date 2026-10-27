@@ -19,7 +19,10 @@
   "catalog.cache,catalog.refresh,catalog.item_details,catalog.hardware_filter.v1,stats.native.v1,ui.dashboard.v1," \
   "theme.sd.v1,theme.metrics.v1,theme.images.v1,theme.composition.v1,theme.fonts.v1,"                              \
   "theme.font-family.v1,theme.settings-navigation.v1,theme.book-cover.v1,theme.menu-decoration.v1,"                \
-  "theme.screen-decoration.v1,theme.screen-background.v1,wallpaper.packs.v1"
+  "theme.screen-decoration.v1,theme.screen-background.v1,theme.header-back.v1,theme.sleep-gallery.v1,theme.sleep-" \
+  "grayscale.v1,"                                                                                                  \
+  "theme.usb-scene.v1,theme.usb-grayscale.v1,home.shortcuts."                                                      \
+  "v1,wallpaper.packs.v1"
 #endif
 
 namespace firmwareidentity {

@@ -1,6 +1,7 @@
 #include "HomeActivity.h"
 
 #include <Bitmap.h>
+#include <BoardConfig.h>
 #include <Epub.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
@@ -27,7 +28,8 @@
 #include "fontIds.h"
 
 int HomeActivity::getMenuItemCount() const {
-  int count = 4;  // File Browser, Library, File transfer, Settings
+  if (!coverGridUi) return static_cast<int>(recentBooks.size() + homeButtons.size());
+  int count = 4;  // Legacy cover-grid tabs (separate layout).
   if (!recentBooks.empty()) {
     count += recentBooks.size();
   }
@@ -59,7 +61,20 @@ void HomeActivity::loadRecentBooks(int maxBooks) {
     // previous experimental grayscale covers are not reused.
     if (FsHelpers::hasReflowableBookExtension(book.path)) {
       auto epub = makeUniqueNoThrow<Epub>(book.path, "/.crosspoint");
-      if (epub) recentBooks.back().coverBmpPath = epub->getThumbBmpPath();
+      if (epub) {
+        recentBooks.back().coverBmpPath = epub->getThumbBmpPath();
+        // Parse the featured book once on Home entry, never on a repaint.
+        // The small no-PSRAM boards should not open a ZIP for every arrow press.
+        const auto* scene = UITheme::getInstance().activeExternalScene();
+        if (recentBooks.size() == 1 && !coverGridUi && scene && scene->hasRegion(ThemeScene::Region::Home) &&
+            FsHelpers::hasEpubExtension(book.path)) {
+          Epub::SyncMetadata metadata;
+          if (epub->loadSyncMetadata(metadata)) {
+            recentBooks.back().series = std::move(metadata.series);
+            recentBooks.back().seriesIndex = metadata.seriesIndex;
+          }
+        }
+      }
     }
   }
 }
@@ -250,6 +265,15 @@ void HomeActivity::onEnter() {
   }
   loadRecentBooks(coverGridUi ? CoverGridHomeUi::MAX_BOOKS : metrics.homeRecentBooksCount);
   hasContinueReading = !recentBooks.empty();
+  if (!coverGridUi) {
+    const int top = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset;
+    const int slots = HomeMenuRegistry::capacityFor(
+        renderer, top, GUI.getMenuRowHeight(renderer), metrics.menuSpacing,
+        BoardConfig::hasTouch() ? 0 : metrics.buttonHintsHeight,
+        UITheme::getInstance().activeExternalScene() ? (BoardConfig::hasTouch() ? 80 : 46) : 0);
+    homeMenuRegistry.load(slots, hasPlugins, hasOpdsServers);
+    homeButtons = homeMenuRegistry.visible();
+  }
   if (coverGridUi) {
     fillCoverGridFromLibrary();
     resolveGridCoverPaths();
@@ -257,7 +281,23 @@ void HomeActivity::onEnter() {
   }
 
   const auto base = static_cast<int>(recentBooks.size());
-  selectorIndex = initialMenuItem == HomeMenuItem::NONE ? 0 : base + menuItemToIndex(initialMenuItem, hasLibrarySlot());
+  selectorIndex = 0;
+  if (initialMenuItem != HomeMenuItem::NONE) {
+    if (coverGridUi)
+      selectorIndex = base + menuItemToIndex(initialMenuItem, hasLibrarySlot());
+    else {
+      const char* id = initialMenuItem == HomeMenuItem::FILE_BROWSER    ? "browse"
+                       : initialMenuItem == HomeMenuItem::LIBRARY       ? "library"
+                       : initialMenuItem == HomeMenuItem::OPDS_BROWSER  ? (hasPlugins ? "plugins" : "opds")
+                       : initialMenuItem == HomeMenuItem::FILE_TRANSFER ? "transfer"
+                                                                        : "settings";
+      for (size_t i = 0; i < homeButtons.size(); ++i)
+        if (homeButtons[i].id == id) {
+          selectorIndex = base + static_cast<int>(i);
+          break;
+        }
+    }
+  }
 
   // Trigger first update
   requestUpdate();
@@ -318,6 +358,34 @@ void HomeActivity::loop() {
       return;
     }
     const int menuIndex = selectorIndex - static_cast<int>(recentBooks.size());
+    if (!coverGridUi) {
+      if (menuIndex < 0 || menuIndex >= static_cast<int>(homeButtons.size())) return;
+      const auto& shortcut = homeButtons[menuIndex];
+      switch (shortcut.target) {
+        case HomeMenuRegistry::Target::Browse:
+          onFileBrowserOpen();
+          break;
+        case HomeMenuRegistry::Target::Library:
+          onLibraryOpen();
+          break;
+        case HomeMenuRegistry::Target::Plugins:
+          onPluginsOpen();
+          break;
+        case HomeMenuRegistry::Target::Opds:
+          onOpdsBrowserOpen();
+          break;
+        case HomeMenuRegistry::Target::Transfer:
+          onFileTransferOpen();
+          break;
+        case HomeMenuRegistry::Target::Dashboard:
+          activityManager.goToPluginDashboard(shortcut.deviceManifest);
+          break;
+        case HomeMenuRegistry::Target::Settings:
+          onSettingsOpen();
+          break;
+      }
+      return;
+    }
     switch (indexToMenuItem(menuIndex, hasLibrarySlot())) {
       case HomeMenuItem::FILE_BROWSER:
         onFileBrowserOpen();
@@ -558,13 +626,13 @@ void HomeActivity::render(RenderLock&&) {
   }
 
   // Build menu items dynamically
-  std::vector<const char*> menuItems = {tr(STR_BROWSE_FILES), tr(STR_LIBRARY), tr(STR_FILE_TRANSFER),
-                                        tr(STR_SETTINGS_TITLE)};
-  std::vector<UIIcon> menuIcons = {Folder, Library, Transfer, Settings};
-
-  if (hasLibrarySlot()) {
-    menuItems.insert(menuItems.begin() + 2, hasPlugins ? tr(STR_PLUGINS) : tr(STR_OPDS_BROWSER));
-    menuIcons.insert(menuIcons.begin() + 2, Plugins);
+  std::vector<const char*> menuItems;
+  menuItems.reserve(homeButtons.size() + 1);
+  std::vector<UIIcon> menuIcons;
+  menuIcons.reserve(homeButtons.size() + 1);
+  for (const auto& shortcut : homeButtons) {
+    menuItems.push_back(shortcut.label.c_str());
+    menuIcons.push_back(shortcut.icon);
   }
 
   if (metrics.homeContinueReadingInMenu && !recentBooks.empty()) {

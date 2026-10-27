@@ -18,6 +18,9 @@ struct Options {
   bool inkBlack = true;
 };
 
+// Fast structural probe for menu discovery (header and file length only).
+bool probe(const std::string& path);
+
 // Read-only integrity check, including dimensions, row padding, and CRC32.
 bool validate(const std::string& path);
 

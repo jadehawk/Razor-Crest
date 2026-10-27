@@ -51,6 +51,13 @@ void UITheme::syncFonts() {
   }
 }
 
+void UITheme::suspendExternalAssets() {
+  std::optional<RenderLock> lock;
+  if (!RenderLock::heldByCurrentTask()) lock.emplace();
+  setTheme(CrossPointSettings::CLASSIC);
+  syncFonts();
+}
+
 void UITheme::reload() {
   // Protect scene/metric replacement as well as font replacement from the
   // render task; onExit() can invoke reload while already owning this mutex.
@@ -92,11 +99,21 @@ bool UITheme::hasCoverGridHome() { return SETTINGS.uiTheme == CrossPointSettings
 
 void UITheme::drawCoverGridHome(CoverGridHomeUi& home) { home.renderUi(); }
 
-bool UITheme::renderScreenBackground(const GfxRenderer& renderer) const {
+bool UITheme::renderScreenBackground(const GfxRenderer& renderer, int endBeforeY) const {
+  // Full-height SD bitmap streaming is reserved for hardware with physical PSRAM.
+  // Footer decoration remains available on boards without PSRAM.
+  if (HalMemory::getPsramHeap().totalBytes == 0) return false;
   if (!externalActive || !externalScene.hasRegion(ThemeScene::Region::ScreenBackground)) return false;
   const Rect content = getContentArea(renderer);
   if (content.width <= 0 || content.height <= 0) return false;
-  return externalScene.draw(renderer, ThemeScene::Region::ScreenBackground, content);
+  Rect visible = content;
+  // File Transfer calls this without a list geometry hint. When a theme also
+  // declares footer artwork, leave its lower lane separate from the underlay.
+  if (endBeforeY < 0 && externalScene.hasRegion(ThemeScene::Region::Screen))
+    endBeforeY = content.y + content.height - getMetrics().buttonHintsHeight - 128 - 8;
+  if (endBeforeY > visible.y) visible.height = std::min(visible.height, endBeforeY - visible.y);
+  if (visible.height <= 0) return false;
+  return externalScene.draw(renderer, ThemeScene::Region::ScreenBackground, visible);
 }
 
 bool UITheme::renderScreenDecoration(const GfxRenderer& renderer, int blankTop, int blankBottom) const {
@@ -109,6 +126,15 @@ bool UITheme::renderScreenDecoration(const GfxRenderer& renderer, int blankTop, 
   const int height = std::min(128, bottom - top);
   return externalScene.draw(renderer, ThemeScene::Region::Screen,
                             Rect{content.x, bottom - height, content.width, height});
+}
+
+bool UITheme::selectSleepGrayscalePath(std::string& path) const {
+  return externalActive && externalScene.selectSleepGrayscalePath(path);
+}
+
+const std::string& UITheme::usbGrayscalePath() const {
+  static const std::string empty;
+  return externalActive ? externalScene.usbGrayscalePath() : empty;
 }
 
 bool UITheme::renderExternalScene(ThemeScene::Region region, const GfxRenderer& renderer, Rect area, const char* title,

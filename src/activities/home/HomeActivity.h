@@ -7,6 +7,7 @@
 #include "activities/Activity.h"
 #include "components/CoverGridHomeUi.h"
 #include "util/ButtonNavigator.h"
+#include "util/HomeMenuRegistry.h"
 
 struct Rect;
 
@@ -35,6 +36,8 @@ class HomeActivity final : public Activity {
   int coverRectW = 0;
   int coverRectH = 0;
   std::vector<RecentBook> recentBooks;
+  HomeMenuRegistry homeMenuRegistry;
+  std::vector<HomeMenuRegistry::Entry> homeButtons;
   const HomeMenuItem initialMenuItem;
   const bool cleanInitialRefresh;
 
