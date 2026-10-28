@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "PluginCatalogPaging.h"
 #include "activities/CatalogActivity.h"
 #include "components/OptionPopup.h"
 #include "network/HttpDownloader.h"
@@ -71,7 +72,7 @@ class PluginCatalogActivity : public CatalogActivity {
     std::string configFile;
     // JSON uses dotted field paths; XML uses element/attribute selectors.
     std::string browseFormat;
-    // Browse request: templates may use {token}, {cfg.KEY}, {page}, {limit}.
+    // Browse request: templates may use {token}, {cfg.KEY}, {page}, {offset}, {limit}.
     pluginhttp::RequestSpec browseReq;
     std::string itemsPath;  // JSON: dotted path to the item array; "" = response root
     // JSON field paths (dotted); XML field selectors ("elem", "elem@attr", "@attr").
@@ -444,6 +445,7 @@ class PluginCatalogActivity : public CatalogActivity {
   // Browse url/body with the selected browse list's overrides applied.
   const std::string& activeBrowseUrl() const;
   const std::string& activeBrowseBody() const;
+  plugincatalogpaging::Paging browsePaging() const;
   // Copies `headers` with `substituted()` applied to each value.
   pluginhttp::Headers substitutedHeaders(const pluginhttp::Headers& headers, const Item* item) const;
   void fetchPage(int newPage);

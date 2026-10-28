@@ -206,6 +206,7 @@ Razor-Crest currently advertises these catalog capabilities:
 | `catalog.cache` | JSON catalog pages and display-ready previews can use the bounded progressive SD cache. | Any plugin can reuse fetched catalog/image data without adding plugin-specific storage logic. |
 | `catalog.refresh` | A JSON catalog can opt into a native Refresh footer action that forces a network refetch of the current page. | Any dynamic catalog can refresh in place, including one-page catalogs that have no paging action to trigger another request. |
 | `catalog.item_details` | JSON catalog items can open a Details page with selected-row metadata and optional bounded on-demand HTML/text content. | Any catalog can keep browse rows concise while offering richer information before Fetch/Install/Update. Rich metadata is additive and failure falls back to the normal item details view. |
+| `catalog.encoded_item_fields` | Download, sidecar, and details templates can use the percent-encoded item variables `{id_enc}`, `{title_enc}`, `{author_enc}`, and `{url_enc}`. | A catalog whose URLs carry item text can require this so older firmware, which would send the variable names literally, does not offer the entry. |
 
 Capability names describe firmware behavior available to the entire plugin system.
 They must not encode Plugin Hub policy or ownership, and another plugin may use the
@@ -263,11 +264,20 @@ download filename/username/password; and sidecar path/body.
 | `{plugin_api}` | numeric plugin API level | template fields |
 | `{plugin_capabilities}` | comma-separated advertised capability names | template fields |
 | `{page}` | current 1-based page | browse |
-| `{limit}` | active layout item count + 1 (the extra item detects "more pages") | browse |
+| `{offset}` | rows before the current page: `(page - 1) * page_size` | browse |
+| `{limit}` | `page_size` when the request uses `{page}` and not `{offset}`; otherwise `page_size + 1` (the extra row shows that another page exists) | browse |
 | `{id}` `{title}` `{author}` `{url}` `{thumbnail}` | fields of the selected item | image, download, sidecar |
+| `{id_enc}` `{title_enc}` `{author_enc}` `{url_enc}` | the same fields percent-encoded (everything except letters, digits, `-_.~`), for URL query values and path segments; firmware with these advertises `catalog.encoded_item_fields` | download, sidecar, item details |
 | `{md5}` | MD5 hex of the destination file path | sidecar |
 | `{dest}` | sanitized on-SD path of the downloaded file | sidecar |
 | `{device_code}` | from the auth request response | auth poll |
+
+Substitution inserts values as they are. Before a request is sent, spaces,
+control characters, and non-ASCII (UTF-8) bytes in its URL are
+percent-encoded, so a raw `{title}` in a URL path still forms a valid request.
+All other printable ASCII characters are kept, including `&`, `?`, `#`, `/`,
+`+`, `=` and `%`, so use the `_enc` forms for values inside a query string or
+a single path segment.
 
 Two browse formats:
 - **`"json"`** (default) — a paged JSON list, using `items`/`fields` below.
@@ -492,7 +502,7 @@ JSON catalogs may also map `description`, `detail_author`, and `repository` for 
   than an error.
 - **Pagination and refresh** (json): the browse request should return up to `{limit}` items.
   Grid and list layouts use `grid_page_size` and `list_page_size` independently;
-  the extra item only determines whether another server page exists. Enhanced
+  an extra row is requested for offset or unsized-page lookahead; page/limit requests use the configured page size. Enhanced
   plugin UIs use FreeInkUI's native footer for Previous/Next pagination. Setting
   `browse.refresh: true` adds a separate Refresh action between them; Refresh forces
   a network refetch of the current page, bypassing a fresh catalog-page cache when
@@ -502,6 +512,8 @@ JSON catalogs may also map `description`, `detail_author`, and `repository` for 
   boundaries at the first/last viewport, so hidden pagination never disables paging.
   When pagination is shown, unavailable directions remain visible but disabled, and D-pad focus moves
   through the footer actions after the content items.
+  For `{page}` and `{limit}`, a full response can expose Next even if the next page is empty.
+  For `{offset}`, one lookahead item confirms Next; a static list pages locally.
 - **Progressive cache** (json): an optional top-level `cache` block keeps disposable,
   re-fetchable plugin data under that plugin's own `.cache` directory. Catalog pages
   remain the primary cached resource; converted thumbnails and opt-in rich item details
