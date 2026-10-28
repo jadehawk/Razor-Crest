@@ -214,6 +214,15 @@ Additional firmware features should advertise their own capability names only wh
 the corresponding runtime support is actually present. Catalog entries that omit
 compatibility metadata remain visible for backward compatibility.
 
+#### Conditional catalog-list visibility
+
+Inline `browse.lists` entries and remote `browse.lists_url` entries may include
+`"hide_if": {"plugin_capability": "catalog.refresh"}`. Firmware advertising the
+specified capability omits that entry from the list picker; otherwise it remains
+visible. Unknown conditions are ignored. This supports instructional fallback
+rows on firmware without native catalog refresh. The picker remains accessible
+even when filtering leaves a single list.
+
 ### Runtime device capabilities
 
 Runtime device capabilities describe hardware/input features of the current device and

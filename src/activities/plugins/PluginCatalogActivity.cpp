@@ -256,6 +256,11 @@ bool matchesCapabilities(const std::string& required) {
   return true;
 }
 
+bool browseListHidden(JsonVariantConst list) {
+  const char* capability = list["hide_if"]["plugin_capability"] | "";
+  return capability[0] != 0 && csvContainsToken(firmwareidentity::PLUGIN_CAPABILITIES, capability);
+}
+
 bool catalogEntryCompatible(const std::string& family, const std::string& firmware, const std::string& apiMin,
                             const std::string& requiredCapabilities, const std::string& advisory) {
   return matchesCsvRestriction(family, firmwareidentity::FAMILY) &&
@@ -461,6 +466,7 @@ bool PluginCatalogActivity::loadManifest() {
   manifest.capabilityListsUrl = browse["capability_lists_url"] | "";
   manifest.browseLists.reserve(browse["lists"].size());
   for (JsonVariantConst l : browse["lists"].as<JsonArrayConst>()) {
+    if (browseListHidden(l)) continue;
     Manifest::BrowseList entry;
     entry.title = l["title"] | "";
     entry.url = l["url"] | "";
@@ -1366,6 +1372,7 @@ bool PluginCatalogActivity::loadBrowseListIndex() {
   remoteLists.reserve(std::min<size_t>(lists.size(), MAX_REMOTE_BROWSE_LISTS));
   for (JsonVariantConst l : lists) {
     if (remoteLists.size() >= MAX_REMOTE_BROWSE_LISTS) break;
+    if (browseListHidden(l)) continue;
     Manifest::BrowseList entry;
     entry.title = l["title"] | "";
     entry.url = l["url"] | "";
