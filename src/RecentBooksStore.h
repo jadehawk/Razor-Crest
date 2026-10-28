@@ -2,9 +2,12 @@
 #include <ArduinoJson.h>
 #include <PersistableStore.h>
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
+
+#include "util/RecentBookLimits.h"
 
 struct RecentBook {
   std::string path;
@@ -14,13 +17,20 @@ struct RecentBook {
   // Transient Home card metadata; not persisted in recent.json.
   std::string series{};
   std::optional<float> seriesIndex{};
+  // Transient Home cache. -2 means not probed; -1 is unknown progress.
+  int8_t carouselProgress = -2;
+  bool carouselMetadataLoaded = false;
 
   bool operator==(const RecentBook& other) const { return path == other.path; }
 };
 
 class RecentBooksStore : public PersistableStore<RecentBooksStore> {
  public:
-  static constexpr int MAX_RECENT_BOOKS = 10;
+  // The Library's pinned Recent overlay uses fixed arrays of 10. Do not grow them.
+  static constexpr int MAX_RECENT_BOOKS = recentbooklimits::NO_PSRAM;
+  static constexpr int MAX_RECENT_BOOKS_PSRAM = recentbooklimits::WITH_PSRAM;
+  // Stored history follows hardware capacity, independently of the Home carousel limit.
+  static int storageCapacity();
 
  private:
   std::vector<RecentBook> recentBooks;

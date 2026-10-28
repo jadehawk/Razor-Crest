@@ -6,6 +6,7 @@
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalDisplay.h>
+#include <HalMemory.h>
 #include <HalStorage.h>
 #include <I18n.h>
 #include <LibraryBuilder.h>
@@ -27,6 +28,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/BookProgress.h"
+#include "util/RecentBookLimits.h"
 
 namespace {
 // Remembers only an SD path, not a decoded image or duplicated book list.
@@ -56,15 +58,16 @@ void HomeActivity::loadRecentBooks(int maxBooks) {
       break;
     }
 
-    // Read persisted progress once on Home entry; never while repainting.
-    // Unknown progress is retained, but a verified 100% book is excluded.
+    // Don't open EPUB files while enumerating recent candidates.
+    // Completion and series metadata are checked on the selected card.
     // Skip if file no longer exists
     if (RecentBooksStore::isMissing(book)) {
       continue;
     }
 
-    if (singleCardMode && SETTINGS.continueReadingCarousel && loadBookProgress(book.path) >= 100) continue;
+    // Completion is checked lazily when this candidate reaches the card.
     recentBooks.push_back(book);
+    if (singleCardMode) continue;  // Lazy metadata and progress for one card.
     // RecentBooksStore can retain a legacy 1-bit thumb path. Resolve the
     // current native-sized 1-bit thumbnail contract on Home entry so
     // previous experimental grayscale covers are not reused.
@@ -75,8 +78,8 @@ void HomeActivity::loadRecentBooks(int maxBooks) {
         // Parse the featured book once on Home entry, never on a repaint.
         // The small no-PSRAM boards should not open a ZIP for every arrow press.
         const auto* scene = UITheme::getInstance().activeExternalScene();
-        if ((singleCardMode || recentBooks.size() == 1) && !coverGridUi && scene &&
-            scene->hasRegion(ThemeScene::Region::Home) && FsHelpers::hasEpubExtension(book.path)) {
+        if (recentBooks.size() == 1 && !coverGridUi && scene && scene->hasRegion(ThemeScene::Region::Home) &&
+            FsHelpers::hasEpubExtension(book.path)) {
           Epub::SyncMetadata metadata;
           if (epub->loadSyncMetadata(metadata)) {
             recentBooks.back().series = std::move(metadata.series);
@@ -259,14 +262,55 @@ void HomeActivity::loadRecentCovers(int coverHeight) {
   recentsLoading = false;
 }
 
+void HomeActivity::prepareCurrentCard(const int direction) {
+  if (!singleCardMode) return;
+
+  // Inspect only until a displayable book is found (normally one EPUB).
+  // A run of completed candidates may require additional progress probes.
+  size_t remaining = recentBooks.size();
+  while (remaining-- > 0 && !recentBooks.empty()) {
+    RecentBook& book = recentBooks.front();
+    if (SETTINGS.continueReadingCarousel) {
+      if (book.carouselProgress == -2) book.carouselProgress = static_cast<int8_t>(loadBookProgress(book.path));
+      if (book.carouselProgress >= 100) {
+        recentBooks.erase(recentBooks.begin());
+        if (direction < 0 && !recentBooks.empty())
+          std::rotate(recentBooks.begin(), recentBooks.end() - 1, recentBooks.end());
+        continue;
+      }
+    }
+
+    if (!book.carouselMetadataLoaded) {
+      book.carouselMetadataLoaded = true;
+      if (FsHelpers::hasReflowableBookExtension(book.path)) {
+        auto epub = makeUniqueNoThrow<Epub>(book.path, "/.crosspoint");
+        if (epub) {
+          book.coverBmpPath = epub->getThumbBmpPath();
+          if (FsHelpers::hasEpubExtension(book.path)) {
+            Epub::SyncMetadata metadata;
+            if (epub->loadSyncMetadata(metadata)) {
+              book.series = std::move(metadata.series);
+              book.seriesIndex = metadata.seriesIndex;
+            }
+          }
+        }
+      }
+    }
+    break;
+  }
+  cardPager.size = recentBooks.size();
+  cardPager.index = 0;  // The active book always occupies slot zero.
+}
+
 void HomeActivity::cycleCard(int direction) {
   if (!singleCardMode || !cardPager.canCycle() || direction == 0) return;
-  cardPager.move(direction);
+  // The selected entry is rotated to the front; pager index stays zero.
   if (direction < 0)
     std::rotate(recentBooks.begin(), recentBooks.end() - 1, recentBooks.end());
   else
     std::rotate(recentBooks.begin(), recentBooks.begin() + 1, recentBooks.end());
-  selectedHomeCardPath = recentBooks.front().path;
+  prepareCurrentCard(direction);
+  selectedHomeCardPath = recentBooks.empty() ? std::string{} : recentBooks.front().path;
   // The previous cover snapshot contains the old title and cover. Never reuse
   // it for the newly selected book; load just one thumbnail on demand.
   freeCoverBuffer();
@@ -292,8 +336,10 @@ void HomeActivity::onEnter() {
   }
   const auto* scene = UITheme::getInstance().activeExternalScene();
   singleCardMode = !coverGridUi && scene && scene->hasNativeCoverCard();
+  const bool hasPsram = HalMemory::getPsramHeap().totalBytes > 0;
+  const int carouselLimit = recentbooklimits::effective(SETTINGS.continueReadingBookLimit, hasPsram);
   loadRecentBooks(coverGridUi      ? CoverGridHomeUi::MAX_BOOKS
-                  : singleCardMode ? (SETTINGS.continueReadingCarousel ? RecentBooksStore::MAX_RECENT_BOOKS : 1)
+                  : singleCardMode ? (SETTINGS.continueReadingCarousel ? carouselLimit : 1)
                                    : metrics.homeRecentBooksCount);
   cardPager = {recentBooks.size(), 0, singleCardMode && SETTINGS.continueReadingCarousel != 0};
   if (cardPager.enabled && !selectedHomeCardPath.empty()) {
@@ -303,6 +349,10 @@ void HomeActivity::onEnter() {
       cardPager.index = 0;
       std::rotate(recentBooks.begin(), it, recentBooks.end());
     }
+  }
+  if (singleCardMode) {
+    prepareCurrentCard(1);
+    selectedHomeCardPath = recentBooks.empty() ? std::string{} : recentBooks.front().path;
   }
   hasContinueReading = !recentBooks.empty();
   if (!coverGridUi) {

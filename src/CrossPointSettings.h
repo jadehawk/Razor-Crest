@@ -377,6 +377,9 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t settingsNavigation = SETTINGS_NAV_THEME;  // Theme preference; List if theme does not specify.
   // One full-size Continue Reading card with internal book paging (default enabled).
   uint8_t continueReadingCarousel = 1;
+  // Zero = hardware default (10 without PSRAM, 50 with PSRAM).
+  // A requested count above the hardware ceiling is safely capped at use.
+  uint8_t continueReadingBookLimit = 0;
   // External theme ID: <collection-id>/<theme-id>. Empty selects a built-in theme.
   char sdThemeId[96] = "";
   // Sunlight fading compensation

@@ -1,9 +1,16 @@
 #include "RecentBooksStore.h"
 
+#include <HalMemory.h>
 #include <HalStorage.h>
 #include <Logging.h>
 
 #include <algorithm>
+
+#include "util/RecentBookLimits.h"
+
+int RecentBooksStore::storageCapacity() {
+  return recentbooklimits::deviceMaximum(HalMemory::getPsramHeap().totalBytes > 0);
+}
 
 void RecentBooksStore::toJson(JsonDocument& doc) const {
   JsonArray arr = doc["books"].to<JsonArray>();
@@ -21,9 +28,9 @@ bool RecentBooksStore::fromJson(JsonVariantConst doc) {
   // JSON parse error is fatal. A null JsonArray iterates zero times.
   recentBooks.clear();
   JsonArrayConst arr = doc["books"].as<JsonArrayConst>();
-  recentBooks.reserve(std::min(arr.size(), static_cast<size_t>(MAX_RECENT_BOOKS)));
+  recentBooks.reserve(std::min(arr.size(), static_cast<size_t>(storageCapacity())));
   for (JsonObjectConst obj : arr) {
-    if (getCount() >= MAX_RECENT_BOOKS) break;
+    if (getCount() >= storageCapacity()) break;
     RecentBook book;
     book.path = obj["path"] | "";
     book.title = obj["title"] | "";
@@ -54,8 +61,8 @@ void RecentBooksStore::addBook(const std::string& path, const std::string& title
     if (book.coverBmpPath != coverBmpPath) book.coverBmpPath = coverBmpPath;
   } else {
     recentBooks.insert(recentBooks.begin(), {path, title, author, coverBmpPath});
-    if (recentBooks.size() > MAX_RECENT_BOOKS) {
-      recentBooks.resize(MAX_RECENT_BOOKS);
+    if (recentBooks.size() > static_cast<size_t>(storageCapacity())) {
+      recentBooks.resize(storageCapacity());
     }
   }
 

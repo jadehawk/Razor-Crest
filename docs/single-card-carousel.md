@@ -5,8 +5,7 @@ advertised capability; they are not requirements tied to a firmware name.
 
 ## Home: `home.book-carousel.v1`
 
-**Setting:** Display > Continue Reading (enabled by default, persisted under
-`continueReadingCarousel`). The setting enables cyclic navigation inside one
+**Setting:** Display > Enable Continue Reading Carousel (enabled by default, persisted under continueReadingCarousel). The setting enables cyclic navigation inside one
 full-size native SD-theme `book-card` of variant `cover`, where the theme
 declares a Home scene. Existing cover-grid layouts are unaffected.
 
@@ -22,10 +21,16 @@ declares a Home scene. Existing cover-grid layouts are unaffected.
   revisited in the same firmware session; missing/finished books are skipped.
 - One eligible book keeps the original single-card presentation and normal
   side-button navigation. The Back/Resume shortcut opens the displayed book.
-- The source is the device's existing **ten most recent** SD books, not an
-  expensive full-library scan. Finished books with verified 100% progress are
-  filtered on Home entry when the feature is enabled; unknown progress remains
-  eligible. This is not a manually curated reading queue.
+- The source is the Recent Books store, not a full-library scan.
+  - Without PSRAM, the Recent Books storage ceiling and carousel maximum stay at 10.
+  - With PSRAM, the storage ceiling is 50. The Library pinned overlay stays at 10.
+- Display > Continue Reading Book Limit offers Auto (10 or 50 by hardware), 5,
+  10, and on PSRAM devices 20, 30, 40, or 50. This limit controls recent
+  candidates, not the number of decoded cover images. The stored
+  continueReadingBookLimit value is zero for Auto and is clamped at use.
+- Completion and series metadata are checked lazily for the displayed book.
+  Completed candidates are skipped when reached; unknown progress stays
+  eligible. A candidate not yet inspected is not yet known to be completed.
 - Full-size card dimensions, title, author, series/index and progress remain
   firmware-owned. No book imagery is provided by an SD theme package.
 - No new partial/neighbor cards, no network calls, no additional persistent

@@ -3,6 +3,7 @@
 #include <BoardConfig.h>
 #include <HalClock.h>
 #include <HalFrontlight.h>
+#include <HalMemory.h>
 #include <HalTiltSensor.h>
 #include <I18n.h>
 #include <SdCardFontRegistry.h>
@@ -21,6 +22,7 @@
 #include "activities/settings/SettingsActivity.h"
 #include "components/UITheme.h"
 #include "util/DictionaryRegistry.h"
+#include "util/RecentBookLimits.h"
 
 // Build the font family setting dynamically. When registry is non-null, SD card fonts
 // are appended after the built-in fonts. Otherwise only built-in fonts are listed.
@@ -182,6 +184,28 @@ inline SettingInfo buildDictionarySetting(const std::vector<DictionaryEntry>& di
   return s;
 }
 
+inline SettingInfo buildContinueReadingLimitSetting() {
+  const bool psram = HalMemory::getPsramHeap().totalBytes > 0;
+  const std::vector<uint8_t> options =
+      psram ? std::vector<uint8_t>{0, 5, 10, 20, 30, 40, 50} : std::vector<uint8_t>{0, 5, 10};
+  SettingInfo setting;
+  setting.nameId = StrId::STR_CONTINUE_READING_BOOK_LIMIT;
+  setting.type = SettingType::ENUM;
+  setting.key = "continueReadingBookLimit";
+  setting.category = StrId::STR_CAT_DISPLAY;
+  setting.enumStringValues.reserve(options.size());
+  setting.enumStringValues.push_back("Auto (" + std::to_string(recentbooklimits::deviceMaximum(psram)) + ")");
+  for (size_t i = 1; i < options.size(); ++i) setting.enumStringValues.push_back(std::to_string(options[i]));
+  setting.valueGetter = [options]() -> uint8_t {
+    const auto it = std::find(options.begin(), options.end(), SETTINGS.continueReadingBookLimit);
+    return it == options.end() ? 0 : static_cast<uint8_t>(it - options.begin());
+  };
+  setting.valueSetter = [options](uint8_t index) {
+    if (index < options.size()) SETTINGS.continueReadingBookLimit = options[index];
+  };
+  return setting;
+}
+
 inline std::vector<StrId> buildLongPressMenuValues() {
   std::vector<StrId> values = {StrId::STR_KOSYNC, StrId::STR_DISABLED, StrId::STR_BOOKMARK_OPTION,
                                StrId::STR_DICTIONARY};
@@ -291,7 +315,12 @@ std::vector<SettingInfo> getBaseSettingsList(size_t extraCapacity = 0);
 // UI callers own the list for runtime filtering and font/dictionary options.
 inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* registry = nullptr,
                                                 const std::vector<DictionaryEntry>* dictionaries = nullptr) {
-  auto v = getBaseSettingsList(dictionaries && !dictionaries->empty() ? 1 : 0);
+  auto v = getBaseSettingsList(dictionaries && !dictionaries->empty() ? 2 : 1);
+  // Hardware-dependent choices belong in the UI only; persistence keeps the
+  // requested physical count (0 = automatic), not a device-specific menu index.
+  const auto carousel = std::find_if(
+      v.begin(), v.end(), [](const SettingInfo& s) { return s.nameId == StrId::STR_CONTINUE_READING_CAROUSEL; });
+  if (carousel != v.end()) v.insert(carousel + 1, buildContinueReadingLimitSetting());
   // Frontlit and lightless variants of a board share one binary (EEGO A4);
   // presence is the I2C probe result from Frontlight.begin(). UI-only: the probe
   // has not run at load time, so the base list must keep the persisted key.

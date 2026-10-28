@@ -89,6 +89,7 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   forEachBaseSetting(visit);
 
   // Front button remap — managed by RemapFrontButtons sub-activity, not in SettingsList.
+  doc["continueReadingBookLimit"] = continueReadingBookLimit;
   doc["frontButtonBack"] = frontButtonBack;
   doc["frontButtonConfirm"] = frontButtonConfirm;
   doc["frontButtonLeft"] = frontButtonLeft;
@@ -192,6 +193,13 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
     }
   };
   forEachBaseSetting(visit);
+
+  // This is a requested physical count, not a hardware-specific enum index.
+  const int bookLimit = doc["continueReadingBookLimit"] | 0;
+  continueReadingBookLimit = (bookLimit == 0 || bookLimit == 5 || bookLimit == 10 || bookLimit == 20 ||
+                              bookLimit == 30 || bookLimit == 40 || bookLimit == 50)
+                                 ? static_cast<uint8_t>(bookLimit)
+                                 : 0;
 
   // Plugin System did not exist in older settings files. Preserve the behavior
   // of users who already have SD plugins installed, while keeping the new
