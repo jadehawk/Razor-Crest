@@ -60,6 +60,8 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
                          "refreshFrequency", StrId::STR_CAT_DISPLAY));
   emit(SettingInfo::Enum(StrId::STR_UI_THEME, &CrossPointSettings::uiTheme, homeThemeValues(), "uiTheme",
                          StrId::STR_CAT_DISPLAY));
+  emit(SettingInfo::Toggle(StrId::STR_CONTINUE_READING, &CrossPointSettings::continueReadingCarousel,
+                           "continueReadingCarousel", StrId::STR_CAT_DISPLAY));
   emit(SettingInfo::Enum(StrId::STR_SETTINGS_NAVIGATION, &CrossPointSettings::settingsNavigation,
                          {StrId::STR_SETTINGS_NAV_LIST, StrId::STR_SETTINGS_NAV_TABS, StrId::STR_SETTINGS_NAV_THEME},
                          "settingsNavigation", StrId::STR_CAT_SYSTEM));

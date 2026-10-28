@@ -22,7 +22,7 @@
   "theme.font-family.v1,theme.settings-navigation.v1,theme.book-cover.v1,theme.menu-decoration.v1,"                  \
   "theme.screen-decoration.v1,theme.screen-background.v1,theme.header-back.v1,theme.sleep-gallery.v1,theme.sleep-"   \
   "grayscale.v1,"                                                                                                    \
-  "theme.usb-scene.v1,theme.usb-grayscale.v1,home.shortcuts."                                                        \
+  "theme.usb-scene.v1,theme.usb-grayscale.v1,ui.carousel.v1,home.book-carousel.v1,home.shortcuts."                   \
   "v1,wallpaper.packs.v1"
 #endif
 

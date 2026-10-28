@@ -250,6 +250,7 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
   cardCut = 0;
   rowCut = 0;
   hintCut = 0;
+  carouselRailWidth = 8;
   rowSeparators = false;
   settingsNavigationTabs = false;
   menuDoubleOutline = false;
@@ -276,7 +277,7 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
   JsonObjectConst styles = doc["styles"].as<JsonObjectConst>();
   // Metrics-only collections from Stage A have no styles object.
   if (!styles.isNull()) {
-    if (styles.size() > 16) return false;
+    if (styles.size() > 18) return false;
     const char* corners = styles["corners"] | "square";
     if (!strcmp(corners, "chamfer")) {
       if (!styles["chamfer_cut"].is<int>()) return false;
@@ -307,6 +308,11 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
     settingsNavigationTabs = strcmp(navigation, "tabs") == 0;
     if (!styles["menu_double_outline"].isNull() && !styles["menu_double_outline"].is<bool>()) return false;
     menuDoubleOutline = styles["menu_double_outline"] | false;
+    if (!styles["book_carousel_rail_px"].isNull()) {
+      if (!styles["book_carousel_rail_px"].is<int>()) return false;
+      carouselRailWidth = styles["book_carousel_rail_px"].as<int>();
+      if (carouselRailWidth < 4 || carouselRailWidth > 12) return false;
+    }
     if (!styles["header_back_style"].isNull()) {
       const char* value = styles["header_back_style"].as<const char*>();
       if (!value) return false;
@@ -648,6 +654,11 @@ bool ThemeScene::selectSleepGrayscalePath(std::string& path) const {
 }
 
 bool ThemeScene::hasRegion(const Region region) const { return !regions[static_cast<size_t>(region)].empty(); }
+bool ThemeScene::hasNativeCoverCard() const {
+  for (const auto& op : regions[static_cast<size_t>(Region::Home)])
+    if (op.kind == Kind::BookCard && op.data == "@native-cover") return true;
+  return false;
+}
 
 bool ThemeScene::draw(const GfxRenderer& renderer, Region region, Rect area, const char* screenTitle,
                       const std::vector<RecentBook>* recentBooks, const int selectorIndex, const Phase phase) const {

@@ -22,6 +22,9 @@ class ThemeScene {
             const std::vector<RecentBook>* recentBooks = nullptr, int selectorIndex = 0,
             Phase phase = Phase::Full) const;
   bool hasRegion(Region region) const;
+  // Native full-size book-card scene (one visual slot regardless of recent count).
+  bool hasNativeCoverCard() const;
+  int bookCarouselRailWidth() const { return carouselRailWidth; }
   const std::string& usbGrayscalePath() const { return usbGrayFile; }
   bool selectSleepGrayscalePath(std::string& path) const;
   HeaderBackStyle headerBackStyle() const { return backStyle; }
@@ -66,6 +69,7 @@ class ThemeScene {
   int cardCut = 0;
   int rowCut = 0;
   int hintCut = 0;
+  int carouselRailWidth = 8;
   bool rowSeparators = false;
   bool settingsNavigationTabs = false;
   bool menuDoubleOutline = false;

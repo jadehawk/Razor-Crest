@@ -26,9 +26,15 @@
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/BookProgress.h"
+
+namespace {
+// Remembers only an SD path, not a decoded image or duplicated book list.
+std::string selectedHomeCardPath;
+}  // namespace
 
 int HomeActivity::getMenuItemCount() const {
-  if (!coverGridUi) return static_cast<int>(recentBooks.size() + homeButtons.size());
+  if (!coverGridUi) return recentSlots() + static_cast<int>(homeButtons.size());
   int count = 4;  // Legacy cover-grid tabs (separate layout).
   if (!recentBooks.empty()) {
     count += recentBooks.size();
@@ -50,11 +56,14 @@ void HomeActivity::loadRecentBooks(int maxBooks) {
       break;
     }
 
+    // Read persisted progress once on Home entry; never while repainting.
+    // Unknown progress is retained, but a verified 100% book is excluded.
     // Skip if file no longer exists
     if (RecentBooksStore::isMissing(book)) {
       continue;
     }
 
+    if (singleCardMode && SETTINGS.continueReadingCarousel && loadBookProgress(book.path) >= 100) continue;
     recentBooks.push_back(book);
     // RecentBooksStore can retain a legacy 1-bit thumb path. Resolve the
     // current native-sized 1-bit thumbnail contract on Home entry so
@@ -66,8 +75,8 @@ void HomeActivity::loadRecentBooks(int maxBooks) {
         // Parse the featured book once on Home entry, never on a repaint.
         // The small no-PSRAM boards should not open a ZIP for every arrow press.
         const auto* scene = UITheme::getInstance().activeExternalScene();
-        if (recentBooks.size() == 1 && !coverGridUi && scene && scene->hasRegion(ThemeScene::Region::Home) &&
-            FsHelpers::hasEpubExtension(book.path)) {
+        if ((singleCardMode || recentBooks.size() == 1) && !coverGridUi && scene &&
+            scene->hasRegion(ThemeScene::Region::Home) && FsHelpers::hasEpubExtension(book.path)) {
           Epub::SyncMetadata metadata;
           if (epub->loadSyncMetadata(metadata)) {
             recentBooks.back().series = std::move(metadata.series);
@@ -189,6 +198,7 @@ void HomeActivity::loadRecentCovers(int coverHeight) {
 
   int progress = 0;
   for (RecentBook& book : recentBooks) {
+    if (singleCardMode && &book != &recentBooks.front()) break;
     // The cover grid shares one slot size; generating at any other height
     // would rescale the dithered thumb at draw time and alias badly.
     const int thumbHeight = coverGridUi ? coverGridUi->thumbHeightFor() : coverHeight;
@@ -212,7 +222,7 @@ void HomeActivity::loadRecentCovers(int coverHeight) {
             showingLoading = true;
             popupRect = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
           }
-          GUI.fillPopupProgress(renderer, popupRect, 10 + progress * (90 / recentBooks.size()));
+          GUI.fillPopupProgress(renderer, popupRect, 10 + progress * (90 / (singleCardMode ? 1 : recentBooks.size())));
           bool success = epub.generateThumbBmp(thumbHeight);
           if (!success) {
             RECENT_BOOKS.updateBook(book.path, book.title, book.author, "");
@@ -229,7 +239,8 @@ void HomeActivity::loadRecentCovers(int coverHeight) {
               showingLoading = true;
               popupRect = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
             }
-            GUI.fillPopupProgress(renderer, popupRect, 10 + progress * (90 / recentBooks.size()));
+            GUI.fillPopupProgress(renderer, popupRect,
+                                  10 + progress * (90 / (singleCardMode ? 1 : recentBooks.size())));
             bool success = xtc.generateThumbBmp(thumbHeight);
             if (!success) {
               RECENT_BOOKS.updateBook(book.path, book.title, book.author, "");
@@ -248,6 +259,22 @@ void HomeActivity::loadRecentCovers(int coverHeight) {
   recentsLoading = false;
 }
 
+void HomeActivity::cycleCard(int direction) {
+  if (!singleCardMode || !cardPager.canCycle() || direction == 0) return;
+  cardPager.move(direction);
+  if (direction < 0)
+    std::rotate(recentBooks.begin(), recentBooks.end() - 1, recentBooks.end());
+  else
+    std::rotate(recentBooks.begin(), recentBooks.begin() + 1, recentBooks.end());
+  selectedHomeCardPath = recentBooks.front().path;
+  // The previous cover snapshot contains the old title and cover. Never reuse
+  // it for the newly selected book; load just one thumbnail on demand.
+  freeCoverBuffer();
+  coverRendered = false;
+  recentsLoaded = false;
+  requestUpdate();
+}
+
 void HomeActivity::onEnter() {
   Activity::onEnter();
 
@@ -263,7 +290,20 @@ void HomeActivity::onEnter() {
     coverGridUi = makeUniqueNoThrow<CoverGridHomeUi>(renderer);
     if (!coverGridUi) LOG_ERR("HOME", "OOM: cover grid UI; using standard home");
   }
-  loadRecentBooks(coverGridUi ? CoverGridHomeUi::MAX_BOOKS : metrics.homeRecentBooksCount);
+  const auto* scene = UITheme::getInstance().activeExternalScene();
+  singleCardMode = !coverGridUi && scene && scene->hasNativeCoverCard();
+  loadRecentBooks(coverGridUi      ? CoverGridHomeUi::MAX_BOOKS
+                  : singleCardMode ? (SETTINGS.continueReadingCarousel ? RecentBooksStore::MAX_RECENT_BOOKS : 1)
+                                   : metrics.homeRecentBooksCount);
+  cardPager = {recentBooks.size(), 0, singleCardMode && SETTINGS.continueReadingCarousel != 0};
+  if (cardPager.enabled && !selectedHomeCardPath.empty()) {
+    const auto it = std::find_if(recentBooks.begin(), recentBooks.end(),
+                                 [](const RecentBook& b) { return b.path == selectedHomeCardPath; });
+    if (it != recentBooks.end()) {
+      cardPager.index = 0;
+      std::rotate(recentBooks.begin(), it, recentBooks.end());
+    }
+  }
   hasContinueReading = !recentBooks.empty();
   if (!coverGridUi) {
     const int top = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset;
@@ -280,7 +320,7 @@ void HomeActivity::onEnter() {
     coverGridUi->begin(recentBooks, hasLibrarySlot(), hasContinueReading);
   }
 
-  const auto base = static_cast<int>(recentBooks.size());
+  const auto base = recentSlots();
   selectorIndex = 0;
   if (initialMenuItem != HomeMenuItem::NONE) {
     if (coverGridUi)
@@ -353,11 +393,11 @@ void HomeActivity::loop() {
   const auto& metrics = UITheme::getInstance().getMetrics();
 
   auto activateSelection = [this] {
-    if (selectorIndex < recentBooks.size()) {
+    if (selectorIndex < recentSlots()) {
       onRecentBookSelected(recentBooks[selectorIndex].path);
       return;
     }
-    const int menuIndex = selectorIndex - static_cast<int>(recentBooks.size());
+    const int menuIndex = selectorIndex - recentSlots();
     if (!coverGridUi) {
       if (menuIndex < 0 || menuIndex >= static_cast<int>(homeButtons.size())) return;
       const auto& shortcut = homeButtons[menuIndex];
@@ -407,6 +447,20 @@ void HomeActivity::loop() {
     }
   };
 
+  // When the single full-size card has focus, side buttons change only its
+  // contents. Front Left/Right still move between Home selections. Keep
+  // the existing one-book behavior (and side navigation) when size == 1.
+  if (singleCardMode && selectorIndex == 0 && cardPager.canCycle()) {
+    if (mappedInput.isPressed(MappedInputManager::Button::Up)) {
+      if (mappedInput.wasPressed(MappedInputManager::Button::Up)) cycleCard(-1);
+      return;
+    }
+    if (mappedInput.isPressed(MappedInputManager::Button::Down)) {
+      if (mappedInput.wasPressed(MappedInputManager::Button::Down)) cycleCard(1);
+      return;
+    }
+  }
+
   // Cover grid home splits navigation by button group (see below); the flat
   // next/previous cycle is for the classic list home only.
   if (!coverGridUi) {
@@ -421,7 +475,18 @@ void HomeActivity::loop() {
     });
   }
 
-  const auto swipe = mappedInput.wasSwipe();
+  int swipeStartX = 0;
+  int swipeStartY = 0;
+  const auto swipe = mappedInput.wasSwipe(&swipeStartX, &swipeStartY);
+  if (singleCardMode && cardPager.canCycle() && mappedInput.hasTouch() && swipeStartY >= metrics.homeTopPadding &&
+      swipeStartY < metrics.homeTopPadding + metrics.homeCoverTileHeight && swipeStartX >= 44 &&
+      swipeStartX < renderer.getScreenWidth() - 24 && !mappedInput.wasBackGesture()) {
+    if (swipe == MappedInputManager::SwipeDir::Left || swipe == MappedInputManager::SwipeDir::Right) {
+      selectorIndex = 0;
+      cycleCard(swipe == MappedInputManager::SwipeDir::Left ? 1 : -1);
+      return;
+    }
+  }
   if (swipe == MappedInputManager::SwipeDir::Up) {
     selectorIndex = ButtonNavigator::nextIndex(selectorIndex, menuCount);
     requestUpdate();
@@ -487,8 +552,8 @@ void HomeActivity::loop() {
   // screen-relative getScreenWidth()/contentSidePadding here offset the touch
   // targets from the drawn covers by content.x on bezel-inset panels (EEGO A4).
   const Rect content = UITheme::getInstance().getContentArea(renderer);
-  const int coverColumnCount = std::max(1, metrics.homeRecentBooksCount);
-  const int recentCount = std::min(static_cast<int>(recentBooks.size()), coverColumnCount);
+  const int coverColumnCount = singleCardMode ? 1 : std::max(1, metrics.homeRecentBooksCount);
+  const int recentCount = std::min(recentSlots(), coverColumnCount);
   const int coverColumnWidth = (content.width - 2 * metrics.contentSidePadding) / coverColumnCount;
   int touchedBook = -1;
   const auto coverTouch = mappedInput.colTouch(touchedBook, content.x + metrics.contentSidePadding, coverColumnWidth,
@@ -509,8 +574,7 @@ void HomeActivity::loop() {
   }
 
   const int menuTop = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset;
-  const int renderedMenuCount =
-      menuCount - (metrics.homeContinueReadingInMenu ? 0 : static_cast<int>(recentBooks.size()));
+  const int renderedMenuCount = menuCount - (metrics.homeContinueReadingInMenu ? 0 : recentSlots());
   int menuRow = -1;
   // Row height from the theme, not the metrics table: RoundedRaff draws
   // font-derived rows and the touch grid must match the visuals exactly.
@@ -518,8 +582,7 @@ void HomeActivity::loop() {
   const auto menuTouch = mappedInput.rowTouch(menuRow, menuTop, menuRowHeight + metrics.menuSpacing, renderedMenuCount,
                                               0, INT32_MAX, menuRowHeight);
   if (menuTouch != MappedInputManager::RowTouch::None) {
-    const int touchedIndex =
-        metrics.homeContinueReadingInMenu ? menuRow : menuRow + static_cast<int>(recentBooks.size());
+    const int touchedIndex = metrics.homeContinueReadingInMenu ? menuRow : menuRow + recentSlots();
     if (menuTouch == MappedInputManager::RowTouch::Down) {
       if (selectorIndex != touchedIndex) {
         selectorIndex = touchedIndex;
@@ -625,6 +688,18 @@ void HomeActivity::render(RenderLock&&) {
                             bufferRestored, std::bind(&HomeActivity::storeCoverBuffer, this));
   }
 
+  if (singleCardMode && cardPager.canCycle() && selectorIndex == 0) {
+    // Only the selected complete card has rails; the cover and metadata are
+    // left untouched. The user can always navigate Home with front buttons.
+    const int cardW = std::max(1, tile.width - 28);
+    const int cardH = std::min(tile.height, 166);
+    const int x = tile.x + 14;
+    const int y = tile.y + tile.height - cardH - 7;
+    const int rail = external ? external->bookCarouselRailWidth() : 8;
+    renderer.fillRect(x, y + 3, rail, cardH - 6, true);
+    renderer.fillRect(x + cardW - rail, y + 3, rail, cardH - 6, true);
+  }
+
   // Build menu items dynamically
   std::vector<const char*> menuItems;
   menuItems.reserve(homeButtons.size() + 1);
@@ -647,7 +722,7 @@ void HomeActivity::render(RenderLock&&) {
            pageHeight - (metrics.headerHeight + metrics.homeTopPadding + metrics.verticalSpacing +
                          metrics.homeMenuTopOffset + metrics.buttonHintsHeight)},
       static_cast<int>(menuItems.size()),
-      metrics.homeContinueReadingInMenu ? selectorIndex : selectorIndex - recentBooks.size(),
+      metrics.homeContinueReadingInMenu ? selectorIndex : selectorIndex - recentSlots(),
       [&menuItems](int index) { return std::string(menuItems[index]); },
       [&menuIcons](int index) { return menuIcons[index]; });
 

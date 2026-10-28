@@ -375,6 +375,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // UI Theme
   uint8_t uiTheme = LYRA;
   uint8_t settingsNavigation = SETTINGS_NAV_THEME;  // Theme preference; List if theme does not specify.
+  // One full-size Continue Reading card with internal book paging (default enabled).
+  uint8_t continueReadingCarousel = 1;
   // External theme ID: <collection-id>/<theme-id>. Empty selects a built-in theme.
   char sdThemeId[96] = "";
   // Sunlight fading compensation

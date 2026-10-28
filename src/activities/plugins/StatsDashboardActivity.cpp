@@ -1,5 +1,4 @@
 #include "StatsDashboardActivity.h"
-#include "DashboardCalendar.h"
 
 #include <ArduinoJson.h>
 #include <Bitmap.h>
@@ -17,6 +16,7 @@
 #include <vector>
 
 #include "CrossPointState.h"
+#include "DashboardCalendar.h"
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
 #include "StatsImportActivity.h"
@@ -57,7 +57,7 @@ bool StatsDashboardActivity::supportsManifest(const std::string& path) {
   JsonDocument doc;
   if (deserializeJson(doc, raw, DeserializationOption::Filter(filter)) != DeserializationError::Ok) return false;
   const char* source = doc["dashboard"]["source"] | "";
-  return strcmp(source, "reading-stats.v1") == 0;
+  return strcmp(source, "reading-stats.v1") == 0 || strcmp(source, "cards.v1") == 0;
 }
 
 StatsDashboardActivity::StatsDashboardActivity(GfxRenderer& renderer, MappedInputManager& input, std::string manifest)
@@ -100,20 +100,44 @@ bool StatsDashboardActivity::loadManifest() {
   JsonDocument doc;
   if (deserializeJson(doc, raw) != DeserializationError::Ok) return false;
   const char* source = doc["dashboard"]["source"] | "";
-  if (strcmp(source, "reading-stats.v1") != 0) return false;
+  genericCardDashboard = strcmp(source, "cards.v1") == 0;
+  if (!genericCardDashboard && strcmp(source, "reading-stats.v1") != 0) return false;
   const char* header = doc["title"] | "Dashboard";
   title = header;
   const JsonArrayConst pageArray = doc["dashboard"]["pages"].as<JsonArrayConst>();
-  if (pageArray.isNull() || pageArray.size() == 0 || pageArray.size() > pages.size()) return false;
+  if (pageArray.isNull() || pageArray.size() == 0 || pageArray.size() > pages.size() ||
+      (genericCardDashboard && pageArray.size() != 1))
+    return false;
 
   for (const JsonVariantConst pageJson : pageArray) {
     const JsonArrayConst widgets = pageJson["widgets"].as<JsonArrayConst>();
-    if (widgets.isNull() || widgets.size() == 0 || widgets.size() > pages[0].widgets.size()) return false;
+    if (widgets.isNull() || widgets.size() == 0 || widgets.size() > pages[0].widgets.size() ||
+        (genericCardDashboard && widgets.size() != 1))
+      return false;
     Page& page = pages[pageCount++];
     page.title = pageJson["title"] | "Reading";
     for (const JsonVariantConst widgetJson : widgets) {
       Widget& widget = page.widgets[page.count++];
       widget.type = widgetJson["type"] | "";
+      if (genericCardDashboard && widget.type != "card_carousel") return false;
+      if (widget.type == "card_carousel") {
+        if (carouselPage != 0xFF || page.count != 1) return false;  // one shared pager
+        carouselPage = pageCount - 1;
+        const JsonArrayConst cards = widgetJson["cards"].as<JsonArrayConst>();
+        if (cards.isNull() || cards.size() == 0 || cards.size() > carouselCards.size()) return false;
+        carouselPager = {cards.size(), 0, true};
+        size_t index = 0;
+        for (const JsonVariantConst raw : cards) {
+          if (!raw.is<JsonObjectConst>()) return false;
+          const char* title = raw["title"] | "";
+          const char* subtitle = raw["subtitle"] | "";
+          const char* value = raw["value"] | "";
+          if (!*title || strlen(title) > 70 || strlen(subtitle) > 80 || strlen(value) > 48) return false;
+          const int progress = raw["progress"] | -1;
+          if (progress < -1 || progress > 100) return false;
+          carouselCards[index++] = {title, subtitle, value, progress};
+        }
+      }
       widget.field = widgetJson["field"] | "";
       widget.showValue = widgetJson["show_value"] | true;
       widget.label = widgetJson["label"] | "";
@@ -134,8 +158,9 @@ bool StatsDashboardActivity::loadManifest() {
       if (strcmp(scope, "global") != 0 && strcmp(scope, "current-book") != 0) return false;
       widget.currentBook = strcmp(scope, "current-book") == 0;
       if ((widget.type == "hero" || widget.type == "metric") && !knownMetric(widget.field)) return false;
-      if (widget.type != "metric" && widget.type != "week_bars" && widget.type != "heatmap_28" &&
-          widget.type != "book_list" && widget.type != "legacy_import" && widget.type != "hero")
+      if (widget.type != "card_carousel" && widget.type != "metric" && widget.type != "week_bars" &&
+          widget.type != "heatmap_28" && widget.type != "book_list" && widget.type != "legacy_import" &&
+          widget.type != "hero")
         return false;
     }
   }
@@ -150,7 +175,10 @@ void StatsDashboardActivity::resolveBook() {
   const std::string& path = APP_STATE.openEpubPath;
   const RecentBook* recent = nullptr;
   for (const auto& item : RECENT_BOOKS.getBooks())
-    if (item.path == path) { recent = &item; break; }
+    if (item.path == path) {
+      recent = &item;
+      break;
+    }
 
   // Prefer an exact record. If a book was renamed since importing its
   // history, bind the uniquely matching title/author to that existing record.
@@ -226,6 +254,10 @@ void StatsDashboardActivity::onEnter() {
     finish();
     return;
   }
+  if (genericCardDashboard) {
+    requestUpdate();
+    return;
+  }
   if (selectedBook) {
     for (uint8_t i = 0; i < pageCount; ++i) {
       // Choose a fully book-scoped page; a mixed Overview also contains a book hero.
@@ -273,8 +305,7 @@ void StatsDashboardActivity::refreshLegacyPreviews() {
 
 int StatsDashboardActivity::dashboardContentTop() const {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  return metrics.topPadding + metrics.headerHeight + 7 +
-         renderer.getLineHeight(UI_12_FONT_ID) + 9;
+  return metrics.topPadding + metrics.headerHeight + 7 + renderer.getLineHeight(UI_12_FONT_ID) + 9;
 }
 
 int StatsDashboardActivity::listCapacity() const {
@@ -327,16 +358,16 @@ void StatsDashboardActivity::openBooks() {
 }
 
 void StatsDashboardActivity::promptRemoveBook() {
-  if (!booksPage() || !recordedBookCount || bookCursor < visibleStart ||
-      bookCursor >= visibleStart + visibleCount) return;
+  if (!booksPage() || !recordedBookCount || bookCursor < visibleStart || bookCursor >= visibleStart + visibleCount)
+    return;
   const auto& book = visibleBooks[bookCursor - visibleStart].entry;
   const uint64_t hash = book.hash();
   if (!hash) return;
   const std::string subject = book.title[0] ? book.title : "Unnamed Book";
   auto confirmation = makeUniqueNoThrow<ConfirmationActivity>(
       renderer, mappedInput, "Remove reading history?",
-      "Remove saved statistics for " + subject + "? The book file and global totals stay intact.",
-      "Cancel", "Remove", true);
+      "Remove saved statistics for " + subject + "? The book file and global totals stay intact.", "Cancel", "Remove",
+      true);
   if (!confirmation) {
     LOG_ERR("STATS", "OOM: remove history confirmation");
     return;
@@ -352,8 +383,9 @@ void StatsDashboardActivity::promptRemoveBook() {
       bookCursor = std::min(bookCursor, recordedBookCount - 1);
     else
       bookCursor = 0;
-    visibleStart = recordedBookCount ? (bookCursor / static_cast<uint32_t>(listCapacity())) *
-                                          static_cast<uint32_t>(listCapacity()) : 0;
+    visibleStart = recordedBookCount
+                       ? (bookCursor / static_cast<uint32_t>(listCapacity())) * static_cast<uint32_t>(listCapacity())
+                       : 0;
     loadVisibleBooks();
     requestUpdate();
   });
@@ -396,6 +428,10 @@ void StatsDashboardActivity::loop() {
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    if (carouselPageActive()) {
+      cyclePluginCard(1);
+      return;
+    }
     if (booksPage()) {
       openBooks();
       return;
@@ -410,6 +446,16 @@ void StatsDashboardActivity::loop() {
     if (hasBookInfo) readingstats::media::ensureCover(bookInfo, 142);
     requestUpdate();
     return;
+  }
+  if (carouselPageActive() && carouselPager.canCycle()) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
+      cyclePluginCard(1);
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
+      cyclePluginCard(-1);
+      return;
+    }
   }
   // Side Up/Down always change dashboard pages, including from All Books
   // to Import Statistics (and from the last page back to the first).
@@ -443,14 +489,21 @@ void StatsDashboardActivity::loop() {
   if (booksPage() && mappedInput.wasScreenLongPress(x, y)) {
     const int top = dashboardContentTop();
     const int row = (y - top) / kBookRowStep;
-    if (y >= top && x >= kMargin && x < renderer.getScreenWidth() - kMargin &&
-        row >= 0 && row < visibleCount && (y - top) % kBookRowStep < kBookRowStep - 4) {
+    if (y >= top && x >= kMargin && x < renderer.getScreenWidth() - kMargin && row >= 0 && row < visibleCount &&
+        (y - top) % kBookRowStep < kBookRowStep - 4) {
       bookCursor = visibleStart + row;
       promptRemoveBook();
       return;
     }
   }
   const auto swipe = mappedInput.wasSwipe(&x, &y);
+  if (carouselPageActive() && carouselPager.canCycle() && swipe != MappedInputManager::SwipeDir::None &&
+      y >= dashboardContentTop() && x >= 44 && x < renderer.getScreenWidth() - 20 && !mappedInput.wasBackGesture()) {
+    if (swipe == MappedInputManager::SwipeDir::Left || swipe == MappedInputManager::SwipeDir::Right) {
+      cyclePluginCard(swipe == MappedInputManager::SwipeDir::Left ? 1 : -1);
+      return;
+    }
+  }
   if (booksPage() && swipe == MappedInputManager::SwipeDir::Up) {
     moveBookCursor(listCapacity());
     return;
@@ -626,9 +679,8 @@ void StatsDashboardActivity::drawBookCover(uint64_t hash, Rect rect) const {
                                    static_cast<float>(rect.height) / bitmap.getHeight());
       const int fittedW = std::max(1, static_cast<int>(bitmap.getWidth() * scale));
       const int fittedH = std::max(1, static_cast<int>(bitmap.getHeight() * scale));
-      drawn = renderer.drawBitmap(bitmap, rect.x + (rect.width - fittedW) / 2,
-                                  rect.y + (rect.height - fittedH) / 2, rect.width, rect.height,
-                                  0.0f, 0.0f, false, true);
+      drawn = renderer.drawBitmap(bitmap, rect.x + (rect.width - fittedW) / 2, rect.y + (rect.height - fittedH) / 2,
+                                  rect.width, rect.height, 0.0f, 0.0f, false, true);
     }
     file.close();
   }
@@ -662,8 +714,7 @@ void StatsDashboardActivity::drawHero(const Widget& widget, int x, int y, int w,
 
     const char* bookTitle = bookInfo.title[0] ? bookInfo.title : "Untitled";
     const int titleLine = renderer.getLineHeight(UI_12_FONT_ID);
-    for (const auto& line : renderer.wrappedText(UI_12_FONT_ID, bookTitle, textW, 2,
-                                                 EpdFontFamily::BOLD)) {
+    for (const auto& line : renderer.wrappedText(UI_12_FONT_ID, bookTitle, textW, 2, EpdFontFamily::BOLD)) {
       if (cursor + titleLine > textBottom) break;
       renderer.drawText(UI_12_FONT_ID, textX, cursor, line.c_str(), true, EpdFontFamily::BOLD);
       cursor += titleLine + 2;
@@ -685,8 +736,7 @@ void StatsDashboardActivity::drawHero(const Widget& widget, int x, int y, int w,
     const int barY = y + h - 24;
     const int barW = std::max(20, w - 2 * inset - 59);
     renderer.drawRect(barX, barY, barW, 11, true);
-    if (currentProgress > 0)
-      renderer.fillRect(barX + 2, barY + 2, (barW - 4) * currentProgress / 100, 7, true);
+    if (currentProgress > 0) renderer.fillRect(barX + 2, barY + 2, (barW - 4) * currentProgress / 100, 7, true);
     char percentage[12];
     if (currentProgress >= 0)
       snprintf(percentage, sizeof(percentage), "%d%%", currentProgress);
@@ -697,9 +747,10 @@ void StatsDashboardActivity::drawHero(const Widget& widget, int x, int y, int w,
     renderer.drawText(UI_12_FONT_ID, barX + barW + 9, textY, percentage, true, EpdFontFamily::BOLD);
   } else if (widget.showValue) {
     const std::string value = metricValue(widget);
-    renderer.drawText(NOTOSANS_14_FONT_ID, x + inset, bodyY + 5,
-                      renderer.truncatedText(NOTOSANS_14_FONT_ID, value.c_str(), w - 2 * inset,
-                                             EpdFontFamily::BOLD).c_str(), true, EpdFontFamily::BOLD);
+    renderer.drawText(
+        NOTOSANS_14_FONT_ID, x + inset, bodyY + 5,
+        renderer.truncatedText(NOTOSANS_14_FONT_ID, value.c_str(), w - 2 * inset, EpdFontFamily::BOLD).c_str(), true,
+        EpdFontFamily::BOLD);
   }
 }
 
@@ -713,33 +764,30 @@ void StatsDashboardActivity::drawMetric(const Widget& widget, const int x, const
     constexpr int minValueWidth = 64;
     const int labelHeight = renderer.getLineHeight(UI_12_FONT_ID);
     const int labelY = y + 11;
-    const std::string label = renderer.truncatedText(UI_12_FONT_ID, widget.label.c_str(),
-                                                      w - 2 * inset, EpdFontFamily::BOLD);
+    const std::string label =
+        renderer.truncatedText(UI_12_FONT_ID, widget.label.c_str(), w - 2 * inset, EpdFontFamily::BOLD);
     const int labelWidth = renderer.getTextWidth(UI_12_FONT_ID, label.c_str(), EpdFontFamily::BOLD);
-    renderer.drawText(UI_12_FONT_ID, x + (w - labelWidth) / 2, labelY,
-                      label.c_str(), true, EpdFontFamily::BOLD);
+    renderer.drawText(UI_12_FONT_ID, x + (w - labelWidth) / 2, labelY, label.c_str(), true, EpdFontFamily::BOLD);
 
     // The centered heading owns the card's top row. The icon fills as much
     // of the remaining height as possible, leaving room for a readable value.
     const int bodyTop = labelY + labelHeight + 8;
     const int bodyHeight = std::max(0, y + height - inset - bodyTop);
     const int iconSide = std::max(0, std::min({bodyHeight, w - 2 * inset - valueGap - minValueWidth,
-                                              widget.iconSize ? static_cast<int>(widget.iconSize) : 96}));
-    if (iconSide > 0)
-      drawCardIcon(widget, x + inset, bodyTop + (bodyHeight - iconSide) / 2, iconSide);
+                                               widget.iconSize ? static_cast<int>(widget.iconSize) : 96}));
+    if (iconSide > 0) drawCardIcon(widget, x + inset, bodyTop + (bodyHeight - iconSide) / 2, iconSide);
     const int valueX = x + inset + iconSide + valueGap;
     const int valueWidth = std::max(12, x + w - inset - valueX);
     const std::string value = metricValue(widget);
     const int valueFont = renderer.getTextWidth(NOTOSANS_14_FONT_ID, value.c_str(), EpdFontFamily::BOLD) <= valueWidth
-                              ? NOTOSANS_14_FONT_ID : UI_12_FONT_ID;
-    const std::string fitted = renderer.truncatedText(valueFont, value.c_str(), valueWidth,
-                                                        EpdFontFamily::BOLD);
+                              ? NOTOSANS_14_FONT_ID
+                              : UI_12_FONT_ID;
+    const std::string fitted = renderer.truncatedText(valueFont, value.c_str(), valueWidth, EpdFontFamily::BOLD);
     const int fittedWidth = renderer.getTextWidth(valueFont, fitted.c_str(), EpdFontFamily::BOLD);
     const int fittedHeight = renderer.getLineHeight(valueFont);
     if (bodyHeight >= fittedHeight)
-      renderer.drawText(valueFont, valueX + (valueWidth - fittedWidth) / 2,
-                        bodyTop + (bodyHeight - fittedHeight) / 2, fitted.c_str(),
-                        true, EpdFontFamily::BOLD);
+      renderer.drawText(valueFont, valueX + (valueWidth - fittedWidth) / 2, bodyTop + (bodyHeight - fittedHeight) / 2,
+                        fitted.c_str(), true, EpdFontFamily::BOLD);
     return;
   }
   constexpr int inset = 8;
@@ -770,8 +818,8 @@ void StatsDashboardActivity::drawWeek(const Widget& widget, const int x, const i
   if (w <= 24 || h <= 52) return;
   renderer.drawRect(x, y, w, h, true);
   const std::string label = renderer.truncatedText(UI_10_FONT_ID, widget.label.c_str(), w - 16);
-  renderer.drawText(UI_10_FONT_ID, x + (w - renderer.getTextWidth(UI_10_FONT_ID, label.c_str())) / 2,
-                    y + 7, label.c_str());
+  renderer.drawText(UI_10_FONT_ID, x + (w - renderer.getTextWidth(UI_10_FONT_ID, label.c_str())) / 2, y + 7,
+                    label.c_str());
   const auto& stats = statsFor(widget);
   const int chartTop = y + renderer.getLineHeight(UI_10_FONT_ID) + 17;
   const int baseline = y + h - renderer.getLineHeight(UI_10_FONT_ID) - 12;
@@ -805,8 +853,8 @@ void StatsDashboardActivity::drawHeatmap(const Widget& widget, const int x, cons
   if (w <= 24 || h <= 90) return;
   renderer.drawRect(x, y, w, h, true);
   const std::string label = renderer.truncatedText(UI_10_FONT_ID, widget.label.c_str(), w - 16);
-  renderer.drawText(UI_10_FONT_ID, x + (w - renderer.getTextWidth(UI_10_FONT_ID, label.c_str())) / 2,
-                    y + 7, label.c_str());
+  renderer.drawText(UI_10_FONT_ID, x + (w - renderer.getTextWidth(UI_10_FONT_ID, label.c_str())) / 2, y + 7,
+                    label.c_str());
   const auto& stats = statsFor(widget);
   constexpr int gap = 4;
   const int legendHeight = renderer.getLineHeight(UI_10_FONT_ID);
@@ -829,9 +877,9 @@ void StatsDashboardActivity::drawHeatmap(const Widget& widget, const int x, cons
     const int row = day / 7;
     const int cellX = gridX + col * (cellW + gap);
     const int cellY = gridTop + row * (cellH + gap);
-    const uint32_t seconds =
-        (firstDay && firstDay + static_cast<uint32_t>(day) <= stats.latestDay)
-            ? stats.secondsOnDay(firstDay + static_cast<uint32_t>(day)) : 0;
+    const uint32_t seconds = (firstDay && firstDay + static_cast<uint32_t>(day) <= stats.latestDay)
+                                 ? stats.secondsOnDay(firstDay + static_cast<uint32_t>(day))
+                                 : 0;
     renderer.drawRect(cellX, cellY, cellW, cellH, true);
     const int innerWidth = std::max(1, cellW - 4);
     if (seconds >= 2700)
@@ -926,23 +974,59 @@ void StatsDashboardActivity::drawBookList(int top, int bottom) const {
     if (row.displayAuthor[0] && cursor + renderer.getLineHeight(UI_10_FONT_ID) <= y + h - 19)
       renderer.drawText(UI_10_FONT_ID, textX, cursor,
                         renderer.truncatedText(UI_10_FONT_ID, row.displayAuthor, textW).c_str());
-    const std::string details = duration(row.seconds) + " read  |  " +
-                                (row.progress >= 0 ? std::to_string(row.progress) + "%" : "--");
+    const std::string details =
+        duration(row.seconds) + " read  |  " + (row.progress >= 0 ? std::to_string(row.progress) + "%" : "--");
     renderer.drawText(UI_12_FONT_ID, textX, y + h - renderer.getLineHeight(UI_12_FONT_ID) - 6,
                       renderer.truncatedText(UI_12_FONT_ID, details.c_str(), textW).c_str());
   }
   char count[56];
-  snprintf(count, sizeof(count), "%lu-%lu of %lu books",
-           static_cast<unsigned long>(visibleStart + 1),
-           static_cast<unsigned long>(visibleStart + visibleCount),
-           static_cast<unsigned long>(recordedBookCount));
+  snprintf(count, sizeof(count), "%lu-%lu of %lu books", static_cast<unsigned long>(visibleStart + 1),
+           static_cast<unsigned long>(visibleStart + visibleCount), static_cast<unsigned long>(recordedBookCount));
   const int footer = top + visibleCount * kBookRowStep + 3;
   const int noteHeight = renderer.getLineHeight(UI_10_FONT_ID);
-  if (footer + noteHeight < bottom)
-    renderer.drawText(UI_10_FONT_ID, kMargin, footer, count);
+  if (footer + noteHeight < bottom) renderer.drawText(UI_10_FONT_ID, kMargin, footer, count);
   if (footer + noteHeight * 2 + 4 < bottom)
-    renderer.drawText(UI_10_FONT_ID, kMargin, footer + noteHeight + 4,
-                      "Hold Open to remove selected book history");
+    renderer.drawText(UI_10_FONT_ID, kMargin, footer + noteHeight + 4, "Hold Open to remove selected book history");
+}
+
+void StatsDashboardActivity::cyclePluginCard(const int direction) {
+  if (!carouselPageActive() || !carouselPager.canCycle()) return;
+  carouselPager.move(direction);
+  requestUpdate();
+}
+
+void StatsDashboardActivity::drawPluginCard(const Widget& widget, const int x, const int y, const int w,
+                                            const int h) const {
+  if (!carouselPageActive() || h < 65) return;
+  const auto& item = carouselCards[carouselPager.current()];
+  drawCardBorder(widget, x, y, w, h);
+  const int left = x + 17, maxText = std::max(10, w - 34);
+  renderer.drawText(UI_12_FONT_ID, left, y + 20,
+                    renderer.truncatedText(UI_12_FONT_ID, item.title.c_str(), maxText, EpdFontFamily::BOLD).c_str(),
+                    true, EpdFontFamily::BOLD);
+  if (!item.subtitle.empty())
+    renderer.drawText(UI_10_FONT_ID, left, y + 54,
+                      renderer.truncatedText(UI_10_FONT_ID, item.subtitle.c_str(), maxText).c_str(), true);
+  if (!item.value.empty())
+    renderer.drawText(UI_10_FONT_ID, left, y + 88,
+                      renderer.truncatedText(UI_10_FONT_ID, item.value.c_str(), maxText).c_str(), true);
+  if (item.progress >= 0) {
+    const int barW = std::max(20, w - 104), barY = y + h - 38;
+    renderer.drawRect(left, barY, barW, 12, true);
+    if (item.progress > 0) renderer.fillRect(left + 2, barY + 2, (barW - 4) * item.progress / 100, 8, true);
+    char percent[8];
+    snprintf(percent, sizeof(percent), "%d%%", item.progress);
+    renderer.drawText(UI_10_FONT_ID, left + barW + 8, barY - 4, percent);
+  }
+  if (carouselPager.canCycle()) {
+    // Thick focus rails frame ONE complete card; never partial neighbors.
+    renderer.fillRect(x + 2, y + 4, 7, h - 8, true);
+    renderer.fillRect(x + w - 9, y + 4, 7, h - 8, true);
+    char count[24];
+    snprintf(count, sizeof(count), "%u / %u", static_cast<unsigned>(carouselPager.current() + 1),
+             static_cast<unsigned>(carouselPager.size));
+    renderer.drawText(UI_10_FONT_ID, x + w - 76, y + h - 25, count);
+  }
 }
 
 void StatsDashboardActivity::drawWidget(const Widget& widget, const int x, const int y, const int w,
@@ -951,6 +1035,8 @@ void StatsDashboardActivity::drawWidget(const Widget& widget, const int x, const
     drawMetric(widget, x, y, w, height);
   else if (widget.type == "hero")
     drawHero(widget, x, y, w, height);
+  else if (widget.type == "card_carousel")
+    drawPluginCard(widget, x, y, w, height);
   else if (widget.type == "week_bars")
     drawWeek(widget, x, y, w, height);
   else if (widget.type == "heatmap_28")
@@ -966,19 +1052,17 @@ void StatsDashboardActivity::drawDashboardPage(bool interactive) {
   // Sleep is a noninteractive wallpaper: no navigation header, Back control,
   // or bottom button-hint bar. Use their space for the actual statistics.
   const int bottom = renderer.getScreenHeight() - (interactive ? metrics.buttonHintsHeight : 0) - 6;
-  if (interactive)
-    GUI.drawHeader(renderer, Rect{0, metrics.topPadding, width, metrics.headerHeight}, title.c_str());
+  if (interactive) GUI.drawHeader(renderer, Rect{0, metrics.topPadding, width, metrics.headerHeight}, title.c_str());
   if (!pageCount) return;
   const Page& page = pages[activePage];
   // Keep the centered page title in both modes; sleep moves it up into the
   // header-free area, while the interactive plugin keeps its normal chrome.
   const int titleY = metrics.topPadding + (interactive ? metrics.headerHeight : 0) + 7;
-  const std::string pageTitle = renderer.truncatedText(UI_12_FONT_ID, page.title.c_str(),
-                                                       width - kMargin * 2, EpdFontFamily::BOLD);
+  const std::string pageTitle =
+      renderer.truncatedText(UI_12_FONT_ID, page.title.c_str(), width - kMargin * 2, EpdFontFamily::BOLD);
   renderer.drawText(UI_12_FONT_ID,
-                    (width - renderer.getTextWidth(UI_12_FONT_ID, pageTitle.c_str(),
-                                                   EpdFontFamily::BOLD)) / 2,
-                    titleY, pageTitle.c_str(), true, EpdFontFamily::BOLD);
+                    (width - renderer.getTextWidth(UI_12_FONT_ID, pageTitle.c_str(), EpdFontFamily::BOLD)) / 2, titleY,
+                    pageTitle.c_str(), true, EpdFontFamily::BOLD);
   int y = titleY + renderer.getLineHeight(UI_12_FONT_ID) + 9;
   if (booksPage()) {
     drawBookList(y, bottom);
@@ -996,7 +1080,7 @@ void StatsDashboardActivity::drawDashboardPage(bool interactive) {
   for (uint8_t i = 0; i < page.count; ++i)
     if (page.widgets[i].type == "hero") hasHero = true;
   if (isBookMetrics && !hasHero) y = drawBookIdentity(y, width);
-  if (!statsAvailable && !isBookMetrics && !importPage()) {
+  if (!statsAvailable && !isBookMetrics && !importPage() && !genericCardDashboard) {
     renderer.drawText(UI_10_FONT_ID, kMargin, y, "No saved reading sessions");
     y += renderer.getLineHeight(UI_10_FONT_ID) + 5;
   }
@@ -1013,8 +1097,7 @@ void StatsDashboardActivity::drawDashboardPage(bool interactive) {
   const int otherRows = std::max(0, widgetRows - (hasHero ? 1 : 0));
   const int heroHeight = hasHero ? std::min(kBookHeroHeight, budget) : 0;
   const int otherBudget = std::max(0, budget - heroHeight);
-  const int slotHeight = std::max(0, std::min(widgetRows >= 3 ? 150 : 180,
-                                            otherBudget / std::max(1, otherRows)));
+  const int slotHeight = std::max(0, std::min(widgetRows >= 3 ? 150 : 180, otherBudget / std::max(1, otherRows)));
   const bool chartAndMetric = page.count == 2 && page.widgets[0].type != "metric" && page.widgets[1].type == "metric";
   const int contentWidth = width - kMargin * 2;
   const int halfWidth = (contentWidth - kGap) / 2;
@@ -1030,17 +1113,18 @@ void StatsDashboardActivity::drawDashboardPage(bool interactive) {
       }
       y += h + kGap;
     } else {
-      const int desired = widget.type == "hero"             ? heroHeight
-                          : chartAndMetric                   ? std::min(260, std::max(0, available - 150 - kGap))
+      const int desired = widget.type == "card_carousel"   ? 195
+                          : widget.type == "hero"          ? heroHeight
+                          : chartAndMetric                 ? std::min(260, std::max(0, available - 150 - kGap))
                           : widget.type == "legacy_import" ? 390
-                          : hasHero                         ? slotHeight
+                          : hasHero                        ? slotHeight
                                                            : 160;
       const int h = std::max(0, std::min(desired, bottom - y));
       drawWidget(widget, kMargin, y, contentWidth, h);
       y += h + kGap;
     }
   }
-  const char* confirmLabel = (booksPage() || importPage()) ? "Open" : "Refresh";
+  const char* confirmLabel = carouselPageActive() ? "Next Card" : (booksPage() || importPage()) ? "Open" : "Refresh";
   const auto hints = mappedInput.mapLabels("Back", confirmLabel, "Previous", "Next");
   if (interactive) GUI.drawButtonHints(renderer, hints.btn1, hints.btn2, hints.btn3, hints.btn4);
 }

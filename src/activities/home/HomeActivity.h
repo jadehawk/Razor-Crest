@@ -8,6 +8,7 @@
 #include "components/CoverGridHomeUi.h"
 #include "util/ButtonNavigator.h"
 #include "util/HomeMenuRegistry.h"
+#include "util/SingleCardPager.h"
 
 struct Rect;
 
@@ -24,6 +25,12 @@ class HomeActivity final : public Activity {
   // installed, otherwise OPDS. The index converters gate on its presence.
   bool hasLibrarySlot() const { return hasPlugins || hasOpdsServers; }
   bool hasContinueReading = false;
+  bool singleCardMode = false;
+  singlecard::Pager cardPager{};
+  int recentSlots() const {
+    return singleCardMode ? (recentBooks.empty() ? 0 : 1) : static_cast<int>(recentBooks.size());
+  }
+  void cycleCard(int direction);
   bool coverRendered = false;      // Track if cover has been rendered once
   bool coverBufferStored = false;  // Track if cover buffer is stored
   uint8_t* coverBuffer = nullptr;  // HomeActivity's own buffer for cover image

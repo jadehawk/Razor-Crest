@@ -4,11 +4,12 @@
 #include <cstdint>
 #include <string>
 
-#include "activities/Activity.h"
 #include "DashboardCardAssets.h"
+#include "activities/Activity.h"
 #include "util/ReadingStatsBookIndex.h"
 #include "util/ReadingStatsData.h"
 #include "util/ReadingStatsLegacyPreview.h"
+#include "util/SingleCardPager.h"
 
 struct Rect;  // Defined by the active UI theme; only referenced in this header.
 
@@ -58,6 +59,14 @@ class StatsDashboardActivity final : public Activity {
   std::array<Page, 6> pages;
   uint8_t pageCount = 0;
   uint8_t activePage = 0;
+  bool genericCardDashboard = false;
+  uint8_t carouselPage = 0xFF;
+  struct CarouselCard {
+    std::string title, subtitle, value;
+    int progress = -1;
+  };
+  std::array<CarouselCard, 8> carouselCards{};
+  singlecard::Pager carouselPager{};
   readingstats::Snapshot stats;
   readingstats::Snapshot bookStats;
   readingstats::BookEntry bookInfo{};
@@ -94,6 +103,9 @@ class StatsDashboardActivity final : public Activity {
   void drawCardIcon(const Widget& widget, int x, int y, int size) const;
   void drawBookCover(uint64_t hash, Rect rect) const;
   void drawHero(const Widget& widget, int x, int y, int width, int height) const;
+  void drawPluginCard(const Widget& widget, int x, int y, int width, int height) const;
+  bool carouselPageActive() const { return activePage == carouselPage && carouselPager.size > 0; }
+  void cyclePluginCard(int direction);
   void refresh();
   void resolveBook();
   void loadSeries();
