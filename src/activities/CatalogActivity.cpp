@@ -9,6 +9,7 @@
 
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
+#include "activities/RenderLock.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/CatalogScreens.h"
@@ -180,14 +181,18 @@ HttpDownloader::DownloadError CatalogActivity::downloadFile(const std::string& u
   lastRenderedPercent = -1;
   lastProgressUpdateMs = 0;
   downloadFirstChunkMs = 0;
-  // Rebuildable SD-font caches can hold tens of KB the TLS session needs for
-  // a multi-MB file; release them up front (they repopulate on demand) and
-  // refuse to start below the floor. A doomed transfer otherwise dies
-  // mid-stream with MEMORY_E, or abort()s on an interior allocation.
-  if (auto* fcm = renderer.getFontCacheManager()) fcm->releaseSdFontCaches();
-  if (ESP.getFreeHeap() < HttpDownloader::MIN_TLS_FREE_HEAP ||
-      ESP.getMaxAllocHeap() < HttpDownloader::MIN_TLS_MAX_ALLOC) {
-    LOG_ERR("CAT", "Low heap for download (%u free, %u max block)", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+  // Progress renders may still be using the SD-font caches between bundle
+  // files. Reclaim them only while holding the same lock as the render task.
+  {
+    RenderLock lock;
+    if (auto* fcm = renderer.getFontCacheManager()) fcm->releaseSdFontCaches();
+  }
+  const uint32_t freeHeap = ESP.getFreeHeap();
+  const uint32_t maxBlock = ESP.getMaxAllocHeap();
+  // A complete TLS handshake and full-record buffer must both fit before
+  // beginning a transfer, even after a catalog/details page fragmented RAM.
+  if (freeHeap < HttpDownloader::MIN_TLS_FREE_HEAP || maxBlock < HttpDownloader::MIN_TLS_MAX_ALLOC) {
+    LOG_ERR("CAT", "Low heap for download (%u free, %u max block)", freeHeap, maxBlock);
     return HttpDownloader::HTTP_ERROR;
   }
   if (postBody) {
