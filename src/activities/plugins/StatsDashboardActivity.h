@@ -103,6 +103,7 @@ class StatsDashboardActivity final : public Activity {
   void drawCardIcon(const Widget& widget, int x, int y, int size) const;
   void drawBookCover(uint64_t hash, Rect rect) const;
   void drawHero(const Widget& widget, int x, int y, int width, int height) const;
+  void drawReadingSnapshot(const Widget& widget, int x, int y, int width, int height) const;
   void drawPluginCard(const Widget& widget, int x, int y, int width, int height) const;
   bool carouselPageActive() const { return activePage == carouselPage && carouselPager.size > 0; }
   void cyclePluginCard(int direction);

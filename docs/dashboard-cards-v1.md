@@ -17,10 +17,16 @@ backward-compatibility branches for development builds.
 - `metric`: native fields `total_seconds`, `sessions`,
   `qualified_turns`, `seconds_per_turn`, `latest_day_seconds`,
   `last_7_seconds`, and `active_days`.
-- `hero`: one shared 195-pixel target height on both overall and current-book
-  pages; no redundant card heading. A larger real cover is at left, with title,
-  author and series/index aligned at right. The progress bar and vertically
-  centered percentage appear below the cover/text columns.
+- `reading_snapshot`: 195-pixel Overall Statistics featured card, independent
+  of any currently open book. Displays local calendar-month reading time,
+  consecutive-day streak (kept alive by yesterday's reading), active days
+  this month, and tracked book count. Uses the existing 366-day global history
+  and stored book index, with no persisted format changes. When the device
+  date is unknown, date-derived values show -- but the book count remains.
+- `hero`: 195-pixel Current Book featured card. A larger real cover is at left,
+  with title, author and series/index aligned at right. The progress bar and
+  vertically centered percentage appear below the cover/text columns. When
+  there is no active reader path, use the most recently opened book if known.
 - `week_bars`: latest seven recorded day buckets.
 - `heatmap_28`: four complete Monday–Sunday rows of activity.
 - `book_list`: directly renders a compact, vertically paginated list of
@@ -50,8 +56,9 @@ streaming converters to stay within X3 memory limits. Older captured
 previews remain available if the source book is missing; removing the book's
 history cleans both size-specific caches and any earlier saved preview.
 
-Book metadata fields in `scope: "current-book"` refer to the selected book or
-last opened book. The All Books row uses the recorded book-index path hash, not
+Book metadata fields in `scope: "current-book"` refer to the selected book,
+active reader path or most recently opened book. The All Books row uses the
+recorded book-index path hash, not
 a title, as its identity. Book covers (`.bmp`) and progress (`.pct`) are saved
 under `/.crosspoint/reading-stats/covers/` by the firmware when accessed and
 survive removal of the source EPUB. For moved/renamed books, a unique recent
@@ -84,5 +91,6 @@ Neither the cover renderer nor the progress provider requires a network
 connection. Each page now shows one centered page title beneath the persistent
 Reading Statistics header, with no numeric `(n/6)` counter. Page one is
 Overall Statistics (global totals); page two is Current Book (book totals).
-The book hero card itself has no heading on either page. Small-device geometry
-and controls must be tested on X3 before validating X4Pro.
+The book hero card has no redundant heading; the new Reading Snapshot is
+a separate type with its own monthly label. Small-device geometry and controls
+must be tested on X3 before validating X4Pro.

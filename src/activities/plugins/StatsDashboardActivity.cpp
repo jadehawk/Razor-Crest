@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <utility>
 #include <vector>
 
@@ -24,6 +25,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/ReadingStatsBookMedia.h"
+#include "util/ReadingStatsSnapshot.h"
 #include "util/ReadingStatsStore.h"
 
 namespace {
@@ -158,9 +160,10 @@ bool StatsDashboardActivity::loadManifest() {
       if (strcmp(scope, "global") != 0 && strcmp(scope, "current-book") != 0) return false;
       widget.currentBook = strcmp(scope, "current-book") == 0;
       if ((widget.type == "hero" || widget.type == "metric") && !knownMetric(widget.field)) return false;
+      if (widget.type == "reading_snapshot" && widget.currentBook) return false;
       if (widget.type != "card_carousel" && widget.type != "metric" && widget.type != "week_bars" &&
           widget.type != "heatmap_28" && widget.type != "book_list" && widget.type != "legacy_import" &&
-          widget.type != "hero")
+          widget.type != "hero" && widget.type != "reading_snapshot")
         return false;
     }
   }
@@ -171,10 +174,13 @@ void StatsDashboardActivity::resolveBook() {
   if (selectedBook) return;
   hasBookInfo = false;
   bookInfo = {};
-  if (APP_STATE.openEpubPath.empty()) return;
-  const std::string& path = APP_STATE.openEpubPath;
+  // Prefer the active reader path, then the persisted most-recent book.
+  const auto& recents = RECENT_BOOKS.getBooks();
+  const std::string& path =
+      APP_STATE.openEpubPath.empty() && !recents.empty() ? recents.front().path : APP_STATE.openEpubPath;
+  if (path.empty()) return;
   const RecentBook* recent = nullptr;
-  for (const auto& item : RECENT_BOOKS.getBooks())
+  for (const auto& item : recents)
     if (item.path == path) {
       recent = &item;
       break;
@@ -754,6 +760,53 @@ void StatsDashboardActivity::drawHero(const Widget& widget, int x, int y, int w,
   }
 }
 
+void StatsDashboardActivity::drawReadingSnapshot(const Widget& widget, const int x, const int y, const int w,
+                                                 const int h) const {
+  if (w <= 0 || h < 100) return;
+  drawCardBorder(widget, x, y, w, h);
+
+  // Monthly totals are relative to the device's local calendar, not the last
+  // recorded reading day; the calendar can advance without new sessions.
+  const time_t now = time(nullptr);
+  struct tm local{};
+  uint32_t today = 0, firstDay = 0;
+  if (now > 0 && localtime_r(&now, &local) && local.tm_year + 1900 >= 2020) {
+    const int year = local.tm_year + 1900;
+    const unsigned month = static_cast<unsigned>(local.tm_mon + 1);
+    today = readingstats::snapshot::civilDay(year, month, static_cast<unsigned>(local.tm_mday));
+    firstDay = readingstats::snapshot::civilDay(year, month, 1);
+  }
+  const auto summary = readingstats::snapshot::summarize(stats, today, firstDay);
+  const auto center = [&](const int font, const std::string& value, const int centerX, const int top,
+                          const int maxWidth, const EpdFontFamily::Style style) {
+    const std::string fitted = renderer.truncatedText(font, value.c_str(), maxWidth, style);
+    renderer.drawText(font, centerX - renderer.getTextWidth(font, fitted.c_str(), style) / 2, top, fitted.c_str(), true,
+                      style);
+  };
+  center(UI_12_FONT_ID, "THIS MONTH", x + w / 2, y + 12, w - 20, EpdFontFamily::BOLD);
+  center(NOTOSANS_18_FONT_ID, summary.dateKnown ? duration(summary.monthSeconds) : "--", x + w / 2,
+         y + 19 + renderer.getLineHeight(UI_12_FONT_ID), w - 20, EpdFontFamily::BOLD);
+  if (!summary.dateKnown)
+    center(UI_10_FONT_ID, "Set device date to see monthly activity", x + w / 2, y + h / 2 - 14, w - 20,
+           EpdFontFamily::REGULAR);
+
+  const int dividerY = y + h / 2 + 10;
+  renderer.drawLine(x + 12, dividerY, x + w - 12, dividerY);
+  const int columnWidth = (w - 24) / 3;
+  const int valueY = dividerY + 13;
+  const int labelY = valueY + renderer.getLineHeight(NOTOSANS_14_FONT_ID) + 5;
+  const std::string values[] = {summary.dateKnown ? std::to_string(summary.streak) : "--",
+                                summary.dateKnown ? std::to_string(summary.activeDays) : "--",
+                                std::to_string(recordedBookCount)};
+  const char* labels[] = {"Day Streak", "Active Days", "Books"};
+  const int labelWidth = columnWidth - 4;
+  for (int i = 0; i < 3; ++i) {
+    const int cx = x + 12 + i * columnWidth + columnWidth / 2;
+    center(NOTOSANS_14_FONT_ID, values[i], cx, valueY, labelWidth, EpdFontFamily::BOLD);
+    center(UI_10_FONT_ID, labels[i], cx, labelY, labelWidth, EpdFontFamily::REGULAR);
+  }
+}
+
 void StatsDashboardActivity::drawMetric(const Widget& widget, const int x, const int y, const int w,
                                         const int height) const {
   if (height <= 0 || w <= 0) return;
@@ -1035,6 +1088,8 @@ void StatsDashboardActivity::drawWidget(const Widget& widget, const int x, const
     drawMetric(widget, x, y, w, height);
   else if (widget.type == "hero")
     drawHero(widget, x, y, w, height);
+  else if (widget.type == "reading_snapshot")
+    drawReadingSnapshot(widget, x, y, w, height);
   else if (widget.type == "card_carousel")
     drawPluginCard(widget, x, y, w, height);
   else if (widget.type == "week_bars")
@@ -1076,10 +1131,10 @@ void StatsDashboardActivity::drawDashboardPage(bool interactive) {
       if (page.widgets[i].currentBook) return true;
     return false;
   }();
-  bool hasHero = false;
+  bool hasFeaturedCard = false;
   for (uint8_t i = 0; i < page.count; ++i)
-    if (page.widgets[i].type == "hero") hasHero = true;
-  if (isBookMetrics && !hasHero) y = drawBookIdentity(y, width);
+    if (page.widgets[i].type == "hero" || page.widgets[i].type == "reading_snapshot") hasFeaturedCard = true;
+  if (isBookMetrics && !hasFeaturedCard) y = drawBookIdentity(y, width);
   if (!statsAvailable && !isBookMetrics && !importPage() && !genericCardDashboard) {
     renderer.drawText(UI_10_FONT_ID, kMargin, y, "No saved reading sessions");
     y += renderer.getLineHeight(UI_10_FONT_ID) + 5;
@@ -1091,12 +1146,12 @@ void StatsDashboardActivity::drawDashboardPage(bool interactive) {
   }
   const int available = std::max(0, bottom - y);
   const int budget = std::max(0, available - kGap * std::max(0, widgetRows - 1));
-  // Both book heroes use the same height. On dense pages, the metric/chart
-  // rows share what remains instead of making the overview hero shorter.
-  constexpr int kBookHeroHeight = 195;
-  const int otherRows = std::max(0, widgetRows - (hasHero ? 1 : 0));
-  const int heroHeight = hasHero ? std::min(kBookHeroHeight, budget) : 0;
-  const int otherBudget = std::max(0, budget - heroHeight);
+  // Share a 195-pixel featured card between the overview and book detail,
+  // leaving the remaining height for metrics and the seven-day chart.
+  constexpr int kFeaturedHeight = 195;
+  const int otherRows = std::max(0, widgetRows - (hasFeaturedCard ? 1 : 0));
+  const int featuredHeight = hasFeaturedCard ? std::min(kFeaturedHeight, budget) : 0;
+  const int otherBudget = std::max(0, budget - featuredHeight);
   const int slotHeight = std::max(0, std::min(widgetRows >= 3 ? 150 : 180, otherBudget / std::max(1, otherRows)));
   const bool chartAndMetric = page.count == 2 && page.widgets[0].type != "metric" && page.widgets[1].type == "metric";
   const int contentWidth = width - kMargin * 2;
@@ -1113,11 +1168,11 @@ void StatsDashboardActivity::drawDashboardPage(bool interactive) {
       }
       y += h + kGap;
     } else {
-      const int desired = widget.type == "card_carousel"   ? 195
-                          : widget.type == "hero"          ? heroHeight
+      const int desired = widget.type == "card_carousel"                               ? 195
+                          : widget.type == "hero" || widget.type == "reading_snapshot" ? featuredHeight
                           : chartAndMetric                 ? std::min(260, std::max(0, available - 150 - kGap))
                           : widget.type == "legacy_import" ? 390
-                          : hasHero                        ? slotHeight
+                          : hasFeaturedCard                ? slotHeight
                                                            : 160;
       const int h = std::max(0, std::min(desired, bottom - y));
       drawWidget(widget, kMargin, y, contentWidth, h);
@@ -1139,12 +1194,19 @@ bool StatsDashboardActivity::renderSleepOverview() {
   // Reuse the exact page-one widget renderer, but do not draw input hints.
   if (!loadManifest()) return false;
   activePage = 0;
-  resolveBook();
-  loadSeries();
+  // Avoid EPUB metadata and cover work on a global-only sleep overview,
+  // especially on non-PSRAM devices.
+  bool needsBook = false;
+  for (uint8_t i = 0; i < pages[0].count; ++i)
+    if (pages[0].widgets[i].currentBook) needsBook = true;
+  if (needsBook) {
+    resolveBook();
+    loadSeries();
+    currentProgress = hasBookInfo ? readingstats::media::progress(bookInfo) : -1;
+    currentAuthor = hasBookInfo ? readingstats::media::author(bookInfo) : std::string();
+    if (hasBookInfo) readingstats::media::ensureCover(bookInfo, 142);
+  }
   refresh();
-  currentProgress = hasBookInfo ? readingstats::media::progress(bookInfo) : -1;
-  currentAuthor = hasBookInfo ? readingstats::media::author(bookInfo) : std::string();
-  if (hasBookInfo) readingstats::media::ensureCover(bookInfo, 142);
   drawDashboardPage(false);
   return true;
 }
