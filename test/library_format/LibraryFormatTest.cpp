@@ -30,7 +30,7 @@ TEST(LibraryFormat, StructSizesAreFrozen) {
   EXPECT_EQ(sizeof(ClixHeader), 64u);
   EXPECT_EQ(sizeof(ClixRecord), 128u);
   EXPECT_EQ(sizeof(ClixFolderHeader), 1u);
-  EXPECT_EQ(CLIX_FORMAT_VERSION, 3u);
+  EXPECT_EQ(CLIX_FORMAT_VERSION, 4u);
 }
 
 TEST(LibraryFormat, RecordsTileSectorsExactly) {
@@ -109,9 +109,9 @@ TEST(LibraryFormatValidation, RejectsBadMagic) {
 TEST(LibraryFormatValidation, RejectsUnknownVersionsSeparately) {
   ClixHeader h = makeHeader(60, 116);
   h.formatVersion = library::CLIX_FORMAT_VERSION + 1;
-  // The v2 index has no series field: reject it even during reconciliation.
+  // Previous v3 series fields used name-first ordering: rebuild for index-first presentation.
   ClixHeader old = makeHeader(60, 116);
-  old.formatVersion = 2;
+  old.formatVersion = 3;  // previous series schema stored name then index
   EXPECT_EQ(validateHeader(old, old.selfSize), ClixValidity::UnknownFormatVersion);
   EXPECT_EQ(validateHeaderStructure(old, old.selfSize), ClixValidity::UnknownFormatVersion);
   EXPECT_EQ(validateHeader(h, h.selfSize), ClixValidity::UnknownFormatVersion);

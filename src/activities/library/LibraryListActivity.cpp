@@ -6,6 +6,7 @@
 #include <HalStorage.h>
 #include <I18n.h>
 #include <LibraryBuilder.h>
+#include <LibrarySeriesFormat.h>
 #include <LibraryText.h>
 #include <Logging.h>
 #include <Memory.h>
@@ -720,15 +721,8 @@ bool LibraryListActivity::rowTextFor(const int entry, std::string& title, std::s
     author = book.author;
     if (fileName) *fileName = book.path;
     if (series) {
-      *series = book.series;
-      if (!series->empty() && book.seriesIndex) {
-        char suffix[24];
-        snprintf(suffix, sizeof(suffix), " #%.2f", static_cast<double>(*book.seriesIndex));
-        std::string indexText(suffix);
-        while (!indexText.empty() && indexText.back() == '0') indexText.pop_back();
-        if (!indexText.empty() && indexText.back() == '.') indexText.pop_back();
-        *series += indexText;
-      }
+      *series = library::formatSeriesLabel(book.series, book.seriesIndex);
+
       if (index.isOpen() && entry < pinnedTotal && pinnedAscRows[entry] != 0xFFFF) {
         const uint16_t row = static_cast<uint16_t>(index.bookCount() - 1 - pinnedAscRows[entry]);
         const uint16_t ordinal = index.ordinalForRow(library::SortOrder::RecentDesc, row);
@@ -923,13 +917,10 @@ void LibraryListActivity::buildRows(UiScreen& screen) {
           formatInitialHeading(initial, heading);
         item.sectionHeading = heading.c_str();
       }
-      if (!series.empty() || (!authorGrouped && !author.empty())) {
+      if (!series.empty() || !author.empty()) {
         std::string& sub = winSubtitles[static_cast<size_t>(rows)];
-        sub = authorGrouped ? std::string{} : author;
-        if (!series.empty()) {
-          if (!sub.empty()) sub += '\n';
-          sub += series;
-        }
+        sub = library::formatBookSubtitle(author, series);
+
         item.subtitle = sub.c_str();
       }
     }

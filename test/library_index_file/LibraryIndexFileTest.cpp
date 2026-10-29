@@ -139,8 +139,8 @@ TEST(LibraryIndexFile, ReadsPathHashAndEveryPublicBlobField) {
   header.bookCount = 1;
   const uint8_t folder[] = {6, '/', 'b', 'o', 'o', 'k', 's'};
   constexpr uint64_t PATH_HASH = 0x0123456789ABCDEFULL;
-  const auto blob = makeBlob(PATH_HASH, {'x', 1,   'a', 1, 't', 8,   'O', 'r', 'i', 'g', 'i',
-                                         'n', 'a', 'l', 7, 'S', 'a', 'g', 'a', ' ', '#', '4'});
+  const auto blob = makeBlob(PATH_HASH, {'x', 1,   'a', 1,   't', 8,   'O', 'r', 'i', 'g', 'i', 'n',
+                                         'a', 'l', 9,   '#', '4', ' ', '-', ' ', 'S', 'a', 'g', 'a'});
   header.folderCount = 1;
   library::layoutSections(header, sizeof(folder), blob.size());
   std::vector<uint8_t> bytes(header.selfSize, 0);
@@ -169,7 +169,7 @@ TEST(LibraryIndexFile, ReadsPathHashAndEveryPublicBlobField) {
   EXPECT_EQ(author, "Original");
   std::string series;
   ASSERT_TRUE(index.readSeries(record, series));
-  EXPECT_EQ(series, "Saga #4");
+  EXPECT_EQ(series, "#4 - Saga");
   std::string path;
   ASSERT_TRUE(index.readPath(record, path));
   EXPECT_EQ(path, "/books/x");

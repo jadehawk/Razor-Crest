@@ -12,6 +12,7 @@
 #include <Utf8.h>
 
 #include <algorithm>
+#include <cstring>
 
 #include "../Memory/Memory.h"
 #include "FontCacheManager.h"
@@ -703,6 +704,28 @@ void GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
                            const int8_t tracking) const {
   // cannot draw a NULL / empty string
   if (text == nullptr || *text == '\0') {
+    return;
+  }
+
+  // A multi-line FreeInkUI subtitle can take the renderer's single-line
+  // fast path. Split it into actual glyph lines instead of rendering the
+  // embedded newline as an unsupported glyph. The target passed a y centered
+  // for one line in the measured (multi-line) subtitle rectangle.
+  if (std::strchr(text, '\n')) {
+    int lineCount = 1;
+    for (const char* p = text; *p; ++p)
+      if (*p == '\n') ++lineCount;
+    const int lineHeight = getLineHeight(fontId);
+    int lineY = y - (lineCount - 1) * lineHeight / 2;
+    const char* begin = text;
+    while (true) {
+      const char* end = std::strchr(begin, '\n');
+      const std::string line(begin, end ? static_cast<size_t>(end - begin) : std::strlen(begin));
+      if (!line.empty()) drawText(fontId, x, lineY, line.c_str(), black, style, baseDir, tracking);
+      if (!end) break;
+      lineY += lineHeight;
+      begin = end + 1;
+    }
     return;
   }
 
@@ -1920,6 +1943,20 @@ std::vector<std::string> GfxRenderer::wrappedText(const int fontId, const char* 
   std::vector<std::string> lines;
 
   if (!text || maxWidth <= 0 || maxLines <= 0) return lines;
+
+  // Preserve explicit subtitle breaks: an overlong author should be
+  // truncated on its own line, not consume the series/index line.
+  if (std::strchr(text, '\n')) {
+    const char* begin = text;
+    while (static_cast<int>(lines.size()) < maxLines) {
+      const char* end = std::strchr(begin, '\n');
+      const std::string line(begin, end ? static_cast<size_t>(end - begin) : std::strlen(begin));
+      lines.push_back(truncatedText(fontId, line.c_str(), maxWidth, style));
+      if (!end) break;
+      begin = end + 1;
+    }
+    return lines;
+  }
 
   std::string remaining = text;
   std::string currentLine;

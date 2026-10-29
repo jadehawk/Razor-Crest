@@ -4,14 +4,14 @@ The Library keeps its existing Title, Author and Recent sort tabs. With
 **Read book metadata** enabled, each visible Library row now shows:
 
 - Book title (first line)
-- Author (second line, except where the Author tab already groups by author)
-- Series name and the optional series index (next subtitle line)
+- Author (second line)
+- **#Index - Series name** (third line when an index is available; otherwise just the series name)
 
-Example: `Saga of the Forgotten Warrior #4`. A book without series metadata
+Example: `#4 - Saga of the Forgotten Warrior`. A book without series metadata
 has no extra line or blank placeholder. Index values are formatted to at most
 two decimal places, dropping insignificant trailing zeros.
 
-The library index schema is now **version 3**. Firmware rejects its old
+The library index schema is now **version 4**. The firmware renderer now respects explicit subtitle line breaks even for short strings, so author and series cannot run together. Firmware rejects its old
 on-disk index and performs the normal one-time Library index rebuild; it
 extracts and stores series information alongside title and author. Subsequent
 Library visits read only the visible rows from the index. No EPUB files are

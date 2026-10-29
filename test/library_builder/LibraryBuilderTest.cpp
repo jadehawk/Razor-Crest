@@ -143,7 +143,7 @@ TEST_F(LibraryBuilderTest, PersistsSeriesAndIndexWithoutOpeningBooksForLibraryRo
     if (path != "/a.epub") continue;
     std::string series;
     ASSERT_TRUE(index.readSeries(record, series));
-    EXPECT_EQ(series, "Saga of the Forgotten Warrior #4");
+    EXPECT_EQ(series, "#4 - Saga of the Forgotten Warrior");
     found = true;
   }
   EXPECT_TRUE(found);

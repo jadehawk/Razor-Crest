@@ -16,6 +16,7 @@
 #include <cstring>
 
 #include "LibraryIndexFile.h"
+#include "LibrarySeriesFormat.h"
 #include "LibraryText.h"
 
 namespace library {
@@ -369,15 +370,7 @@ int findPrior(WalkState& st, const uint64_t pathHash) {
       loaded = epub.loadMetadata(bookTitle, author);
       Epub::SyncMetadata sync{};
       if (loaded && epub.loadSyncMetadata(sync) && !sync.series.empty()) {
-        series = std::move(sync.series);
-        if (sync.seriesIndex) {
-          char number[24];
-          snprintf(number, sizeof(number), "%.2f", static_cast<double>(*sync.seriesIndex));
-          std::string indexText(number);
-          while (!indexText.empty() && indexText.back() == '0') indexText.pop_back();
-          if (!indexText.empty() && indexText.back() == '.') indexText.pop_back();
-          if (!indexText.empty()) series += " #" + indexText;
-        }
+        series = formatSeriesLabel(sync.series, sync.seriesIndex);
       }
     }
     if (loaded) {
