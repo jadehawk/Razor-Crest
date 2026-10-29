@@ -196,10 +196,10 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
 
   // This is a requested physical count, not a hardware-specific enum index.
   const int bookLimit = doc["continueReadingBookLimit"] | 0;
-  continueReadingBookLimit = (bookLimit == 0 || bookLimit == 5 || bookLimit == 10 || bookLimit == 20 ||
-                              bookLimit == 30 || bookLimit == 40 || bookLimit == 50)
+  continueReadingBookLimit = (bookLimit == 0 || bookLimit == 5 || bookLimit == 10 || bookLimit == 20)
                                  ? static_cast<uint8_t>(bookLimit)
-                                 : 0;
+                             : bookLimit > 20 ? 20
+                                              : 0;
 
   // Plugin System did not exist in older settings files. Preserve the behavior
   // of users who already have SD plugins installed, while keeping the new

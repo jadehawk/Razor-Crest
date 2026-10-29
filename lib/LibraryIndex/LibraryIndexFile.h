@@ -88,6 +88,8 @@ class LibraryIndexFile {
   // Cleaned author spelling before the library-wide spelling vote. Empty is a
   // valid value, so success is independent of `out.empty()`.
   bool readSourceAuthor(const ClixRecord& record, std::string& out);
+  // Formatted series + optional index. Empty when the book has no series metadata.
+  bool readSeries(const ClixRecord& record, std::string& out);
 
   // Absolute path of the book, rebuilt from its folder record.
   bool readPath(const ClixRecord& record, std::string& out);

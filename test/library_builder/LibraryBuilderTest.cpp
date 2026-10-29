@@ -127,6 +127,33 @@ TEST_F(LibraryBuilderTest, XtcTitleAndAuthorComeFromTheFile) {
   EXPECT_TRUE(sawXtch);
 }
 
+TEST_F(LibraryBuilderTest, PersistsSeriesAndIndexWithoutOpeningBooksForLibraryRows) {
+  bookMetadata["/a.epub"].series = "Saga of the Forgotten Warrior";
+  bookMetadata["/a.epub"].seriesIndex = 4.0f;
+  initial();
+
+  LibraryIndexFile index;
+  ASSERT_TRUE(index.open(INDEX));
+  bool found = false;
+  for (uint16_t ordinal = 0; ordinal < index.header().bookCount; ++ordinal) {
+    ClixRecord record{};
+    std::string path;
+    ASSERT_TRUE(index.readRecord(ordinal, record));
+    ASSERT_TRUE(index.readPath(record, path));
+    if (path != "/a.epub") continue;
+    std::string series;
+    ASSERT_TRUE(index.readSeries(record, series));
+    EXPECT_EQ(series, "Saga of the Forgotten Warrior #4");
+    found = true;
+  }
+  EXPECT_TRUE(found);
+  index.close();
+  fake::parses = 0;
+  ASSERT_TRUE(buildLibraryIndex("/", stats, true));
+  EXPECT_EQ(fake::parses, 0u);
+  EXPECT_EQ(stats.metadataReused, 2u);
+}
+
 TEST_F(LibraryBuilderTest, UnchangedRebuildReusesMetadataAndDoesNotReplaceIndex) {
   initial();
   const auto old = fake::files[INDEX]->bytes;

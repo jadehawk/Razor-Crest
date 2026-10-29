@@ -57,6 +57,8 @@ struct StagedEntry {
   // title on the other.
   uint8_t titleLen;
   char title[STAGE_NAME_BYTES];
+  uint8_t seriesLen;
+  char series[STAGE_AUTHOR_BYTES];
 };
 constexpr size_t STAGE_STRIDE = sizeof(StagedEntry);
 
@@ -301,6 +303,7 @@ int findPrior(WalkState& st, const uint64_t pathHash) {
   std::string author;
   bool titleFromBook = false;
   bool authorFromBook = false;
+  std::string series;
 
   entry.pathHash = clixPathHash(fullPath.data(), fullPath.size());
   const int priorIndex = findPrior(st, entry.pathHash);
@@ -328,6 +331,10 @@ int findPrior(WalkState& st, const uint64_t pathHash) {
     }
     const bool hasBookTitle = st.previous->readTitle(priorRecord, title);
     if (!hasBookTitle && st.previous->ioFailed()) {
+      st.failed = true;
+      return false;
+    }
+    if (!st.previous->readSeries(priorRecord, series)) {
       st.failed = true;
       return false;
     }
@@ -360,6 +367,18 @@ int findPrior(WalkState& st, const uint64_t pathHash) {
     } else {
       Epub epub(fullPath, CACHE_DIR);
       loaded = epub.loadMetadata(bookTitle, author);
+      Epub::SyncMetadata sync{};
+      if (loaded && epub.loadSyncMetadata(sync) && !sync.series.empty()) {
+        series = std::move(sync.series);
+        if (sync.seriesIndex) {
+          char number[24];
+          snprintf(number, sizeof(number), "%.2f", static_cast<double>(*sync.seriesIndex));
+          std::string indexText(number);
+          while (!indexText.empty() && indexText.back() == '0') indexText.pop_back();
+          if (!indexText.empty() && indexText.back() == '.') indexText.pop_back();
+          if (!indexText.empty()) series += " #" + indexText;
+        }
+      }
     }
     if (loaded) {
       entry.record.metadataStatus = CLIX_METADATA_EXTRACTED;
@@ -426,6 +445,9 @@ int findPrior(WalkState& st, const uint64_t pathHash) {
   const std::string displayAuthor = cleanPersonName(author);
   entry.authorLen = static_cast<uint8_t>(std::min(displayAuthor.size(), STAGE_AUTHOR_BYTES));
   memcpy(entry.author, displayAuthor.data(), entry.authorLen);
+  entry.seriesLen = static_cast<uint8_t>(
+      utf8SafeTruncateBuffer(series.data(), static_cast<int>(std::min<size_t>(series.size(), STAGE_AUTHOR_BYTES))));
+  if (entry.seriesLen) memcpy(entry.series, series.data(), entry.seriesLen);
 
   st.stageOut->write(&entry, STAGE_STRIDE);
   st.books++;
@@ -564,7 +586,7 @@ void walk(WalkState& st, const std::string& path, const int depth) {
 // truth.
 uint32_t blobBytesFor(const StagedEntry& entry, const StagedEntry& canonical) {
   return sizeof(entry.pathHash) + entry.record.nameLen + 1u + canonical.authorLen + 1u + entry.titleLen + 1u +
-         entry.authorLen;
+         entry.authorLen + 1u + entry.seriesLen;
 }
 
 bool emitIndex(const char* folderStagePath, WalkState& st, const uint16_t* order, const uint16_t* resolvedFirstSeen,
@@ -1011,6 +1033,8 @@ bool emitIndex(const char* folderStagePath, WalkState& st, const uint16_t* order
     if (entry.titleLen > 0) put(entry.title, entry.titleLen);
     put(&entry.authorLen, 1);
     if (entry.authorLen > 0) put(entry.author, entry.authorLen);
+    put(&entry.seriesLen, 1);
+    if (entry.seriesLen > 0) put(entry.series, entry.seriesLen);
     blobWritten += blobBytesFor(entry, canonical);
   }
   header.nameLen = blobWritten;

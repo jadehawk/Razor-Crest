@@ -4,10 +4,10 @@
 
 // Per-hardware safety ceilings for stored recent books and the Home carousel.
 // No PSRAM: retain the existing 10-entry storage limit exactly.
-// With PSRAM: allow up to 50 paths; never hold 50 decoded cover buffers.
+// With PSRAM: allow up to 20 paths; never hold 20 decoded cover buffers.
 namespace recentbooklimits {
 constexpr uint8_t NO_PSRAM = 10;
-constexpr uint8_t WITH_PSRAM = 50;
+constexpr uint8_t WITH_PSRAM = 20;
 constexpr uint8_t AUTO = 0;
 
 constexpr uint8_t deviceMaximum(bool hasPsram) { return hasPsram ? WITH_PSRAM : NO_PSRAM; }

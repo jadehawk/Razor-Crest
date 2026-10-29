@@ -110,7 +110,8 @@ class LibraryListActivity final : public UiTabListActivity {
   int rowFor(int entry) const;
   // fileName, when asked for, is the on-card name the row's icon derives from
   // (the display title may come from metadata and carry no extension).
-  bool rowTextFor(int entry, std::string& title, std::string& author, std::string* fileName = nullptr);
+  bool rowTextFor(int entry, std::string& title, std::string& author, std::string* fileName = nullptr,
+                  std::string* series = nullptr);
   uint32_t titleInitialFor(int entry);
   bool buildGroupStarts();
   int groupForBook(int bookEntry) const;
@@ -178,6 +179,8 @@ class LibraryListActivity final : public UiTabListActivity {
   std::vector<freeink::ui::ListItem> winItems;
   std::vector<std::string> winTitles;
   std::vector<std::string> winAuthors;
+  std::vector<std::string> winSubtitles;
+  std::vector<std::string> winSeries;
   std::vector<std::string> winHeaders;
 
   // Pinned overlay state: per store entry its RecentAsc row (0xFFFF when the

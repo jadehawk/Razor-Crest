@@ -706,10 +706,12 @@ void LibraryListActivity::rebuildActionTrampoline(const fui::ActionEvent&, void*
 // Title and author for one entry, read straight from the index. Only ever
 // called for rows about to be drawn, so at most a screenful of strings exists
 // at once.
-bool LibraryListActivity::rowTextFor(const int entry, std::string& title, std::string& author, std::string* fileName) {
+bool LibraryListActivity::rowTextFor(const int entry, std::string& title, std::string& author, std::string* fileName,
+                                     std::string* series) {
   title.clear();
   author.clear();
   if (fileName) fileName->clear();
+  if (series) series->clear();
   if (entry < pinnedCount()) {
     const auto& books = RECENT_BOOKS.getBooks();
     if (entry < 0 || entry >= static_cast<int>(books.size())) return false;
@@ -717,6 +719,26 @@ bool LibraryListActivity::rowTextFor(const int entry, std::string& title, std::s
     title = book.title;
     author = book.author;
     if (fileName) *fileName = book.path;
+    if (series) {
+      *series = book.series;
+      if (!series->empty() && book.seriesIndex) {
+        char suffix[24];
+        snprintf(suffix, sizeof(suffix), " #%.2f", static_cast<double>(*book.seriesIndex));
+        std::string indexText(suffix);
+        while (!indexText.empty() && indexText.back() == '0') indexText.pop_back();
+        if (!indexText.empty() && indexText.back() == '.') indexText.pop_back();
+        *series += indexText;
+      }
+      if (index.isOpen() && entry < pinnedTotal && pinnedAscRows[entry] != 0xFFFF) {
+        const uint16_t row = static_cast<uint16_t>(index.bookCount() - 1 - pinnedAscRows[entry]);
+        const uint16_t ordinal = index.ordinalForRow(library::SortOrder::RecentDesc, row);
+        library::ClixRecord record{};
+        if (ordinal != 0xFFFF && index.readRecord(ordinal, record)) {
+          std::string indexed;
+          if (index.readSeries(record, indexed) && !indexed.empty()) *series = std::move(indexed);
+        }
+      }
+    }
     return true;
   }
   const uint16_t ordinal = index.ordinalForRow(sortOrder, static_cast<uint16_t>(rowFor(entry)));
@@ -730,6 +752,7 @@ bool LibraryListActivity::rowTextFor(const int entry, std::string& title, std::s
     // The stored title when the book gave one, the filename otherwise.
     if (!index.readTitle(record, title) || title.empty()) index.readName(record, title);
     if (fileName) index.readName(record, *fileName);
+    if (series) index.readSeries(record, *series);
   }
   if (title.empty()) title = tr(STR_LIBRARY_UNKNOWN_TITLE);
   return true;
@@ -841,6 +864,7 @@ void LibraryListActivity::buildRows(UiScreen& screen) {
   props.inputMask = fui::InputTouch | fui::InputLongPress;
   props.labelText = screen.theme().bodyText;
   props.labelText.maxLines = 1;
+  props.subtitleText.maxLines = 2;
   // Breathing room between rows; the dense theme default packs the two-line
   // rows edge-to-edge.
   // Preserve original button-device spacing, but share the compact touch
@@ -854,6 +878,8 @@ void LibraryListActivity::buildRows(UiScreen& screen) {
   const size_t cap = static_cast<size_t>(nav.visibleRows > 0 ? nav.visibleRows : 1) + 1;
   if (winTitles.size() < cap) winTitles.resize(cap);
   if (winAuthors.size() < cap) winAuthors.resize(cap);
+  if (winSeries.size() < cap) winSeries.resize(cap);
+  if (winSubtitles.size() < cap) winSubtitles.resize(cap);
   if (!groupsCollapsed && winHeaders.size() < cap) winHeaders.resize(cap);
   winItems.clear();
   if (winItems.capacity() < cap) winItems.reserve(cap);
@@ -878,7 +904,8 @@ void LibraryListActivity::buildRows(UiScreen& screen) {
         formatInitialHeading(titleInitialFor(bookEntry), title);
       }
     } else {
-      if (!rowTextFor(entry, title, author, &rowFile)) continue;
+      std::string& series = winSeries[static_cast<size_t>(rows)];
+      if (!rowTextFor(entry, title, author, &rowFile, &series)) continue;
       uint32_t initial = 0;
       bool startsGroup = false;
       if (authorGrouped) {
@@ -896,7 +923,15 @@ void LibraryListActivity::buildRows(UiScreen& screen) {
           formatInitialHeading(initial, heading);
         item.sectionHeading = heading.c_str();
       }
-      if (!authorGrouped && !author.empty()) item.subtitle = author.c_str();
+      if (!series.empty() || (!authorGrouped && !author.empty())) {
+        std::string& sub = winSubtitles[static_cast<size_t>(rows)];
+        sub = authorGrouped ? std::string{} : author;
+        if (!series.empty()) {
+          if (!sub.empty()) sub += '\n';
+          sub += series;
+        }
+        item.subtitle = sub.c_str();
+      }
     }
 
     item.label = title.c_str();

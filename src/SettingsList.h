@@ -186,8 +186,7 @@ inline SettingInfo buildDictionarySetting(const std::vector<DictionaryEntry>& di
 
 inline SettingInfo buildContinueReadingLimitSetting() {
   const bool psram = HalMemory::getPsramHeap().totalBytes > 0;
-  const std::vector<uint8_t> options =
-      psram ? std::vector<uint8_t>{0, 5, 10, 20, 30, 40, 50} : std::vector<uint8_t>{0, 5, 10};
+  const std::vector<uint8_t> options = psram ? std::vector<uint8_t>{0, 5, 10, 20} : std::vector<uint8_t>{0, 5, 10};
   SettingInfo setting;
   setting.nameId = StrId::STR_CONTINUE_READING_BOOK_LIMIT;
   setting.type = SettingType::ENUM;

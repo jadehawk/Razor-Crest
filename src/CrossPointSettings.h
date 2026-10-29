@@ -375,9 +375,9 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // UI Theme
   uint8_t uiTheme = LYRA;
   uint8_t settingsNavigation = SETTINGS_NAV_THEME;  // Theme preference; List if theme does not specify.
-  // One full-size Continue Reading card with internal book paging (default enabled).
-  uint8_t continueReadingCarousel = 1;
-  // Zero = hardware default (10 without PSRAM, 50 with PSRAM).
+  // One full-size Continue Reading card with internal book paging (default off).
+  uint8_t continueReadingCarousel = 0;
+  // Zero = hardware default (10 without PSRAM, 20 with PSRAM).
   // A requested count above the hardware ceiling is safely capped at use.
   uint8_t continueReadingBookLimit = 0;
   // External theme ID: <collection-id>/<theme-id>. Empty selects a built-in theme.

@@ -18,6 +18,7 @@
 #include "ButtonRemapActivity.h"
 #include "ClearCacheActivity.h"
 #include "ClockSettingsActivity.h"
+#include "ContinueReadingSettingsActivity.h"
 #include "CrossPointSettings.h"
 #include "FontDownloadActivity.h"
 #include "HomeButtonSettingsActivity.h"
@@ -56,6 +57,10 @@ SettingsSection sectionFor(const SettingInfo& setting);
 
 bool showOnDevice(const SettingInfo& setting) {
   if (sectionFor(setting) == SettingsSection::End || home_button::isSetting(setting.valuePtr)) return false;
+  // Shown together inside a dedicated Continue Reading subpage.
+  if (setting.nameId == StrId::STR_CONTINUE_READING_CAROUSEL ||
+      setting.nameId == StrId::STR_CONTINUE_READING_BOOK_LIMIT)
+    return false;
   // The sunlight fading fix is a grayscale-waveform compensation that does
   // not apply on the X4 Pro / X4 Classic (plain OTP waveform, same panels).
   if (setting.valuePtr == &CrossPointSettings::fadingFix && (BoardConfig::isX4Pro() || BoardConfig::isX4Classic())) {
@@ -195,6 +200,7 @@ void SettingsActivity::rebuildSettings() {
   addAction(SettingsSection::Reader, StrId::STR_TEXT_SETTINGS, SettingAction::TextSettings);
   addAction(SettingsSection::Reader, StrId::STR_MANAGE_FONTS, SettingAction::DownloadFonts);
   addAction(SettingsSection::Display, StrId::STR_HOME_MENU_BUTTONS, SettingAction::HomeMenuButtons);
+  addAction(SettingsSection::Display, StrId::STR_CONTINUE_READING, SettingAction::ContinueReading);
   if (BoardConfig::hasHomeKey()) {
     addAction(SettingsSection::Controls, StrId::STR_HOME_BUTTON, SettingAction::HomeButton);
   }
@@ -529,6 +535,14 @@ void SettingsActivity::toggleSelectedSetting() {
         // The expanding header retains focus; List mode never uses these actions.
         activeNav().selected = selectedSetting + 1;
         requestUpdate();
+        return;
+      }
+      case SettingAction::ContinueReading: {
+        if (auto activity = makeUniqueNoThrow<ContinueReadingSettingsActivity>(renderer, mappedInput)) {
+          startActivityForResult(std::move(activity), [this](const ActivityResult&) { requestUpdate(); });
+        } else {
+          LOG_ERR("SETTINGS", "OOM: ContinueReadingSettingsActivity");
+        }
         return;
       }
       case SettingAction::HomeMenuButtons: {
