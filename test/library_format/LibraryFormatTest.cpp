@@ -109,6 +109,11 @@ TEST(LibraryFormatValidation, RejectsBadMagic) {
 TEST(LibraryFormatValidation, RejectsUnknownVersionsSeparately) {
   ClixHeader h = makeHeader(60, 116);
   h.formatVersion = library::CLIX_FORMAT_VERSION + 1;
+  // The v2 index has no series field: reject it even during reconciliation.
+  ClixHeader old = makeHeader(60, 116);
+  old.formatVersion = 2;
+  EXPECT_EQ(validateHeader(old, old.selfSize), ClixValidity::UnknownFormatVersion);
+  EXPECT_EQ(validateHeaderStructure(old, old.selfSize), ClixValidity::UnknownFormatVersion);
   EXPECT_EQ(validateHeader(h, h.selfSize), ClixValidity::UnknownFormatVersion);
 
   // A fold change is recoverable — firstSeen is preserved across the rebuild —
