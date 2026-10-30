@@ -748,19 +748,21 @@ void SleepActivity::onEnter() {
     case (CrossPointSettings::SLEEP_SCREEN_MODE::COVER):
       return renderCoverSleepScreen();
     case (CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM):
-      // A selected live statistics collection always wins over cover mode.
-      if (readingstatssleep::selected(SETTINGS.wallpaperPackId)) return renderCustomSleepScreen();
-      if (APP_STATE.lastSleepFromReader) {
-        return renderCoverSleepScreen();
-      } else {
-        return renderCustomSleepScreen();
-      }
+      // Cover wins when sleeping out of a book; otherwise use the custom source.
+      if (APP_STATE.lastSleepFromReader) return renderCoverSleepScreen();
+      return renderCustomSleepScreen();
     default:
       return renderDefaultSleepScreen();
   }
 }
 
 bool SleepActivity::renderTimedSleepScreen() const {
+  // In Cover + Custom the cover painted at sleep entry must survive timed
+  // refreshes; the custom source only applies outside the reader.
+  if (SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM &&
+      APP_STATE.lastSleepFromReader)
+    return false;
+
   // On a timer wake, dispatch to the selected live screen source before the
   // ordinary wallpaper pool. Rebuild page one from SD/native statistics and
   // then return to deep sleep through the existing main.cpp timer path.
