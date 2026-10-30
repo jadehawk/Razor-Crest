@@ -9,6 +9,10 @@ source = (ROOT / "src/activities/reader/ClipSelectionActivity.cpp").read_text()
 reader_source = (ROOT / "src/activities/reader/EpubReaderActivity.cpp").read_text()
 header = (ROOT / "src/activities/reader/ClipSelectionActivity.h").read_text()
 word_box = "struct WordBox {" + header.split("struct WordBox {", 1)[1].split("  };", 1)[0] + "};"
+selection_struct = "struct Selection {" + header.split("struct Selection {", 1)[1].split("  };", 1)[0] + "};"
+restore_selection = "  if (initialSelection.valid) {" + source.split("  if (initialSelection.valid) {", 1)[1].split(
+    "  currentPageOffset = words[selected].pageOffset;", 1
+)[0]
 action_helpers = "\n".join(line for line in header.splitlines()
                            if "int firstAction() const" in line or "int actionCount() const" in line)
 clean_word = "const char* cleanWordStart" + source.split("const char* cleanWordStart", 1)[1].split(
@@ -193,7 +197,7 @@ bool selectionLowMemory(const int first, const int last) {
 }
 """ + clean_word + r"""
 struct ClipSelectionActivity {
-""" + word_box + action_helpers + r"""
+""" + word_box + selection_struct + action_helpers + r"""
   std::unique_ptr<WordBox[]> words = makeUniqueNoThrow<WordBox[]>(240);
   static constexpr size_t MAX_SELECTABLE_WORDS = 240;
   enum class Mode { Clip, Lookup, DefinitionLookup };
@@ -209,6 +213,7 @@ struct ClipSelectionActivity {
   uint16_t rowCount = 0;
   int fontId = 0, lineHeight = 16, marginLeft = 0, marginTop = 0;
   int selected = 0, rangeStart = -1, currentPageOffset = 0;
+  Selection initialSelection;
   bool touchDragSelecting = false;
   bool buildSelectedText(int first, int last, std::string& text) const;
   bool extractWords();
@@ -222,6 +227,9 @@ struct ClipSelectionActivity {
   int textXOffset() const { return 0; }
   Rect handleRect(int, bool) const { return {}; }
   Rect actionRect() const { return {}; }
+  void restoreInitialSelection() {
+""" + restore_selection + r"""
+  }
 };
 """ + build_text + extract_words + clean_draw + highlight_draw + selection_draw + r"""
 struct EpubReaderActivity {
@@ -308,6 +316,25 @@ int main() {
   HalMemory::stats = {8192, 6144};
   assert(!selectionLowMemory(0, 0));
   assert(!selectionLowMemory(0, 239));
+  // A dictionary round-trip must restore the actual looked-up word, not the
+  // initial center-of-page cursor. Also preserve selections spanning pages.
+  {
+    ClipSelectionActivity restored;
+    restored.wordCount = 4;
+    for (int i = 0; i < 4; ++i) {
+      restored.words[i].pageOffset = static_cast<uint8_t>(i == 3 ? 1 : 0);
+      restored.words[i].pageWordIndex = static_cast<uint16_t>(i == 3 ? 0 : i);
+    }
+    restored.selected = 1;  // the default center word is deliberately wrong
+    restored.initialSelection = {0, 0, 2, 2, true};
+    restored.restoreInitialSelection();
+    assert(restored.selected == 2 && restored.rangeStart == 2);
+    restored.selected = 1;
+    restored.rangeStart = -1;
+    restored.initialSelection = {0, 1, 1, 0, true};
+    restored.restoreInitialSelection();
+    assert(restored.selected == 3 && restored.rangeStart == 1);
+  }
   ClipSelectionActivity activity;
   for (const int8_t tracking : {2, -2}) {
     auto page = std::make_unique<Page>();
