@@ -58,7 +58,7 @@ lookup_source = (ROOT / "src/activities/reader/DictionaryWordSelectActivity.cpp"
 definition_result = block(lookup_source, "[this](const ActivityResult& result)")
 reader_source = (ROOT / "src/activities/reader/EpubReaderActivity.cpp").read_text()
 lookup_result = block(reader_source.split("startActivityForResult(std::move(lookup)", 1)[1],
-                      "[this](const ActivityResult& result)")
+                      "[this, spineIndex, pageNumber, restore](const ActivityResult& result)")
 reader_constants = (ROOT / "src/activities/reader/ReaderUtils.h").read_text().split("namespace ReaderUtils {", 1)[1].split(
     "constexpr unsigned long SKIP_HOLD_MS", 1
 )[0]
@@ -188,7 +188,13 @@ struct Dictionary {
 };
 struct ClipSelectionActivity {
 ''' + selection + r'''
+  enum class Mode { Lookup };
   template<typename... Args> explicit ClipSelectionActivity(Args&&...) {}
+};
+struct ReaderSection {
+  int pageCount = 10;
+  int currentPage = 5;
+  uint32_t getVisibleTextOffsetForPage(int page) const { return static_cast<uint32_t>(page) * 128; }
 };
 bool styledAvailable = false;
 bool buildDictionaryHtmlPages(Renderer& renderer, const std::string&, uint16_t, uint16_t, uint8_t,
@@ -213,6 +219,12 @@ struct DictionaryDefinitionActivity {
   bool messageVisible = false;
   bool finished = false;
   bool selectionOpened = false;
+  ReaderSection readerSection;
+  ReaderSection* section = &readerSection;
+  int currentSpineIndex = 2;
+  uint32_t currentPageVisibleOffset = 0;
+  ClipSelectionActivity::Selection restoredSelection;
+  int restoredPage = -1;
   ActivityResult result;
   std::unique_ptr<ClipSelectionActivity> child;
   ActivityResultHandler callback;
@@ -222,9 +234,19 @@ struct DictionaryDefinitionActivity {
   void finish() { finished = true; }
   void setResult(ActivityResult&& next) { result = std::move(next); }
   void openDictionaryWordSelect() { selectionOpened = true; }
+  void startClipSelection(int, int, ClipSelectionActivity::Mode, ClipSelectionActivity::Selection restored) {
+    selectionOpened = true;
+    restoredSelection = restored;
+    restoredPage = section->currentPage;
+  }
   void handleBack() { ''' + back_handler + r''' }
   void onDefinitionResult(const ActivityResult& child) { (''' + definition_result + r''')(child); }
-  void onLookupResult(const ActivityResult& child) { (''' + lookup_result + r''')(child); }
+  void onLookupResult(const ActivityResult& child) {
+    const uint16_t spineIndex = 2;
+    const int pageNumber = 3;
+    const ClipSelectionActivity::Selection restore{0, 0, 7, 7, true};
+    (''' + lookup_result + r''')(child);
+  }
   void startActivityForResult(std::unique_ptr<ClipSelectionActivity> next, ActivityResultHandler handler) {
     child = std::move(next);
     callback = std::move(handler);
@@ -415,6 +437,9 @@ int main() {
   assert(parent.finished && !parent.result.isCancelled);
   reader.onLookupResult(parent.result);
   assert(reader.selectionOpened);
+  assert(reader.restoredSelection.valid && reader.restoredSelection.firstWord == 7 &&
+         reader.restoredSelection.lastWord == 7);
+  assert(reader.restoredPage == 3 && reader.currentPageVisibleOffset == 384);
   // Long Back also exits at the first definition, where there are no ancestors.
   DictionaryDefinitionActivity root;
   root.lookup = std::make_unique<DictionaryDefinitionActivity::LookupState>(dictionary);

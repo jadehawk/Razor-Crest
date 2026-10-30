@@ -49,8 +49,16 @@ ClipSelectionActivity::ClipSelectionActivity(GfxRenderer& renderer, MappedInputM
                                              std::vector<std::unique_ptr<Page>> pages, const int marginLeft,
                                              const int marginTop, const int initialX, const int initialY,
                                              const Mode mode)
+    : ClipSelectionActivity(renderer, mappedInput, std::move(pages), marginLeft, marginTop, initialX, initialY, mode,
+                            Selection{}) {}
+
+ClipSelectionActivity::ClipSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
+                                             std::vector<std::unique_ptr<Page>> pages, const int marginLeft,
+                                             const int marginTop, const int initialX, const int initialY,
+                                             const Mode mode, const Selection selection)
     : Activity("ClipSelection", renderer, mappedInput),
       pages(std::move(pages)),
+      initialSelection(selection),
       marginLeft(marginLeft),
       marginTop(marginTop),
       initialX(initialX),
