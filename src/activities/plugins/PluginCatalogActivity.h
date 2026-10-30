@@ -151,14 +151,16 @@ class PluginCatalogActivity : public CatalogActivity {
       std::string title, url, body;
       std::string kind = "plugin";  // v2 index; legacy lists default to plugin
       std::string itemsPath;        // v2 item array key
+      std::string id;               // fills {list_id} for shared browse URLs
       std::string noticeTitle, noticeMessage, noticeConfirm, noticeCancel;
       bool hasNotice() const { return !noticeMessage.empty(); }
     };
     std::vector<BrowseList> browseLists;
-    // Optional remote index whose views follow the manifest's own lists.
-    // A capability-aware index may also use a "catalogs" array.
+    // Remote list indexes may be legacy or Razor-Crest capability-filtered v2.
     std::string browseListsUrl;
-    std::string capabilityListsUrl;  // optional v2 index; legacy URL remains intact
+    std::string capabilityListsUrl;
+    pluginhttp::Headers listsHeaders;
+    std::string listsItemsPath, listsTitlePath, listsUrlPath, listsIdPath;
     size_t fixedListCount = 0;  // leading browseLists entries from the manifest
     // JSON search overrides URL/body independently; empty fields reuse browse.
     std::string searchUrl, searchBody;
@@ -320,7 +322,8 @@ class PluginCatalogActivity : public CatalogActivity {
   bool wantsListPicker() const;
   void openList(int index);
   bool loadManifest();
-  bool loadBrowseListIndex();
+  // `status` is the index request's HTTP status (200 when there is no index).
+  bool loadBrowseListIndex(int& status);
   bool loadToken();
   bool clearEphemeralToken();
   void startDeviceAuth();

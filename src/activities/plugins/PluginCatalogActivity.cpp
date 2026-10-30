@@ -82,6 +82,8 @@ constexpr size_t MAX_BROWSE_RESPONSE = 1024 * 1024;
 constexpr size_t MAX_BROWSE_LIST_INDEX_RESPONSE = 16 * 1024;
 constexpr char CACHE_SEED_TMP_PATH[] = "/.pcat_cache_seed.zip";
 constexpr size_t MAX_PREVIEW_RESPONSE = 256 * 1024;
+// Bounds index lists on low-memory hardware.
+constexpr size_t MAX_BROWSE_LISTS = 64;
 constexpr size_t MAX_ITEM_DETAILS_RESPONSE = 24 * 1024;
 constexpr unsigned long PLUGIN_UNINSTALL_HOLD_MS = 1000;
 constexpr int MAX_PAGE_SIZE = 16;
@@ -464,12 +466,19 @@ bool PluginCatalogActivity::loadManifest() {
   if (strcasecmp(imageFormat, "png") == 0) manifest.imageFormat = Manifest::ImageFormat::Png;
   manifest.browseListsUrl = browse["lists_url"] | "";
   manifest.capabilityListsUrl = browse["capability_lists_url"] | "";
+  pluginhttp::readHeaders(browse["lists_headers"], manifest.listsHeaders);
+  manifest.listsItemsPath = browse["lists_items"] | "lists";
+  JsonVariantConst listFields = browse["lists_fields"];
+  manifest.listsTitlePath = listFields["title"] | "title";
+  manifest.listsUrlPath = listFields["url"] | "url";
+  manifest.listsIdPath = listFields["id"] | "id";
   manifest.browseLists.reserve(browse["lists"].size());
   for (JsonVariantConst l : browse["lists"].as<JsonArrayConst>()) {
     if (browseListHidden(l)) continue;
     Manifest::BrowseList entry;
     entry.title = l["title"] | "";
     entry.url = l["url"] | "";
+    entry.id = variantToString(l["id"]);
     entry.body = l["body"] | "";
     JsonVariantConst notice = l["notice"];
     entry.noticeTitle = notice["title"] | "";
@@ -776,6 +785,11 @@ std::string PluginCatalogActivity::substituted(std::string tpl, const Item* item
   substituteAll(tpl, "{limit}", num);
   snprintf(num, sizeof(num), "%d", std::max(0, page - 1) * manifest.pageSize);
   substituteAll(tpl, "{offset}", num);
+  const bool inList = currentList >= 0 && currentList < static_cast<int>(manifest.browseLists.size());
+  static const std::string noList;
+  const std::string& listId = inList ? manifest.browseLists[currentList].id : noList;
+  substituteAll(tpl, "{list_id}", listId);
+  if (tpl.find("{list_id_enc}") != std::string::npos) substituteAll(tpl, "{list_id_enc}", urlEncodeQuery(listId));
   substituteAll(tpl, "{query}", urlEncodeQuery(searchQuery));
   substituteAll(tpl, "{query_raw}", searchQuery);
   if (item) {
@@ -1341,18 +1355,34 @@ bool PluginCatalogActivity::wantsListPicker() const {
   return !manifest.browseLists.empty() && !manifest.isXmlList() && currentList < 0;
 }
 
-bool PluginCatalogActivity::loadBrowseListIndex() {
-  if (manifest.browseListsUrl.empty()) return true;
-  if (!wifiConnected()) return false;
+bool PluginCatalogActivity::loadBrowseListIndex(int& status) {
+  status = 200;
+  if (manifest.browseListsUrl.empty() && manifest.capabilityListsUrl.empty()) return true;
+  if (!wifiConnected()) {
+    status = 0;
+    return false;
+  }
 
   String response;
   const bool preferV2 = !manifest.capabilityListsUrl.empty();
   std::string url = substituted(preferV2 ? manifest.capabilityListsUrl : manifest.browseListsUrl, nullptr);
-  int status = pluginhttp::request(session.get(), url, "GET", "", {}, response, MAX_BROWSE_LIST_INDEX_RESPONSE);
-  if ((status < 200 || status >= 300) && preferV2 && !manifest.browseListsUrl.empty()) {
-    response = "";
+  const auto requestIndex = [&] {
+    response = String();
+    return pluginhttp::request(session.get(), url, "GET", "", substitutedHeaders(manifest.listsHeaders, nullptr),
+                               response, MAX_BROWSE_LIST_INDEX_RESPONSE);
+  };
+  status = requestIndex();
+  if ((status == 401 || status == 403) && manifest.hasPasswordGrant() && refreshCredentialToken())
+    status = requestIndex();
+
+  // A capability-specific feed may be temporarily unavailable. Retain the
+  // legacy plugin index as a fallback, without bypassing authentication failures.
+  if ((status < 200 || status >= 300) && status != 401 && status != 403 && preferV2 &&
+      !manifest.browseListsUrl.empty()) {
     url = substituted(manifest.browseListsUrl, nullptr);
-    status = pluginhttp::request(session.get(), url, "GET", "", {}, response, MAX_BROWSE_LIST_INDEX_RESPONSE);
+    status = requestIndex();
+    if ((status == 401 || status == 403) && manifest.hasPasswordGrant() && refreshCredentialToken())
+      status = requestIndex();
   }
   if (status < 200 || status >= 300) {
     LOG_ERR("PCAT", "browse list index fetch failed: status=%d %s", status, url.c_str());
@@ -1364,6 +1394,7 @@ bool PluginCatalogActivity::loadBrowseListIndex() {
     LOG_ERR("PCAT", "browse list index parse failed: %s", url.c_str());
     return false;
   }
+  response = String();
 
   std::string generation = variantToString(doc["generation"]);
   if (generation.size() > 96) generation.resize(96);
@@ -1372,22 +1403,23 @@ bool PluginCatalogActivity::loadBrowseListIndex() {
       remoteCacheGeneration.empty() ? substituted(manifest.cacheGenerationTpl, nullptr) : remoteCacheGeneration;
 
   const bool v2 = doc["schema_version"].as<int>() == 2;
-  JsonArrayConst lists = doc["lists"].as<JsonArrayConst>();
-  if (lists.isNull()) lists = doc["catalogs"].as<JsonArrayConst>();
+  JsonArrayConst lists = resolvePath(doc.as<JsonVariantConst>(), manifest.listsItemsPath).as<JsonArrayConst>();
+  // Razor-Crest's capability index publishes "catalogs" instead of "lists".
+  if (lists.isNull() && manifest.listsItemsPath == "lists") lists = doc["catalogs"].as<JsonArrayConst>();
   if (lists.isNull() || lists.size() == 0) {
     LOG_ERR("PCAT", "browse list index has no lists: %s", url.c_str());
     return false;
   }
 
-  constexpr size_t MAX_REMOTE_BROWSE_LISTS = 64;
   std::vector<Manifest::BrowseList> remoteLists;
-  remoteLists.reserve(std::min<size_t>(lists.size(), MAX_REMOTE_BROWSE_LISTS));
+  remoteLists.reserve(std::min<size_t>(lists.size(), MAX_BROWSE_LISTS));
   for (JsonVariantConst l : lists) {
-    if (remoteLists.size() >= MAX_REMOTE_BROWSE_LISTS) break;
+    if (remoteLists.size() >= MAX_BROWSE_LISTS) break;
     if (browseListHidden(l)) continue;
     Manifest::BrowseList entry;
-    entry.title = l["title"] | "";
-    entry.url = l["url"] | "";
+    entry.title = variantToString(resolvePath(l, manifest.listsTitlePath));
+    entry.url = variantToString(resolvePath(l, manifest.listsUrlPath));
+    entry.id = variantToString(resolvePath(l, manifest.listsIdPath));
     entry.body = l["body"] | "";
     if (v2) {
       entry.kind = l["kind"] | "";
@@ -1403,7 +1435,8 @@ bool PluginCatalogActivity::loadBrowseListIndex() {
     entry.noticeMessage = notice["message"] | "";
     entry.noticeConfirm = notice["confirm"] | "";
     entry.noticeCancel = notice["cancel"] | "";
-    if (!entry.title.empty() && !entry.url.empty()) remoteLists.push_back(std::move(entry));
+    // A list can use a dedicated URL or a shared browse URL with {list_id}.
+    if (!entry.title.empty() && (!entry.url.empty() || !entry.id.empty())) remoteLists.push_back(std::move(entry));
   }
   if (remoteLists.empty()) {
     LOG_ERR("PCAT", "browse list index has no usable lists: %s", url.c_str());
@@ -1488,8 +1521,9 @@ void PluginCatalogActivity::startBrowse() {
     }
   }
 
-  const bool remoteListsAvailable =
-      !manifest.isXmlList() && !manifest.browseListsUrl.empty() && !browseListsRemoteAttempted;
+  const bool remoteListsAvailable = !manifest.isXmlList() &&
+                                    (!manifest.browseListsUrl.empty() || !manifest.capabilityListsUrl.empty()) &&
+                                    !browseListsRemoteAttempted;
   // A manifest-provided list is an intentional offline/fast-start fallback. Do not
   // force Wi-Fi merely to refresh lists_url before the plugin can show that list.
   // Reopening while already connected still refreshes the dynamic index normally.
@@ -1513,16 +1547,23 @@ void PluginCatalogActivity::startBrowse() {
       return;
     }
   }
-
   if (needsRemoteLists) {
     if (!wifiConnected()) {
       launchWifiSelection();
       return;
     }
     browseListsRemoteAttempted = true;
-    if (!loadBrowseListIndex() && manifest.browseLists.empty()) {
-      fail(StrId::STR_FETCH_FEED_FAILED);
-      return;
+    int status = 0;
+    if (!loadBrowseListIndex(status)) {
+      if (status == 401 || status == 403) {
+        state = State::NO_TOKEN;
+        requestUpdate();
+        return;
+      }
+      if (manifest.browseLists.empty()) {
+        fail(StrId::STR_FETCH_FEED_FAILED);
+        return;
+      }
     }
   }
 
@@ -2902,11 +2943,10 @@ bool PluginCatalogActivity::parseBrowseResponse() {
     const std::string unused;
     auto selectCompatible = [&](JsonListParser::Row& row) {
       const int thisRow = rowIndex++;
-      const bool shown =
-          !row.field[JsonListParser::F_TITLE].empty() &&
-          catalogEntryCompatible(row.field[JsonListParser::F_AUTHOR], row.field[JsonListParser::F_ID],
-                                 row.field[JsonListParser::F_URL], row.field[JsonListParser::F_VERSION],
-                                 row.field[JsonListParser::F_BASE]);
+      const bool shown = !row.field[JsonListParser::F_TITLE].empty() &&
+                         catalogEntryCompatible(row.field[JsonListParser::F_AUTHOR], row.field[JsonListParser::F_ID],
+                                                row.field[JsonListParser::F_URL], row.field[JsonListParser::F_VERSION],
+                                                row.field[JsonListParser::F_BASE]);
       if (compatibleWindow.take(plugincatalogpaging::countsTowardPage(paging, shown)) && shown) {
         compatibleRows.push_back(thisRow);
       }

@@ -207,6 +207,7 @@ Razor-Crest currently advertises these catalog capabilities:
 | `catalog.refresh` | A JSON catalog can opt into a native Refresh footer action that forces a network refetch of the current page. | Any dynamic catalog can refresh in place, including one-page catalogs that have no paging action to trigger another request. |
 | `catalog.item_details` | JSON catalog items can open a Details page with selected-row metadata and optional bounded on-demand HTML/text content. | Any catalog can keep browse rows concise while offering richer information before Fetch/Install/Update. Rich metadata is additive and failure falls back to the normal item details view. |
 | `catalog.encoded_item_fields` | Download, sidecar, and details templates can use the percent-encoded item variables `{id_enc}`, `{title_enc}`, `{author_enc}`, and `{url_enc}`. | A catalog whose URLs carry item text can require this so older firmware, which would send the variable names literally, does not offer the entry. |
+| `catalog.list_index_mapping` | `browse.lists_url` can be fetched with `lists_headers` and read with `lists_items`/`lists_fields`, and lists can carry an `id` that fills `{list_id}` and `{list_id_enc}`. | A catalog can build its lists from a service's own folder or tag API, with the token in a header, without a separate server to reshape the answer. |
 
 Capability names describe firmware behavior available to the entire plugin system.
 They must not encode Plugin Hub policy or ownership, and another plugin may use the
@@ -266,7 +267,9 @@ download filename/username/password; and sidecar path/body.
 | `{page}` | current 1-based page | browse |
 | `{offset}` | rows before the current page: `(page - 1) * page_size` | browse |
 | `{limit}` | `page_size` when the request uses `{page}` and not `{offset}`; otherwise `page_size + 1` (the extra row shows that another page exists) | browse |
-| `{id}` `{title}` `{author}` `{url}` `{thumbnail}` | fields of the selected item | image, download, sidecar |
+| `{list_id}` | `id` of the open list as received (not encoded), empty outside a list; requires `catalog.list_index_mapping` | browse, download, sidecar, item details |
+| `{list_id_enc}` | the same id percent-encoded, for URL query values and path segments | browse, download, sidecar, item details |
+| `{id}` `{title}` `{author}` `{url}` `{thumbnail}` | fields of the selected item as received | image, download, sidecar, item details |
 | `{id_enc}` `{title_enc}` `{author_enc}` `{url_enc}` | the same fields percent-encoded (everything except letters, digits, `-_.~`), for URL query values and path segments; firmware with these advertises `catalog.encoded_item_fields` | download, sidecar, item details |
 | `{md5}` | MD5 hex of the destination file path | sidecar |
 | `{dest}` | sanitized on-SD path of the downloaded file | sidecar |
@@ -417,7 +420,14 @@ JSON catalogs may also map `description`, `detail_author`, and `repository` for 
           "cancel": "Go Back"                  // defaults to translated Cancel
         } }
     ],                                      // omitted keys fall back to browse's
-    "lists_url": "https://.../lists.json",  // optional: more lists, shown after "lists"
+                                            // an "id" fills {list_id} and {list_id_enc},
+                                            // so lists can share browse.url
+                                            // ("...?folder={list_id_enc}")
+
+    "lists_url": "https://.../folders",     // optional: more lists, shown after "lists"
+    "lists_headers": { "Authorization": "Bearer {token}" },  // sent only to lists_url
+    "lists_items": "folders",               // dotted path to the array; default "lists"
+    "lists_fields": { "title": "title", "id": "folder_id" },  // defaults: title, url, id
 
     // --- xml format (ignore the json fields above; fields become selectors) ---
     "item": "response",                     // local-name of the repeating element
@@ -601,15 +611,17 @@ JSON catalogs may also map `description`, `detail_author`, and `repository` for 
   list remains in use; an individual image fetch/convert failure renders that item
   with the standard empty preview placeholder.
 - **Dynamic lists** (json): `browse.lists_url` is fetched with a GET once per
-  catalog visit and must answer `{"lists":[{"title":"...","url":"..."}]}`.
-  Each entry needs `title` and `url`; `body` and `notice` work as in `lists`.
-  Entries without both are skipped, and an answer with no usable entries, or
-  one larger than 16KB, counts as a failed fetch. The fetched lists follow any
-  `lists` from the manifest. If the fetch fails, the manifest's own lists are
-  still shown and the fetch is not retried until the catalog is opened again;
-  without them the catalog shows an error, and Retry fetches again.
-  Older firmware may support only one of the two list sources.
-
+  catalog visit. The request uses the optional `lists_headers` and reads
+  `lists_items` with dotted field mappings from `lists_fields`. An entry needs
+  a title and either a URL or an ID; ID-only entries use `browse.url` with
+  `{list_id}` or `{list_id_enc}`. At most 64 lists are retained; indexes are
+  limited to 16KB. Fixed manifest lists remain available if the remote fetch
+  fails. A 401/403 triggers one password-grant token refresh and retry, or
+  the sign-in screen. These options need `catalog.list_index_mapping`.
+  Razor-Crest also supports `browse.capability_lists_url`: a capability-filtered
+  schema-v2 index with `catalogs`, `kind`, `items`, `requires`, and
+  `generation`. The legacy `lists_url` remains a fallback and the
+  capability-gated theme and wallpaper catalogs remain device-filtered.
 - **XML navigation**: Confirm on a folder (an item carrying `container_element`)
   descends into it, Back climbs out (Back at the root leaves the screen).
   With `resolve_urls`, server-relative URLs resolve against the browse URL's
