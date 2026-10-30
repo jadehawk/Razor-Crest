@@ -417,7 +417,7 @@ JSON catalogs may also map `description`, `detail_author`, and `repository` for 
           "cancel": "Go Back"                  // defaults to translated Cancel
         } }
     ],                                      // omitted keys fall back to browse's
-    "lists_url": "https://.../catalog-lists.json", // optional remote list index; replaces static lists when used
+    "lists_url": "https://.../lists.json",  // optional: more lists, shown after "lists"
 
     // --- xml format (ignore the json fields above; fields become selectors) ---
     "item": "response",                     // local-name of the repeating element
@@ -560,6 +560,14 @@ JSON catalogs may also map `description`, `detail_author`, and `repository` for 
 
   `browse.refresh: true` is separate from cache policy: it exposes a footer Refresh
   action that explicitly re-fetches only the current browse page.
+  Rows without a title are not shown. When the request uses `{page}` or
+  `{offset}`, these rows still count toward the page, so a page can show
+  fewer rows and still offer "Next page".
+
+  Navigation matches the OPDS browser: a "Previous page" row precedes the
+  items past page 1 and a "Next page" row follows them while more pages
+  exist — tappable and button-reachable like any row.
+
 - **Lists** (json): with `browse.lists`, opening the catalog shows a picker
   of the named entries first; each entry browses with its own url/body
   overrides (server-side categories, shelves, sort orders). A list with
@@ -592,6 +600,16 @@ JSON catalogs may also map `description`, `detail_author`, and `repository` for 
   omitted, the normal one-row
   list remains in use; an individual image fetch/convert failure renders that item
   with the standard empty preview placeholder.
+- **Dynamic lists** (json): `browse.lists_url` is fetched with a GET once per
+  catalog visit and must answer `{"lists":[{"title":"...","url":"..."}]}`.
+  Each entry needs `title` and `url`; `body` and `notice` work as in `lists`.
+  Entries without both are skipped, and an answer with no usable entries, or
+  one larger than 16KB, counts as a failed fetch. The fetched lists follow any
+  `lists` from the manifest. If the fetch fails, the manifest's own lists are
+  still shown and the fetch is not retried until the catalog is opened again;
+  without them the catalog shows an error, and Retry fetches again.
+  Older firmware may support only one of the two list sources.
+
 - **XML navigation**: Confirm on a folder (an item carrying `container_element`)
   descends into it, Back climbs out (Back at the root leaves the screen).
   With `resolve_urls`, server-relative URLs resolve against the browse URL's
@@ -720,7 +738,7 @@ browser-side.
 | Need | Use |
 |---|---|
 | Outbound HTTP(S), any method (CORS-free) | `api.relay(method, url, headers, body)` |
-| Download a URL straight to SD | `api.fetchToSd(url, dest, headers)` |
+| Download a URL straight to SD | `api.fetchToSd(url, dest, headers, {method, body})` (options optional; with a method other than GET, or a non-empty body, the request is sent once, and on failure the thrown error carries the `/api/fetch` result in `err.result`, including the start of the server's answer in `err.result.body` when there is one) |
 | Write a small file to SD | `api.writeFile(path, base64)` |
 | The plugin's own folder (keep its data here) | `api.dir` |
 | Crypto (hash, HMAC via SHA, AES, RSA) | `api.crypto(op, fields)` or browser `crypto.subtle` |

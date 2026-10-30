@@ -478,6 +478,7 @@ bool PluginCatalogActivity::loadManifest() {
     entry.noticeCancel = notice["cancel"] | "";
     if (!entry.title.empty()) manifest.browseLists.push_back(std::move(entry));
   }
+  manifest.fixedListCount = manifest.browseLists.size();
   manifest.searchUrl = browse["search"]["url"] | "";
   manifest.searchBody = browse["search"]["body"] | "";
 
@@ -1408,7 +1409,9 @@ bool PluginCatalogActivity::loadBrowseListIndex() {
     LOG_ERR("PCAT", "browse list index has no usable lists: %s", url.c_str());
     return false;
   }
-  manifest.browseLists = std::move(remoteLists);
+  manifest.browseLists.resize(manifest.fixedListCount);
+  manifest.browseLists.reserve(manifest.fixedListCount + remoteLists.size());
+  for (auto& remoteList : remoteLists) manifest.browseLists.push_back(std::move(remoteList));
   return true;
 }
 
@@ -2895,18 +2898,16 @@ bool PluginCatalogActivity::parseBrowseResponse() {
   if (filterCompatibility) {
     compatibleRows.reserve(manifest.pageSize);
     int rowIndex = 0;
-    plugincatalogpaging::PageWindow filteredWindow(pageOffset, manifest.pageSize);
-    plugincatalogpaging::PageWindow serverWindow(0, manifest.pageSize);
+    plugincatalogpaging::PageWindow compatibleWindow(pageOffset, manifest.pageSize);
     const std::string unused;
     auto selectCompatible = [&](JsonListParser::Row& row) {
       const int thisRow = rowIndex++;
-      if (row.field[JsonListParser::F_TITLE].empty()) return;
-      const bool compatible = catalogEntryCompatible(
-          row.field[JsonListParser::F_AUTHOR], row.field[JsonListParser::F_ID], row.field[JsonListParser::F_URL],
-          row.field[JsonListParser::F_VERSION], row.field[JsonListParser::F_BASE]);
-      if (localPaging) {
-        if (filteredWindow.take(compatible)) compatibleRows.push_back(thisRow);
-      } else if (serverWindow.take() && compatible) {
+      const bool shown =
+          !row.field[JsonListParser::F_TITLE].empty() &&
+          catalogEntryCompatible(row.field[JsonListParser::F_AUTHOR], row.field[JsonListParser::F_ID],
+                                 row.field[JsonListParser::F_URL], row.field[JsonListParser::F_VERSION],
+                                 row.field[JsonListParser::F_BASE]);
+      if (compatibleWindow.take(plugincatalogpaging::countsTowardPage(paging, shown)) && shown) {
         compatibleRows.push_back(thisRow);
       }
     };
@@ -2924,7 +2925,7 @@ bool PluginCatalogActivity::parseBrowseResponse() {
       fail(StrId::STR_PARSE_FEED_FAILED);
       return false;
     }
-    rawHasMore = localPaging ? filteredWindow.hasMore(paging) : serverWindow.hasMore(paging);
+    rawHasMore = compatibleWindow.hasMore(paging);
   }
 
   releaseRows();
@@ -2938,7 +2939,8 @@ bool PluginCatalogActivity::parseBrowseResponse() {
     if (filterCompatibility) {
       if (compatibleIndex >= compatibleRows.size() || compatibleRows[compatibleIndex] != thisRow) return;
       compatibleIndex++;
-    } else if (!visibleWindow.take(!row.field[JsonListParser::F_TITLE].empty())) {
+    } else if (!visibleWindow.take(
+                   plugincatalogpaging::countsTowardPage(paging, !row.field[JsonListParser::F_TITLE].empty()))) {
       return;
     }
     if (row.field[JsonListParser::F_TITLE].empty()) return;
