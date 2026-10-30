@@ -47,6 +47,7 @@
 #include "fontIds.h"
 #include "util/PluginEvents.h"
 #include "util/ReadingStatsSleepSource.h"
+#include "util/SleepScreenSource.h"
 
 namespace fui = freeink::ui;
 
@@ -89,11 +90,6 @@ SettingsSection sectionFor(const SettingInfo& setting) {
   if (setting.category == StrId::STR_CAT_CONTROLS) return SettingsSection::Controls;
   if (setting.category == StrId::STR_CAT_SYSTEM) return SettingsSection::General;
   return SettingsSection::End;
-}
-
-// Custom and Cover + Custom both use the wallpaper collection selector.
-bool usesWallpaperCollection(const uint8_t sleepScreen) {
-  return sleepScreen == CrossPointSettings::CUSTOM || sleepScreen == CrossPointSettings::COVER_CUSTOM;
 }
 
 // Device-only action rows added per section, beyond the shared list.
@@ -167,7 +163,7 @@ void SettingsActivity::rebuildSettings() {
 
   // Resolve the selected collection's title only while the custom source is in
   // use. No scan or wallpaper UI is needed for Dark/Light, Cover or other modes.
-  if (section == SettingsSection::Display && usesWallpaperCollection(SETTINGS.sleepScreen)) {
+  if (section == SettingsSection::Display && sleepscreen::usesCustomSource(SETTINGS.sleepScreen)) {
     auto& wallpapers = WallpaperPackRegistry::getInstance();
     wallpapers.scan();
     wallpapers.reconcileSelection();
@@ -219,7 +215,7 @@ void SettingsActivity::rebuildSettings() {
     settings.push_back(std::move(setting));
     // Custom and Cover + Custom use the independent wallpaper pack registry.
     // Keep its picker adjacent to Sleep Screen, never at the foot of Display.
-    if (section == SettingsSection::Display && sleepScreenRow && usesWallpaperCollection(SETTINGS.sleepScreen)) {
+    if (section == SettingsSection::Display && sleepScreenRow && sleepscreen::usesCustomSource(SETTINGS.sleepScreen)) {
       settings.push_back(SettingInfo::Action(StrId::STR_SLEEP_SCREEN, SettingAction::WallpaperCollection));
     }
   }

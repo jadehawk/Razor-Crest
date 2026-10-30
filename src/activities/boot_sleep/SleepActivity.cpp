@@ -34,6 +34,7 @@
 #include "images/MoonIcon.h"
 #include "util/FirmwareIdentity.h"
 #include "util/ReadingStatsSleepSource.h"
+#include "util/SleepScreenSource.h"
 
 namespace {
 // Metalio: B/W sleep images use the full 0xF7 waveform instead of HALF (two
@@ -749,7 +750,8 @@ void SleepActivity::onEnter() {
       return renderCoverSleepScreen();
     case (CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM):
       // Cover wins when sleeping out of a book; otherwise use the custom source.
-      if (APP_STATE.lastSleepFromReader) return renderCoverSleepScreen();
+      if (!sleepscreen::showsCustomSource(SETTINGS.sleepScreen, APP_STATE.lastSleepFromReader))
+        return renderCoverSleepScreen();
       return renderCustomSleepScreen();
     default:
       return renderDefaultSleepScreen();
@@ -757,11 +759,10 @@ void SleepActivity::onEnter() {
 }
 
 bool SleepActivity::renderTimedSleepScreen() const {
-  // In Cover + Custom the cover painted at sleep entry must survive timed
-  // refreshes; the custom source only applies outside the reader.
-  if (SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM &&
-      APP_STATE.lastSleepFromReader)
-    return false;
+  // Only repaint a sleep screen that shows the custom source. A cover painted
+  // at sleep entry must survive timed refreshes; arming already skips this
+  // case, so this also guards against settings/state changed between sleeps.
+  if (!sleepscreen::showsCustomSource(SETTINGS.sleepScreen, APP_STATE.lastSleepFromReader)) return false;
 
   // On a timer wake, dispatch to the selected live screen source before the
   // ordinary wallpaper pool. Rebuild page one from SD/native statistics and
