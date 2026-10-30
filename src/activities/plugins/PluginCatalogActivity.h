@@ -160,7 +160,7 @@ class PluginCatalogActivity : public CatalogActivity {
     std::string browseListsUrl;
     std::string capabilityListsUrl;
     pluginhttp::Headers listsHeaders;
-    std::string listsItemsPath, listsTitlePath, listsUrlPath, listsIdPath;
+    std::string listsItemsPath, listsTitlePath, listsUrlPath, listsIdPath, listsRequiresPath;
     size_t fixedListCount = 0;  // leading browseLists entries from the manifest
     // JSON search overrides URL/body independently; empty fields reuse browse.
     std::string searchUrl, searchBody;

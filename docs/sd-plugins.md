@@ -208,6 +208,7 @@ Razor-Crest currently advertises these catalog capabilities:
 | `catalog.item_details` | JSON catalog items can open a Details page with selected-row metadata and optional bounded on-demand HTML/text content. | Any catalog can keep browse rows concise while offering richer information before Fetch/Install/Update. Rich metadata is additive and failure falls back to the normal item details view. |
 | `catalog.encoded_item_fields` | Download, sidecar, and details templates can use the percent-encoded item variables `{id_enc}`, `{title_enc}`, `{author_enc}`, and `{url_enc}`. | A catalog whose URLs carry item text can require this so older firmware, which would send the variable names literally, does not offer the entry. |
 | `catalog.list_index_mapping` | `browse.lists_url` can be fetched with `lists_headers` and read with `lists_items`/`lists_fields`, and lists can carry an `id` that fills `{list_id}` and `{list_id_enc}`. | A catalog can build its lists from a service's own folder or tag API, with the token in a header, without a separate server to reshape the answer. |
+| `catalog.list_requirements` | Static and remote browse lists can optionally declare an array of required firmware capabilities; `lists_fields.requires` maps the field for a remote index. | Hide only unsupported lists using a generic all-of check, independent of plugin or package type. |
 
 Capability names describe firmware behavior available to the entire plugin system.
 They must not encode Plugin Hub policy or ownership, and another plugin may use the
@@ -618,10 +619,16 @@ JSON catalogs may also map `description`, `detail_author`, and `repository` for 
   limited to 16KB. Fixed manifest lists remain available if the remote fetch
   fails. A 401/403 triggers one password-grant token refresh and retry, or
   the sign-in screen. These options need `catalog.list_index_mapping`.
-  Razor-Crest also supports `browse.capability_lists_url`: a capability-filtered
-  schema-v2 index with `catalogs`, `kind`, `items`, `requires`, and
-  `generation`. The legacy `lists_url` remains a fallback and the
-  capability-gated theme and wallpaper catalogs remain device-filtered.
+  Razor-Crest also supports `browse.capability_lists_url`, which currently
+  points to a schema-v2 index with a `lists` array. Entries may include `kind`
+  (`plugin`, `theme-pack`, `wallpaper-pack`), the catalog's `items` array name,
+  and an optional all-of `requires` capability array. List-level requirements
+  are checked whenever declared, independent of the index schema version;
+  missing requirements do not hide a generic list. Extension-specific parsing
+  is used only when an entry declares an extension `kind`, so an ordinary
+  mapped schema-v2 index remains a generic plugin list index. Older indexes
+  may use `catalogs` instead of `lists`; `generation` is optional for cache
+  invalidation. The legacy `lists_url` remains a fallback.
 - **XML navigation**: Confirm on a folder (an item carrying `container_element`)
   descends into it, Back climbs out (Back at the root leaves the screen).
   With `resolve_urls`, server-relative URLs resolve against the browse URL's

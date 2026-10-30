@@ -258,9 +258,14 @@ bool matchesCapabilities(const std::string& required) {
   return true;
 }
 
-bool browseListHidden(JsonVariantConst list) {
+bool browseListHidden(JsonVariantConst list, const std::string& requirementsPath = "requires") {
   const char* capability = list["hide_if"]["plugin_capability"] | "";
-  return capability[0] != 0 && csvContainsToken(firmwareidentity::PLUGIN_CAPABILITIES, capability);
+  if (capability[0] != 0 && csvContainsToken(firmwareidentity::PLUGIN_CAPABILITIES, capability)) return true;
+  // Same all-of requirement policy for fixed and fetched lists; independent
+  // of index schema and extension package kind.
+  JsonVariantConst requirements = resolvePath(list, requirementsPath);
+  return !requirements.isNull() &&
+         (!requirements.is<JsonArrayConst>() || !extensionpackages::supportsAll(requirements.as<JsonArrayConst>()));
 }
 
 bool catalogEntryCompatible(const std::string& family, const std::string& firmware, const std::string& apiMin,
@@ -472,6 +477,7 @@ bool PluginCatalogActivity::loadManifest() {
   manifest.listsTitlePath = listFields["title"] | "title";
   manifest.listsUrlPath = listFields["url"] | "url";
   manifest.listsIdPath = listFields["id"] | "id";
+  manifest.listsRequiresPath = listFields["requires"] | "requires";
   manifest.browseLists.reserve(browse["lists"].size());
   for (JsonVariantConst l : browse["lists"].as<JsonArrayConst>()) {
     if (browseListHidden(l)) continue;
@@ -1404,31 +1410,36 @@ bool PluginCatalogActivity::loadBrowseListIndex(int& status) {
 
   const bool v2 = doc["schema_version"].as<int>() == 2;
   JsonArrayConst lists = resolvePath(doc.as<JsonVariantConst>(), manifest.listsItemsPath).as<JsonArrayConst>();
-  // Razor-Crest's capability index publishes "catalogs" instead of "lists".
+  // Older optional indices may call the array "catalogs". Configured paths
+  // take precedence, as in upstream's generic list-index implementation.
   if (lists.isNull() && manifest.listsItemsPath == "lists") lists = doc["catalogs"].as<JsonArrayConst>();
   if (lists.isNull() || lists.size() == 0) {
     LOG_ERR("PCAT", "browse list index has no lists: %s", url.c_str());
     return false;
   }
 
-  std::vector<Manifest::BrowseList> remoteLists;
-  remoteLists.reserve(std::min<size_t>(lists.size(), MAX_BROWSE_LISTS));
+  // Append to the manifest directly as upstream does, keeping its fixed
+  // entries untouched. This avoids a second list vector on low-RAM boards.
+  manifest.browseLists.resize(manifest.fixedListCount);
+  manifest.browseLists.reserve(manifest.fixedListCount + std::min<size_t>(lists.size(), MAX_BROWSE_LISTS));
   for (JsonVariantConst l : lists) {
-    if (remoteLists.size() >= MAX_BROWSE_LISTS) break;
-    if (browseListHidden(l)) continue;
+    if (manifest.browseLists.size() - manifest.fixedListCount >= MAX_BROWSE_LISTS) break;
+    if (browseListHidden(l, manifest.listsRequiresPath)) continue;
+
     Manifest::BrowseList entry;
     entry.title = variantToString(resolvePath(l, manifest.listsTitlePath));
     entry.url = variantToString(resolvePath(l, manifest.listsUrlPath));
     entry.id = variantToString(resolvePath(l, manifest.listsIdPath));
     entry.body = l["body"] | "";
-    if (v2) {
-      entry.kind = l["kind"] | "";
+    // Only explicit extension metadata invokes the extra dispatch contract.
+    // A generic schema-v2 index still uses upstream's normal plugin view.
+    const char* kind = l["kind"] | nullptr;
+    if (v2 && kind && *kind) {
+      entry.kind = kind;
       entry.itemsPath = l["items"] | "";
-      if ((entry.kind != "plugin" && entry.kind != "theme-pack" && entry.kind != "wallpaper-pack") ||
-          !extensionpackages::supportsAll(l["requires"].as<JsonArrayConst>()))
-        continue;
+      if (entry.kind != "plugin" && entry.kind != "theme-pack" && entry.kind != "wallpaper-pack") continue;
       if (entry.kind != "plugin" && entry.itemsPath != "items") continue;
-      if (entry.kind == "plugin" && entry.itemsPath != "plugins") continue;
+      if (entry.kind == "plugin" && !entry.itemsPath.empty() && entry.itemsPath != "plugins") continue;
     }
     JsonVariantConst notice = l["notice"];
     entry.noticeTitle = notice["title"] | "";
@@ -1436,15 +1447,13 @@ bool PluginCatalogActivity::loadBrowseListIndex(int& status) {
     entry.noticeConfirm = notice["confirm"] | "";
     entry.noticeCancel = notice["cancel"] | "";
     // A list can use a dedicated URL or a shared browse URL with {list_id}.
-    if (!entry.title.empty() && (!entry.url.empty() || !entry.id.empty())) remoteLists.push_back(std::move(entry));
+    if (!entry.title.empty() && (!entry.url.empty() || !entry.id.empty()))
+      manifest.browseLists.push_back(std::move(entry));
   }
-  if (remoteLists.empty()) {
+  if (manifest.browseLists.size() == manifest.fixedListCount) {
     LOG_ERR("PCAT", "browse list index has no usable lists: %s", url.c_str());
     return false;
   }
-  manifest.browseLists.resize(manifest.fixedListCount);
-  manifest.browseLists.reserve(manifest.fixedListCount + remoteLists.size());
-  for (auto& remoteList : remoteLists) manifest.browseLists.push_back(std::move(remoteList));
   return true;
 }
 

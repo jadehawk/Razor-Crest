@@ -32,6 +32,7 @@
   "catalog.lists,catalog.notices,catalog.bundle_install,catalog.version_tracking,catalog.compatibility,catalog."   \
   "images,"                                                                                                        \
   "catalog.cache,catalog.refresh,catalog.item_details,catalog.encoded_item_fields,catalog.list_index_mapping,"     \
+  "catalog.list_requirements,"                                                                                     \
   "catalog.hardware_filter.v1,stats."                                                                              \
   "native.v1,ui.dashboard.v1,"                                                                                     \
   "theme.sd.v1,theme.metrics.v1,theme.images.v1,theme.composition.v1,theme.fonts.v1,"                              \
