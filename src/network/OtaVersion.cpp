@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string_view>
 
 namespace {
 
@@ -58,6 +59,28 @@ bool isNewer(const char* latestTag, const char* currentVersion) {
   // An RC build of the same base version is older than its final release.
   if (current.releaseCandidate && !latest.releaseCandidate) return true;
   return false;
+}
+
+bool buildBoardAssetSuffix(const char* boardName, size_t boardNameLen, bool hyphenBoardSuffixes, char* out,
+                           size_t outSize) {
+  if (boardName == nullptr || boardNameLen == 0 || out == nullptr || outSize == 0) return false;
+
+  const std::string_view board(boardName, boardNameLen);
+  const char* fixedSuffix = nullptr;
+  if (board == "x4") {
+    fixedSuffix = "-x3-x4";
+  } else if (hyphenBoardSuffixes && board == "metalio_eink4") {
+    fixedSuffix = "-metalio-eink4";
+  } else if (hyphenBoardSuffixes && board == "eego_a4") {
+    fixedSuffix = "-eego-a4";
+  }
+
+  // Keep the board tag length, not its trailing delimiter, in the fallback.
+  if (fixedSuffix == nullptr && boardNameLen >= outSize) return false;
+  const int written = fixedSuffix != nullptr
+                          ? snprintf(out, outSize, "%s", fixedSuffix)
+                          : snprintf(out, outSize, "-%.*s", static_cast<int>(boardNameLen), boardName);
+  return written > 0 && static_cast<size_t>(written) < outSize;
 }
 
 bool buildAssetName(const char* assetPrefix, const char* releaseTag, const char* suffix, char* out, size_t outSize) {

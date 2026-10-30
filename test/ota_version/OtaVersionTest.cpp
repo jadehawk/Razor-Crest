@@ -14,7 +14,7 @@ TEST(OtaVersion, ParsesReleaseTag) {
 }
 
 TEST(OtaVersion, ParsesCompiledVersion) {
-  const auto v = otaversion::parse("2.0.0-r5-x4pro");
+  const auto v = otaversion::parse("2.0.0-r5");
   EXPECT_TRUE(v.valid);
   EXPECT_EQ(v.revision, 5);
 }
@@ -99,4 +99,67 @@ TEST(OtaVersion, BuildsReleaseAssetName) {
 TEST(OtaVersion, RejectsAssetNameThatDoesNotFit) {
   char out[16] = {};
   EXPECT_FALSE(otaversion::buildAssetName("razor-crest-", "razor-crest-v2.0.0-r5", "-x4pro", out, sizeof(out)));
+}
+
+// The actual firmware tag is "CROSSPOINT-BOARD-V1:<board>;", so boardName()
+// points at a non-null-terminated substring. These tests include the semicolon.
+TEST(OtaVersion, LengthDelimitedBoardNamesSelectSpecialAssets) {
+  char suffix[24] = {};
+  ASSERT_TRUE(otaversion::buildBoardAssetSuffix("x4;", 2, true, suffix, sizeof(suffix)));
+  EXPECT_STREQ(suffix, "-x3-x4");
+
+  ASSERT_TRUE(
+      otaversion::buildBoardAssetSuffix("metalio_eink4;", sizeof("metalio_eink4") - 1, true, suffix, sizeof(suffix)));
+  EXPECT_STREQ(suffix, "-metalio-eink4");
+
+  ASSERT_TRUE(otaversion::buildBoardAssetSuffix("eego_a4;", sizeof("eego_a4") - 1, true, suffix, sizeof(suffix)));
+  EXPECT_STREQ(suffix, "-eego-a4");
+}
+
+TEST(OtaVersion, UpstreamBoardSuffixesKeepUnderscores) {
+  char suffix[24] = {};
+  ASSERT_TRUE(otaversion::buildBoardAssetSuffix("x4;", 2, false, suffix, sizeof(suffix)));
+  EXPECT_STREQ(suffix, "-x3-x4");
+
+  ASSERT_TRUE(
+      otaversion::buildBoardAssetSuffix("metalio_eink4;", sizeof("metalio_eink4") - 1, false, suffix, sizeof(suffix)));
+  EXPECT_STREQ(suffix, "-metalio_eink4");
+
+  ASSERT_TRUE(otaversion::buildBoardAssetSuffix("eego_a4;", sizeof("eego_a4") - 1, false, suffix, sizeof(suffix)));
+  EXPECT_STREQ(suffix, "-eego_a4");
+}
+
+TEST(OtaVersion, AllPublishedRazorCrestBoardsBuildActualReleaseAssetNames) {
+  struct BoardCase {
+    const char* taggedBoard;
+    size_t boardLen;
+    const char* asset;
+  };
+  const BoardCase boards[] = {
+      {"x4;", 2, "razor-crest-2.0.0-r6-x3-x4.bin"},
+      {"x4pro;", sizeof("x4pro") - 1, "razor-crest-2.0.0-r6-x4pro.bin"},
+      {"x4c;", sizeof("x4c") - 1, "razor-crest-2.0.0-r6-x4c.bin"},
+      {"papermono;", sizeof("papermono") - 1, "razor-crest-2.0.0-r6-papermono.bin"},
+      {"sticky;", sizeof("sticky") - 1, "razor-crest-2.0.0-r6-sticky.bin"},
+      {"metalio_eink4;", sizeof("metalio_eink4") - 1, "razor-crest-2.0.0-r6-metalio-eink4.bin"},
+      {"eego_a4;", sizeof("eego_a4") - 1, "razor-crest-2.0.0-r6-eego-a4.bin"},
+  };
+  for (const auto& board : boards) {
+    char suffix[24] = {};
+    char asset[48] = {};
+    ASSERT_TRUE(otaversion::buildBoardAssetSuffix(board.taggedBoard, board.boardLen, true, suffix, sizeof(suffix)))
+        << board.taggedBoard;
+    ASSERT_TRUE(otaversion::buildAssetName("razor-crest-", "razor-crest-v2.0.0-r6", suffix, asset, sizeof(asset)));
+    EXPECT_STREQ(asset, board.asset) << board.taggedBoard;
+  }
+}
+
+TEST(OtaVersion, BoardSuffixRejectsInvalidInputAndTruncation) {
+  char suffix[8] = {};
+  EXPECT_FALSE(otaversion::buildBoardAssetSuffix(nullptr, 2, true, suffix, sizeof(suffix)));
+  EXPECT_FALSE(otaversion::buildBoardAssetSuffix("x4;", 0, true, suffix, sizeof(suffix)));
+  EXPECT_FALSE(otaversion::buildBoardAssetSuffix("x4;", 2, true, nullptr, sizeof(suffix)));
+  EXPECT_FALSE(
+      otaversion::buildBoardAssetSuffix("metalio_eink4;", sizeof("metalio_eink4") - 1, true, suffix, sizeof(suffix)));
+  EXPECT_FALSE(otaversion::buildBoardAssetSuffix("x4pro;", sizeof("x4pro") - 1, true, suffix, 0));
 }

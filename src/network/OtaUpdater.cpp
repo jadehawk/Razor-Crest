@@ -34,17 +34,6 @@
 namespace {
 constexpr char latestReleaseUrl[] = "https://api.github.com/repos/" CROSSPOINT_OTA_REPO "/releases/latest";
 
-// Most release asset suffixes match the firmware board tag. Razor-Crest labels
-// two devices with hyphens where the embedded board tag uses underscores.
-const char* boardAssetSuffix() {
-  const char* board = board_tag::boardName();
-  if (strcmp(board, "x4") == 0) return "-x3-x4";
-#if CROSSPOINT_OTA_HYPHEN_BOARD_SUFFIXES
-  if (strcmp(board, "metalio_eink4") == 0) return "-metalio-eink4";
-  if (strcmp(board, "eego_a4") == 0) return "-eego-a4";
-#endif
-  return nullptr;
-}
 }  // namespace
 
 OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
@@ -67,12 +56,10 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   // razor-crest- in this fork. The combined C3 image uses x3-x4; other suffixes
   // match the firmware board tag.
   char assetSuffix[24] = {};
-  const char* fixedSuffix = boardAssetSuffix();
-  if (fixedSuffix != nullptr) {
-    snprintf(assetSuffix, sizeof(assetSuffix), "%s", fixedSuffix);
-  } else {
-    snprintf(assetSuffix, sizeof(assetSuffix), "-%.*s", static_cast<int>(board_tag::boardNameLen()),
-             board_tag::boardName());
+  if (!otaversion::buildBoardAssetSuffix(board_tag::boardName(), board_tag::boardNameLen(),
+                                         CROSSPOINT_OTA_HYPHEN_BOARD_SUFFIXES != 0, assetSuffix, sizeof(assetSuffix))) {
+    LOG_ERR("OTA", "Board name too long for release asset suffix");
+    return INTERNAL_UPDATE_ERROR;
   }
   char assetName[64] = {};
   bool assetNameSet = false;
