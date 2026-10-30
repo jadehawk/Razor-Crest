@@ -264,7 +264,7 @@ bool browseListHidden(JsonVariantConst list, const std::string& requirementsPath
   // Same all-of requirement policy for fixed and fetched lists; independent
   // of index schema and extension package kind.
   JsonVariantConst requirements = resolvePath(list, requirementsPath);
-  return !requirements.isNull() &&
+  return !requirements.isUnbound() &&
          (!requirements.is<JsonArrayConst>() || !extensionpackages::supportsAll(requirements.as<JsonArrayConst>()));
 }
 
@@ -1433,7 +1433,7 @@ bool PluginCatalogActivity::loadBrowseListIndex(int& status) {
     entry.body = l["body"] | "";
     // Only explicit extension metadata invokes the extra dispatch contract.
     // A generic schema-v2 index still uses upstream's normal plugin view.
-    const char* kind = l["kind"] | nullptr;
+    const char* kind = l["kind"] | "";
     if (v2 && kind && *kind) {
       entry.kind = kind;
       entry.itemsPath = l["items"] | "";
