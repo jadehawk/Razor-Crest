@@ -172,8 +172,10 @@ each timer wake reloads the native stats and re-renders page one, displays
 it on e-ink, and returns straight to deep sleep. The interval is preserved
 even if reading totals have not changed: timed wake is a scheduled refresh
 primitive, not only a wallpaper carousel. Cover + Custom renders live stats
-on entry; timed refresh still requires sleep mode Custom. No Wi-Fi is
-necessary for this local statistics source.
+on entry outside the reader; timed refresh works whenever the custom
+source was displayed, including when a book cover failed to load. A
+successfully displayed book cover is retained without periodic timer wakes.
+No Wi-Fi is needed for this local source; the statistics data stays on-device.
 
 Hardware tests: select the live source and a short interval, sleep and check
 that the statistics screen repaints on timer wake, then returns to deep sleep.

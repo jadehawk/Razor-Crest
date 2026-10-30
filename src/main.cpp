@@ -51,6 +51,7 @@
 #include "util/ButtonNavigator.h"
 #include "util/PluginEvents.h"
 #include "util/ScreenshotUtil.h"
+#include "util/SleepScreenSource.h"
 #include "util/SlideSwitch.h"
 #include "util/Timezones.h"
 
@@ -430,7 +431,11 @@ static void deliverSleepPluginEvents(const bool allowNetwork) {
 uint64_t timedSleepScreenRefreshUs() {
   // The timer is a deep-sleep refresh scheduler, not just a wallpaper
   // carousel. Virtual sources (e.g. Reading Statistics) can repaint on wake.
-  if (SETTINGS.sleepScreen != CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM) return 0;
+  // In Cover + Custom only the custom-source sleeps are worth waking for: a
+  // cover painted at sleep entry must stay untouched and must not cause wakes.
+  if (!sleepscreen::showsCustomSource(SETTINGS.sleepScreen, APP_STATE.lastSleepFromReader,
+                                     APP_STATE.lastSleepCoverFallback))
+    return 0;
   return SETTINGS.getTimedSleepScreenRefreshUs();
 }
 
@@ -490,6 +495,7 @@ static bool resumeAfterPiccoUsbHold() {
 void enterDeepSleep(bool fromTimeout = false) {
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
   APP_STATE.lastSleepFromReader = activityManager.isReaderActivity();
+  APP_STATE.lastSleepCoverFallback = false;
 
   // Sleep may end in a power-off (battery death, latch); persist the clock
   // floor now so a later cold boot resumes from it.
@@ -512,6 +518,9 @@ void enterDeepSleep(bool fromTimeout = false) {
   APP_STATE.saveToFile();
 
   activityManager.goToSleep(fromTimeout);
+  // Cover rendering may have fallen back to the custom source. Persist that
+  // outcome before timer wake so a reader-origin fallback can refresh.
+  if (APP_STATE.lastSleepCoverFallback) APP_STATE.saveToFile();
 
   if (isQuickResumeSleep) {
     saveSleepFrameBuffer();
