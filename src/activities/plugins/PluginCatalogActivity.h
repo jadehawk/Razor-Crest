@@ -155,11 +155,11 @@ class PluginCatalogActivity : public CatalogActivity {
       bool hasNotice() const { return !noticeMessage.empty(); }
     };
     std::vector<BrowseList> browseLists;
-    // Optional remote index that supplies named JSON views dynamically. The
-    // standard contract is {"lists":[...]}; generated catalog indexes may
-    // expose the same title/url records under "catalogs".
+    // Optional remote index whose views follow the manifest's own lists.
+    // A capability-aware index may also use a "catalogs" array.
     std::string browseListsUrl;
     std::string capabilityListsUrl;  // optional v2 index; legacy URL remains intact
+    size_t fixedListCount = 0;  // leading browseLists entries from the manifest
     // JSON search overrides URL/body independently; empty fields reuse browse.
     std::string searchUrl, searchBody;
     bool hasSearch() const { return (!searchUrl.empty() || !searchBody.empty()) && browseFormat != "xml"; }
