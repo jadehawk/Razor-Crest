@@ -8,6 +8,21 @@
 #define CROSSPOINT_FIRMWARE_ID "Razor-Crest"
 #endif
 
+// OTA feed for this firmware. Upstream CrossPoint falls back to its own
+// repository and asset prefix in OtaUpdater.cpp; Razor-Crest publishes its own
+// release tags (razor-crest-v<base>-rN) and hyphenated asset labels.
+#ifndef CROSSPOINT_OTA_REPO
+#define CROSSPOINT_OTA_REPO "jadehawk/Razor-Crest"
+#endif
+
+#ifndef CROSSPOINT_OTA_ASSET_PREFIX
+#define CROSSPOINT_OTA_ASSET_PREFIX "razor-crest-"
+#endif
+
+#ifndef CROSSPOINT_OTA_HYPHEN_BOARD_SUFFIXES
+#define CROSSPOINT_OTA_HYPHEN_BOARD_SUFFIXES 1
+#endif
+
 #ifndef CROSSPOINT_PLUGIN_API_VERSION
 #define CROSSPOINT_PLUGIN_API_VERSION 1
 #endif
