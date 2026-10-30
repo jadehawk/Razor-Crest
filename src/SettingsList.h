@@ -22,10 +22,8 @@
 #include "activities/settings/SettingsActivity.h"
 #include "components/UITheme.h"
 #include "util/DictionaryRegistry.h"
-
 #include "util/RecentBookLimits.h"
 #include "util/SlideSwitch.h"
-
 
 // Build the font family setting dynamically. When registry is non-null, SD card fonts
 // are appended after the built-in fonts. Otherwise only built-in fonts are listed.
@@ -318,6 +316,28 @@ std::vector<SettingInfo> getBaseSettingsList(size_t extraCapacity = 0);
 inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* registry = nullptr,
                                                 const std::vector<DictionaryEntry>* dictionaries = nullptr) {
   auto v = getBaseSettingsList(dictionaries && !dictionaries->empty() ? 2 : 1);
+  const auto orientationSetting = std::find_if(
+      v.begin(), v.end(), [](const SettingInfo& s) { return s.valuePtr == &CrossPointSettings::orientation; });
+  if (orientationSetting != v.end()) {
+    const bool hasImu = halTiltSensor.isAvailable();
+    std::vector<StrId> values = {StrId::STR_PORTRAIT, StrId::STR_LANDSCAPE_CW, StrId::STR_ORIENTATION_INVERTED,
+                                 StrId::STR_LANDSCAPE_CCW};
+    if (hasImu) values.push_back(StrId::STR_AUTO_ROTATION);
+    *orientationSetting = SettingInfo::DynamicEnum(
+        StrId::STR_ORIENTATION, std::move(values),
+        [hasImu]() -> uint8_t {
+          return hasImu && SETTINGS.autoRotate ? CrossPointSettings::ORIENTATION_COUNT : SETTINGS.orientation;
+        },
+        [hasImu](uint8_t selection) {
+          if (hasImu && selection == CrossPointSettings::ORIENTATION_COUNT) {
+            SETTINGS.autoRotate = 1;
+          } else if (selection < CrossPointSettings::ORIENTATION_COUNT) {
+            SETTINGS.autoRotate = 0;
+            SETTINGS.orientation = selection;
+          }
+        },
+        "orientation", StrId::STR_CAT_READER);
+  }
   // Hardware-dependent choices belong in the UI only; persistence keeps the
   // requested physical count (0 = automatic), not a device-specific menu index.
   const auto carousel = std::find_if(

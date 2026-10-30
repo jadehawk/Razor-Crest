@@ -348,22 +348,29 @@ void EpubReaderActivity::openReaderMenu() {
   const ChapterPosition position = chapterPosition();
   const int bookProgressPercent = bookPercentFor(position);
 
-  startActivityForResult(std::make_unique<EpubReaderMenuActivity>(
-                             renderer, mappedInput, epub->getTitle(), position.displayPage(), position.totalPages,
-                             bookProgressPercent, SETTINGS.orientation, !currentPageFootnotes.empty(),
-                             !cachedBookmarks.empty(), CLIPPINGS.hasClippings(), selectedMenuAction),
-                         [this](const ActivityResult& result) {
-                           const auto& menu = std::get<MenuResult>(result.data);
+  startActivityForResult(
+      std::make_unique<EpubReaderMenuActivity>(
+          renderer, mappedInput, epub->getTitle(), position.displayPage(), position.totalPages, bookProgressPercent,
+          SETTINGS.autoRotate && halTiltSensor.isAvailable() ? CrossPointSettings::ORIENTATION_COUNT
+                                                             : SETTINGS.orientation,
+          !currentPageFootnotes.empty(), !cachedBookmarks.empty(), CLIPPINGS.hasClippings(), selectedMenuAction),
+      [this](const ActivityResult& result) {
+        const auto& menu = std::get<MenuResult>(result.data);
 
-                           if (SETTINGS.orientation != menu.orientation) {
-                             applyOrientation(menu.orientation);
-                           }
+        if (menu.orientation == CrossPointSettings::ORIENTATION_COUNT && halTiltSensor.isAvailable()) {
+          if (!SETTINGS.autoRotate) {
+            SETTINGS.autoRotate = 1;
+            SETTINGS.saveToFile();
+          }
+        } else if (SETTINGS.orientation != menu.orientation || SETTINGS.autoRotate) {
+          applyOrientation(menu.orientation);
+        }
 
-                           toggleAutoPageTurn(menu.pageTurnOption);
-                           if (!result.isCancelled) {
-                             onReaderMenuConfirm(static_cast<EpubReaderMenuActivity::MenuAction>(menu.action));
-                           }
-                         });
+        toggleAutoPageTurn(menu.pageTurnOption);
+        if (!result.isCancelled) {
+          onReaderMenuConfirm(static_cast<EpubReaderMenuActivity::MenuAction>(menu.action));
+        }
+      });
 }
 
 // Runs on the render task, under its lock, right before every chapter build. The page turner's
@@ -665,7 +672,8 @@ void EpubReaderActivity::loop() {
   // center's orientation tile). Reflow before the next render, or the page
   // would be drawn with a layout built for the previous frame size.
   if (appliedOrientation != SETTINGS.orientation) {
-    applyOrientation(SETTINGS.orientation);
+    discardOverlayPage();
+    applyOrientation(SETTINGS.orientation, false);
     requestUpdate();
     return;
   }
@@ -1375,10 +1383,10 @@ void EpubReaderActivity::applyInitialOrientation() {
   appliedOrientation = SETTINGS.orientation;
 }
 
-void EpubReaderActivity::applyOrientation(const uint8_t orientation) {
+void EpubReaderActivity::applyOrientation(const uint8_t orientation, const bool manual) {
   // Also runs when SETTINGS already holds the new value but this layout was
   // built for the old one — that is what an external change looks like here.
-  if (SETTINGS.orientation == orientation && appliedOrientation == orientation) {
+  if (SETTINGS.orientation == orientation && appliedOrientation == orientation && (!manual || !SETTINGS.autoRotate)) {
     return;
   }
 
@@ -1390,6 +1398,10 @@ void EpubReaderActivity::applyOrientation(const uint8_t orientation) {
     nextPageNumber = section->currentPage;
   }
 
+  if (manual && SETTINGS.autoRotate) {
+    SETTINGS.autoRotate = 0;
+    SETTINGS.saveToFile();
+  }
   if (SETTINGS.orientation != orientation) {
     SETTINGS.orientation = orientation;
     SETTINGS.saveToFile();
@@ -3102,7 +3114,9 @@ std::string EpubReaderActivity::moreRowValue(int row) const {
   if (row < 0 || row >= static_cast<int>(moreItems.size())) return "";
   switch (moreItems[row].action) {
     case MA::ROTATE_SCREEN:
-      return I18N.get(kOrient[SETTINGS.orientation % CrossPointSettings::ORIENTATION_COUNT]);
+      return SETTINGS.autoRotate && halTiltSensor.isAvailable()
+                 ? I18N.get(StrId::STR_AUTO_ROTATION)
+                 : I18N.get(kOrient[SETTINGS.orientation % CrossPointSettings::ORIENTATION_COUNT]);
     case MA::AUTO_PAGE_TURN:
       return (autoTurnOption == 0 || autoTurnOption >= static_cast<int>(std::size(PAGE_TURN_RATES)))
                  ? std::string(tr(STR_STATE_OFF))
@@ -3124,11 +3138,23 @@ void EpubReaderActivity::activateMoreRow(int row) {
   switch (action) {
     case MA::ROTATE_SCREEN: {
       static constexpr StrId kOrientIds[] = {StrId::STR_PORTRAIT, StrId::STR_LANDSCAPE_CW,
-                                             StrId::STR_ORIENTATION_INVERTED, StrId::STR_LANDSCAPE_CCW};
-      static_assert(std::size(kOrientIds) == CrossPointSettings::ORIENTATION_COUNT, "orientation options");
-      overlayPopup.show(StrId::STR_ORIENTATION, kOrientIds, static_cast<int>(std::size(kOrientIds)),
-                        SETTINGS.orientation % CrossPointSettings::ORIENTATION_COUNT, [this](int idx) {
-                          if (idx == SETTINGS.orientation) return;
+                                             StrId::STR_ORIENTATION_INVERTED, StrId::STR_LANDSCAPE_CCW,
+                                             StrId::STR_AUTO_ROTATION};
+      static_assert(std::size(kOrientIds) == CrossPointSettings::ORIENTATION_COUNT + 1, "orientation options");
+      overlayPopup.show(StrId::STR_ORIENTATION, kOrientIds,
+                        static_cast<int>(std::size(kOrientIds)) - (halTiltSensor.isAvailable() ? 0 : 1),
+                        SETTINGS.autoRotate && halTiltSensor.isAvailable()
+                            ? CrossPointSettings::ORIENTATION_COUNT
+                            : SETTINGS.orientation % CrossPointSettings::ORIENTATION_COUNT,
+                        [this](int idx) {
+                          if (idx == CrossPointSettings::ORIENTATION_COUNT) {
+                            if (!SETTINGS.autoRotate) {
+                              SETTINGS.autoRotate = 1;
+                              SETTINGS.saveToFile();
+                            }
+                            return;
+                          }
+                          if (idx == SETTINGS.orientation && !SETTINGS.autoRotate) return;
                           applyOrientation(static_cast<uint8_t>(idx));
                           // The stored page is laid out for the old orientation.
                           discardOverlayPage();

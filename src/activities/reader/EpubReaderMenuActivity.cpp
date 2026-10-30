@@ -3,6 +3,7 @@
 #include <BlePageTurner.h>
 #include <GfxRenderer.h>
 #include <HalFrontlight.h>
+#include <HalTiltSensor.h>
 #include <I18n.h>
 
 #include "CrossPointSettings.h"
@@ -27,6 +28,10 @@ EpubReaderMenuActivity::EpubReaderMenuActivity(GfxRenderer& renderer, MappedInpu
       currentPage(currentPage),
       totalPages(totalPages),
       bookProgressPercent(bookProgressPercent) {
+  if (!halTiltSensor.isAvailable()) {
+    orientationLabels.pop_back();
+    if (pendingOrientation >= orientationLabels.size()) pendingOrientation = SETTINGS.orientation;
+  }
   buildMenuItems(menuItems, hasFootnotes, hasBookmarks, hasClippings);
   buildMenuRowItems();
 }
@@ -143,7 +148,9 @@ void EpubReaderMenuActivity::activateIndex(const int index) {
                        // Rotate the menu immediately. Only the renderer turns;
                        // SETTINGS.orientation stays unchanged so the reader's
                        // result handler still detects the change and reflows.
-                       ReaderUtils::applyOrientation(renderer, pendingOrientation);
+                       ReaderUtils::applyOrientation(
+                           renderer, pendingOrientation == CrossPointSettings::ORIENTATION_COUNT ? SETTINGS.orientation
+                                                                                                 : pendingOrientation);
                        app.setDevice(uiTarget.deviceContext());  // hit rects follow the new frame
                        requestUpdate(true);
                      });

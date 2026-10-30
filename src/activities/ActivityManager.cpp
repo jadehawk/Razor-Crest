@@ -443,6 +443,10 @@ bool ActivityManager::isForegroundReader() const {
   return pendingAction == PendingAction::None && currentActivity && currentActivity->isReaderActivity();
 }
 
+bool ActivityManager::isForegroundAutoOrientationReader() const {
+  return pendingAction == PendingAction::None && currentActivity && currentActivity->supportsAutomaticOrientation();
+}
+
 bool ActivityManager::isRemoteReaderContext() const {
   return pendingAction == PendingAction::None && currentActivity && currentActivity->acceptsRemoteInput();
 }
