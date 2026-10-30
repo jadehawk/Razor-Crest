@@ -217,13 +217,14 @@ class EpubReaderActivity final : public ReaderActivity {
                       int orientedMarginBottom, int orientedMarginLeft);
   void drawClippingHighlights(const Page& page, int fontId, int orientedMarginTop, int orientedMarginLeft) const;
   void renderStatusBar() const;
-  void applyOrientation(uint8_t orientation);
+  void applyOrientation(uint8_t orientation, bool manual = true);
   void applyInitialOrientation() override;
   // The orientation the current layout was built for. The control center's
   // orientation tile can move SETTINGS.orientation while this reader sits on
   // the activity stack, and Pop restores it without onEnter(), so the drift has
   // to be noticed here rather than assumed away.
   uint8_t appliedOrientation = 0;
+  bool supportsAutomaticOrientation() const override { return true; }
 
   // Modal shown when a protected book refuses to open (loan expired /
   // date unverified); OK exits, "Sync time" (when offered) verifies the

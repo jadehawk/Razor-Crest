@@ -90,6 +90,7 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
 
   // Front button remap — managed by RemapFrontButtons sub-activity, not in SettingsList.
   doc["continueReadingBookLimit"] = continueReadingBookLimit;
+  doc["autoRotate"] = autoRotate;
   doc["frontButtonBack"] = frontButtonBack;
   doc["frontButtonConfirm"] = frontButtonConfirm;
   doc["frontButtonLeft"] = frontButtonLeft;
@@ -193,6 +194,8 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
     }
   };
   forEachBaseSetting(visit);
+
+  autoRotate = clamp(doc["autoRotate"] | static_cast<uint8_t>(0), 2, 0);
 
   // This is a requested physical count, not a hardware-specific enum index.
   const int bookLimit = doc["continueReadingBookLimit"] | 0;
