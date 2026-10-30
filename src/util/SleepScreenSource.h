@@ -12,8 +12,9 @@ constexpr bool usesCustomSource(const uint8_t mode) {
   return mode == CrossPointSettings::CUSTOM || mode == CrossPointSettings::COVER_CUSTOM;
 }
 
-constexpr bool showsCustomSource(const uint8_t mode, const bool lastSleepFromReader) {
-  return mode == CrossPointSettings::CUSTOM || (mode == CrossPointSettings::COVER_CUSTOM && !lastSleepFromReader);
+constexpr bool showsCustomSource(const uint8_t mode, const bool lastSleepFromReader, const bool coverFallback) {
+  return mode == CrossPointSettings::CUSTOM ||
+         (mode == CrossPointSettings::COVER_CUSTOM && (!lastSleepFromReader || coverFallback));
 }
 
 }  // namespace sleepscreen

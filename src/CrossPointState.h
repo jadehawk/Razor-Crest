@@ -20,6 +20,8 @@ class CrossPointState : public PersistableStore<CrossPointState> {
   uint32_t sleepOverlayLcgState = 0;
   uint8_t readerActivityLoadCount = 0;
   bool lastSleepFromReader = false;
+  // A missing/unreadable book cover fell back to the custom sleep source.
+  bool lastSleepCoverFallback = false;
   bool showBootScreen = true;
 
   static const char* getFilePath() { return "/.crosspoint/state.json"; }

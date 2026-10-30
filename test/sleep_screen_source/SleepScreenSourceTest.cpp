@@ -28,18 +28,34 @@ TEST(SleepScreenSource, OtherModesDoNotUseCustomSource) {
 }
 
 TEST(SleepScreenSource, CustomAlwaysShowsCustomSource) {
-  EXPECT_TRUE(sleepscreen::showsCustomSource(Mode::CUSTOM, false));
-  EXPECT_TRUE(sleepscreen::showsCustomSource(Mode::CUSTOM, true));
+  for (const bool fromReader : {false, true}) {
+    for (const bool coverFallback : {false, true}) {
+      EXPECT_TRUE(sleepscreen::showsCustomSource(Mode::CUSTOM, fromReader, coverFallback));
+    }
+  }
 }
 
-TEST(SleepScreenSource, CoverCustomShowsCustomSourceOnlyOutsideReader) {
-  EXPECT_TRUE(sleepscreen::showsCustomSource(Mode::COVER_CUSTOM, false));
-  EXPECT_FALSE(sleepscreen::showsCustomSource(Mode::COVER_CUSTOM, true));
+TEST(SleepScreenSource, CoverCustomFromHomeAlwaysShowsCustomSource) {
+  EXPECT_TRUE(sleepscreen::showsCustomSource(Mode::COVER_CUSTOM, false, false));
+  EXPECT_TRUE(sleepscreen::showsCustomSource(Mode::COVER_CUSTOM, false, true));
+}
+
+TEST(SleepScreenSource, CoverCustomFromReaderPreservesValidCover) {
+  EXPECT_FALSE(sleepscreen::showsCustomSource(Mode::COVER_CUSTOM, true, false));
+}
+
+TEST(SleepScreenSource, CoverCustomFromReaderRefreshesMissingCoverFallback) {
+  EXPECT_TRUE(sleepscreen::showsCustomSource(Mode::COVER_CUSTOM, true, true));
 }
 
 TEST(SleepScreenSource, OtherModesNeverShowCustomSource) {
   for (const Mode mode : kModesWithoutCustomSource) {
-    EXPECT_FALSE(sleepscreen::showsCustomSource(mode, false)) << "mode=" << static_cast<int>(mode);
-    EXPECT_FALSE(sleepscreen::showsCustomSource(mode, true)) << "mode=" << static_cast<int>(mode);
+    for (const bool fromReader : {false, true}) {
+      for (const bool coverFallback : {false, true}) {
+        EXPECT_FALSE(sleepscreen::showsCustomSource(mode, fromReader, coverFallback))
+            << "mode=" << static_cast<int>(mode) << " fromReader=" << fromReader
+            << " coverFallback=" << coverFallback;
+      }
+    }
   }
 }
