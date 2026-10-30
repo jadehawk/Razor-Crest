@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include <Imu.h>
 
+#include "AutoOrientationDetector.h"
+
 // TODO: Move enums into new header and share with CrossPointSettings.h
 namespace CrossPointOrientation {
 enum Value : uint8_t { PORTRAIT = 0, LANDSCAPE_CW = 1, INVERTED = 2, LANDSCAPE_CCW = 3 };
@@ -17,7 +19,9 @@ extern HalTiltSensor halTiltSensor;  // Singleton
 
 class HalTiltSensor {
   bool _available = false;
-  mutable Imu _sdkImu;
+  Imu _sdkImu;
+  AutoOrientationDetector _orientationDetector;
+  int8_t _pendingAutoOrientation = -1;
 
   // Tilt gesture state machine
   bool _tiltForwardEvent = false;  // Consumed by wasTiltedForward()
@@ -27,7 +31,9 @@ class HalTiltSensor {
   bool _isAwake = false;           // Tracks power state
   unsigned long _initMs = 0;       // Timestamp of sensor init
   unsigned long _lastTiltMs = 0;   // Debounce / cooldown
-  unsigned long _wakeMs = 0;       // Timestamp of last wake() for stabilization
+  unsigned long _wakeMs = 0;
+  unsigned long _lastPowerAttemptMs = 0;
+  bool _powerAttemptFailed = false;  // Timestamp of last wake() for stabilization
 
   // Tuning constants
   static constexpr float RATE_THRESHOLD_DPS = 270.0f;      // Deg/sec speed to trigger flick
@@ -38,7 +44,7 @@ class HalTiltSensor {
 
   mutable unsigned long _lastPollMs = 0;
 
-  bool readGyro(float& gx, float& gy, float& gz) const;
+  // One SDK read supplies both gravity and angular-rate data.
 
  public:
   // Call after BoardConfig has selected the active device.
@@ -54,7 +60,8 @@ class HalTiltSensor {
   bool isAvailable() const { return _available; }
 
   // Poll the accelerometer and update tilt gesture state.
-  void update(const uint8_t mode, const uint8_t orientation, const bool inReader);
+  void update(uint8_t mode, uint8_t orientation, bool inReader, bool autoRotate);
+  int8_t takeAutoOrientation();
 
   // Returns true once per tilt-forward gesture (next page direction).
   // Consumed on read — subsequent calls return false until next gesture.

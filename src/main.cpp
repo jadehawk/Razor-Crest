@@ -763,11 +763,11 @@ void setup() {
   // reboots replay the live state captured at restart, so they neither go dark
   // nor light up against the user's wake preference. A slide switch bound to
   // the light decides it from its position instead.
-  const bool restoreLightOn = wakeupReason == HalGPIO::WakeupReason::Timer
-                                  ? false
-                                  : isSilentReboot ? silentRebootLightOn
-                                  : slideSwitchOwnsLight() ? gpio.isToggleSwitchOn()
-                                                            : (SETTINGS.frontlightOn != 0 && SETTINGS.frontlightRestoreOnWake != 0);
+  const bool restoreLightOn = wakeupReason == HalGPIO::WakeupReason::Timer ? false
+                              : isSilentReboot                             ? silentRebootLightOn
+                              : slideSwitchOwnsLight()
+                                  ? gpio.isToggleSwitchOn()
+                                  : (SETTINGS.frontlightOn != 0 && SETTINGS.frontlightRestoreOnWake != 0);
   Frontlight.begin(SETTINGS.frontlightBrightness, SETTINGS.frontlightWarmth, restoreLightOn);
 
   switch (wakeupReason) {
@@ -980,7 +980,14 @@ void loop() {
 
   // After the exclusive-storage return: it saves settings to the SD card.
   handleSlideSwitch();
-  halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.orientation, activityManager.isReaderActivity());
+  const bool autoRotateReader = SETTINGS.autoRotate && activityManager.isForegroundAutoOrientationReader();
+  halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.orientation, activityManager.isForegroundReader(),
+                       autoRotateReader);
+  const int8_t detectedOrientation = halTiltSensor.takeAutoOrientation();
+  if (autoRotateReader && detectedOrientation >= 0) {
+    // Runtime orientation changes reflow the reader; the Auto preference is saved separately.
+    SETTINGS.orientation = static_cast<uint8_t>(detectedOrientation);
+  }
 
   // Under the render lock, so a step never overlaps the themes' gauge reads.
   static bool gaugeCapacityPending = true;

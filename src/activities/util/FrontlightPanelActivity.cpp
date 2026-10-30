@@ -161,7 +161,8 @@ void FrontlightPanelActivity::runTile(const int idx) {
       close();
       break;
     case 2:  // Cycle the reading orientation
-      SETTINGS.orientation = static_cast<uint8_t>((SETTINGS.orientation + 1) % 4);
+      SETTINGS.autoRotate = 0;
+      SETTINGS.orientation = static_cast<uint8_t>((SETTINGS.orientation + 1) % CrossPointSettings::ORIENTATION_COUNT);
       SETTINGS.saveToFile();
       // Only the setting changes: turning the renderer cropped the portrait-only
       // screens the panel opens over. The reader reflows on its next loop().
@@ -376,7 +377,8 @@ void FrontlightPanelActivity::buildPanelScreen(UiScreen& screen) {
                                       screen.target().lineHeight(theme.smallText.font));
     if (const auto* scene = UITheme::getInstance().activeExternalScene();
         scene && scene->hasRegion(ThemeScene::Region::Header)) {
-      bandH = std::max<int16_t>(bandH, static_cast<int16_t>(metrics.homeTopPadding - metrics.topPadding - theme.spaceMd));
+      bandH =
+          std::max<int16_t>(bandH, static_cast<int16_t>(metrics.homeTopPadding - metrics.topPadding - theme.spaceMd));
     }
     screen.takeTop(bandH, theme.spaceMd);
     UITheme::getInstance().getTheme().BaseTheme::drawHeader(
