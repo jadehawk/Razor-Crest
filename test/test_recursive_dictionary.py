@@ -140,6 +140,8 @@ struct Settings {
 } SETTINGS;
 struct MappedInputManager {
   enum class Button { Back };
+  bool touch = false;
+  bool hasTouch() const { return touch; }
   bool released = false;
   unsigned long heldMs = 0;
   bool longPress = false;
@@ -440,6 +442,26 @@ int main() {
   assert(reader.restoredSelection.valid && reader.restoredSelection.firstWord == 7 &&
          reader.restoredSelection.lastWord == 7);
   assert(reader.restoredPage == 3 && reader.currentPageVisibleOffset == 384);
+  // Razor-Crest preserves the exact word selection on both touch and button devices.
+  for (const bool touch : {false, true}) {
+    for (const bool cancelled : {false, true}) {
+      for (const bool controlsEnabled : {false, true}) {
+        SETTINGS.touchReaderControls = controlsEnabled;
+        DictionaryDefinitionActivity lookupParent, bookReader;
+        ActivityResult exitResult;
+        exitResult.isCancelled = cancelled;
+        lookupParent.onDefinitionResult(exitResult);
+        bookReader.mappedInput.touch = touch;
+        bookReader.onLookupResult(lookupParent.result);
+        assert(bookReader.selectionOpened == !cancelled);
+        if (!cancelled) {
+          assert(bookReader.restoredSelection.valid && bookReader.restoredSelection.firstWord == 7 &&
+                 bookReader.restoredSelection.lastWord == 7);
+          assert(bookReader.restoredPage == 3 && bookReader.currentPageVisibleOffset == 384);
+        }
+      }
+    }
+  }
   // Long Back also exits at the first definition, where there are no ancestors.
   DictionaryDefinitionActivity root;
   root.lookup = std::make_unique<DictionaryDefinitionActivity::LookupState>(dictionary);
@@ -528,7 +550,7 @@ class Dictionary {
     ++searches;
     return false;
   }
-  bool readDefinition(DictLocation, std::string&, LookupResult*, bool = false) { return false; }
+  bool readDefinition(DictLocation, std::string&, LookupResult*, bool = false, bool* = nullptr) { return false; }
   static std::string cleanWord(const char*);
   static void stemVariants(const std::string&, std::vector<std::string>&);
   bool lookup(const char*, std::string&, std::string&, LookupResult*);
