@@ -334,6 +334,9 @@ JSON catalogs may also map `description`, `detail_author`, and `repository` for 
     "resources": { "details": "off" },        // off (default), ttl, or immutable; thumbnails are request-keyed automatically
     "seed": { "url": "https://.../thumbnail-cache.zip" } // optional user-triggered cache seed
   },
+  // If a seed-capable catalog has no .cache/seed.json, firmware displays a
+  // one-time tip directing users to Settings > Cache. Browsing remains optional
+  // to the cache seed; dismissal is stored in .cache/seed-tip-seen.
 
   "settings": [                             // optional native editor for config.file; at most 12
     { "key": "layout", "title": "Layout", "type": "choice", "default": "grid",
@@ -657,10 +660,32 @@ JSON catalogs may also map `description`, `detail_author`, and `repository` for 
   cap. JPEG/PNG previews are converted directly to small 1-bit BMP files; the
   catalog keeps only one file-backed bitmap reader in memory and at most 16
   ready-bit flags, matching the JSON page-size ceiling.
-- One TLS session is kept alive across browse requests: repeated handshakes
-  permanently fragment the heap.
-- The book download streams to SD via `HttpDownloader`; file size is
-  unconstrained.
+- One TLS session is reused across browse requests while sufficient heap
+  remains. A fresh, seed-capable catalog on a no-PSRAM device can temporarily
+  release its reconstructible manifest before a low-memory HTTPS page fetch.
+- Failed page fetches in tabbed catalogs retain the Browse/Settings tabs and
+  expose a Retry footer action, so cache installation remains reachable.
+- For seed-capable image catalogs on no-PSRAM devices, a low-memory thumbnail
+  batch stages the missing requests, temporarily releases the manifest and
+  parsed page, downloads BMPs to SD, then restores the page and cache-backed
+  previews. Missing seed markers are normal until a seed is installed.
+- Book and bundle downloads normally stream to SD via `HttpDownloader`, with
+  its full-record TLS preflight. Anonymous image downloads from fixed,
+  seed-capable catalogs on low-memory no-PSRAM devices instead use bounded
+  redirect-aware streaming (64 MB cap) into an SD staging file. They release
+  and restore reconstructible plugin state after image publication. For BMP
+  destinations, JPEG decoding happens while the manifest is still released.
+  The no-PSRAM path splits JPEG MCU rows into separate small allocations,
+  applies additional JPEGDEC downscaling only when heap is limited, and permits
+  original JPEG dimensions up to 8192×8192 when the scaled decode remains within
+  bounds. Final screen-sized BMP dimensions are unchanged. Preview reuses the
+  converted BMP instead of decoding after manifest restoration. A partial
+  anonymous image GET caused by a TLS read failure uses the SDK's bounded
+  Range/Content-Range recovery with SD append, safe rewind when Range is ignored,
+  and deletion if recovery remains incomplete. Credentials and custom headers
+  never cross redirects. When heap is too fragmented for an
+  optional remote list index, fixed manifest lists remain available without a
+  failing TLS attempt.
 - An XML list is parsed from the temp file in 2KB chunks; the engine stops
   after 200 entries per folder/feed. Split very large libraries into
   subfolders.

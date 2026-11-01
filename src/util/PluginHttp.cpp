@@ -5,6 +5,7 @@
 #include <HalMemory.h>
 #include <HalStorage.h>
 #include <Logging.h>
+#include <ResumableFetch.h>
 #include <SecureHttpClient.h>
 #include <WiFi.h>
 
@@ -51,8 +52,11 @@ void releaseIdleTlsSessionIfTight(freeink::SecureHttpClient* session) {
   if (!session) return;
   const auto heap = HalMemory::getInternalHeap();
   const bool hasPsram = HalMemory::getPsramHeap().totalBytes > 0;
-  const size_t minFree = hasPsram ? 48 * 1024 : 104 * 1024;
-  const size_t minBlock = hasPsram ? 24 * 1024 : 48 * 1024;
+  // Keep the catalog's established TLS session while there is room to render.
+  // Re-handshaking every page on the no-PSRAM X3 fragments the heap and can
+  // make the second page unreachable even after the first page succeeded.
+  const size_t minFree = hasPsram ? 48 * 1024 : 32 * 1024;
+  const size_t minBlock = hasPsram ? 24 * 1024 : 12 * 1024;
   if (heap.freeBytes >= minFree && heap.largestBlockBytes >= minBlock) return;
   // A keep-alive TLS connection can retain substantial heap while a catalog
   // renders. Close only under pressure; future requests reconnect normally.
@@ -348,7 +352,9 @@ int request(freeink::SecureHttpClient* session, const std::string& url, const st
 }
 
 int requestToFile(freeink::SecureHttpClient* session, const std::string& url, const std::string& method,
-                  const std::string& body, const Headers& headers, const char* destPath, const size_t maxResponse) {
+                  const std::string& body, const Headers& headers, const char* destPath, const size_t maxResponse,
+                  const std::function<void(size_t, size_t)>& progress, const std::function<bool()>& shouldAbort,
+                  const bool followAnonymousRedirects) {
   if (!networkReady()) {
     LOG_ERR("PHTP", "Network request blocked: WiFi is not connected");
     return -1;
@@ -356,9 +362,16 @@ int requestToFile(freeink::SecureHttpClient* session, const std::string& url, co
   releaseFontCachesBeforeTls(url);
   WifiPowerSaveGuard psGuard;
   freeink::SecureHttpClient tmp;
-  freeink::SecureHttpClient* httpPtr = openClient(session, tmp, url, headers);
+  freeink::SecureHttpClient* httpPtr = openClient(session, tmp, url, headers, shouldAbort);
   if (!httpPtr) return -1;
   freeink::SecureHttpClient& http = *httpPtr;
+  if (followAnonymousRedirects && method == "GET" && body.empty() && headers.empty()) http.setFollowRedirects(5);
+  if (progress) {
+    http.setProgressCallback([&](size_t downloaded, size_t total) {
+      progress(downloaded, total);
+      return !shouldAbort || !shouldAbort();
+    });
+  }
 
   int status = -1;
   bool writeOk = true;
@@ -383,6 +396,57 @@ int requestToFile(freeink::SecureHttpClient* session, const std::string& url, co
     // file closed at scope exit, before any Storage.remove of destPath
   }
   releaseIdleTlsSessionIfTight(session);
+  // Only anonymous wallpaper GETs opt into redirect following. When wolfSSL
+  // runs out of contiguous record-buffer heap after receiving part of a 200
+  // response, resume with the SDK's checked Range / Content-Range transport.
+  // Normal successful requests and all authenticated plugin APIs are unchanged.
+  if (followAnonymousRedirects && session == nullptr && method == "GET" && body.empty() && headers.empty() &&
+      status >= 200 && status < 300 && !http.responseComplete() && writeOk && written > 0 &&
+      (!shouldAbort || !shouldAbort())) {
+    const size_t resumeOffset = written;
+    http.end();  // Free the failed TLS session before another handshake.
+    HalFile file = Storage.open(destPath, O_RDWR | O_AT_END);
+    if (file.isOpen() && file.size() == resumeOffset) {
+      LOG_INF("PHTP", "Retrying interrupted image with HTTP Range from byte %u", (unsigned)resumeOffset);
+      freeink::FetchSink sink;
+      sink.write = [&](const uint8_t* data, size_t len) {
+        if (written > maxResponse || len > maxResponse - written || file.write(data, len) != len) return false;
+        written += len;
+        return true;
+      };
+      sink.rewind = [&] {
+        // The server ignored Range and sent a fresh 200: discard the partial
+        // bytes before accepting any replacement body.
+        file.close();
+        written = 0;
+        return Storage.openFileForWrite("PHTP", destPath, file);
+      };
+      sink.progress = progress;
+      freeink::FetchOptions opts;
+      opts.startOffset = resumeOffset;
+      const auto resumed = freeink::fetchResumable(
+          escapeUrl(url), opts,
+          [](freeink::SecureHttpClient& client, bool) {
+            client.setUserAgent("CrossPoint");
+            client.setInsecure();
+            client.setTimeout(30000);
+          },
+          sink, shouldAbort);
+      if (file.isOpen()) {
+        file.flush();
+        file.close();
+      }
+      if (resumed.complete && !resumed.stopped && !resumed.aborted && resumed.bytes > 0 &&
+          resumed.bytes <= maxResponse) {
+        LOG_INF("PHTP", "Recovered partial image download: start=%u total=%u status=%d", (unsigned)resumeOffset,
+                (unsigned)resumed.bytes, resumed.status);
+        return resumed.status;
+      }
+      LOG_ERR("PHTP", "Partial image recovery failed: start=%u got=%u total=%u status=%d stopped=%d aborted=%d",
+              (unsigned)resumeOffset, (unsigned)resumed.bytes, (unsigned)resumed.total, resumed.status, resumed.stopped,
+              resumed.aborted);
+    }
+  }
   if (!writeOk || status < 0 || !http.responseComplete()) {
     LOG_ERR("PHTP", "API request (to file) failed: status=%d writeOk=%d complete=%d free=%u max=%u %s", status, writeOk,
             http.responseComplete(), (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap(), url.c_str());

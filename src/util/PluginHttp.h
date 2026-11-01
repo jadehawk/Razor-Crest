@@ -99,8 +99,12 @@ int request(freeink::SecureHttpClient* session, const std::string& url, const st
             Headers* responseHeaders = nullptr, const std::function<bool()>& shouldAbort = nullptr);
 
 // Same request, body streamed to a file on SD instead of DRAM.
+// Redirect-following is permitted only for anonymous GETs: plugin credentials
+// and custom headers must never be sent to a redirected host.
 int requestToFile(freeink::SecureHttpClient* session, const std::string& url, const std::string& method,
-                  const std::string& body, const Headers& headers, const char* destPath, size_t maxResponse);
+                  const std::string& body, const Headers& headers, const char* destPath, size_t maxResponse,
+                  const std::function<void(size_t, size_t)>& progress = nullptr,
+                  const std::function<bool()>& shouldAbort = nullptr, bool followAnonymousRedirects = false);
 
 // Password-grant token mint: runs the (already-substituted) auth request and
 // extracts the token at `tokenPath` from a 2xx JSON response.

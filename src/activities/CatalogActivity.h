@@ -2,8 +2,8 @@
 
 #include <I18n.h>
 
-#include "UiListActivity.h"
 #include "DownloadProgressPolicy.h"
+#include "UiListActivity.h"
 #include "network/HttpDownloader.h"
 
 // Network catalogs share input, child screens, and transfer lifecycle. Each
@@ -69,6 +69,8 @@ class CatalogActivity : public UiListActivity {
   void launchSearch();
   void beginDownload(const std::string& title, const char* heading = nullptr);
   void finishDownload(HttpDownloader::DownloadError result);
+  // Share the progress and cancel-input pump with derived catalog transfers.
+  void onDownloadProgress(size_t downloaded, size_t total);
   // postBody non-null turns the transfer into a POST of that body (e.g. an
   // LCP license to the fulfillment service), with postContentType as its
   // Content-Type. Same heap gating and cancel/progress pump either way.
@@ -83,7 +85,6 @@ class CatalogActivity : public UiListActivity {
  private:
   static void onSearchEvent(const freeink::ui::ActionEvent&, void* user);
   static void onCancelEvent(const freeink::ui::ActionEvent&, void* user);
-  void onDownloadProgress(size_t downloaded, size_t total);
   // Download input consumes home gestures before ActivityManager sees them.
   bool goHomeAfterCancel = false;
   bool searchPending = false;  // NavPrevious pressed on a searchable top row

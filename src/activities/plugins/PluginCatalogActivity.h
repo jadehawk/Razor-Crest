@@ -4,6 +4,7 @@
 #include <I18n.h>
 
 #include <atomic>
+#include <deque>
 #include <memory>
 #include <string>
 #include <utility>
@@ -155,7 +156,9 @@ class PluginCatalogActivity : public CatalogActivity {
       std::string noticeTitle, noticeMessage, noticeConfirm, noticeCancel;
       bool hasNotice() const { return !noticeMessage.empty(); }
     };
-    std::vector<BrowseList> browseLists;
+    // Keep remote catalog entries in small allocations: a single contiguous vector
+    // can exceed the X3's largest free block after a TLS response.
+    std::deque<BrowseList> browseLists;
     // Remote list indexes may be legacy or Razor-Crest capability-filtered v2.
     std::string browseListsUrl;
     std::string capabilityListsUrl;
@@ -282,6 +285,7 @@ class PluginCatalogActivity : public CatalogActivity {
   std::atomic<int> browseViewportItems{1};
   std::atomic<int> browseRequestedTop{-1};
   bool browseRefreshNeeded = false;
+  bool seedBrowseRestorePending = false;
   bool browseLoadedFromCache = false;
   bool forceCacheRefresh = false;
   int pendingNetworkPage = 0;
@@ -396,7 +400,12 @@ class PluginCatalogActivity : public CatalogActivity {
   int navigationCount() const;
   void clearPreviews();
   bool cachedPreviewValid(const std::string& path) const;
-  bool fetchPreviewToPath(const Item& item, const std::string& dest, int targetWidth, int targetHeight);
+  bool fetchPreviewToPath(const Item& item, const std::string& dest, int targetWidth, int targetHeight,
+                          int* requestStatus = nullptr);
+  bool fetchPreparedPreviewToPath(const pluginhttp::RequestSpec& request, const std::string& itemId,
+                                  const std::string& dest, int targetWidth, int targetHeight,
+                                  Manifest::ImageFormat format, freeink::SecureHttpClient* previewSession,
+                                  int* requestStatus = nullptr);
   bool preparePreviews();
   bool paintPreview(freeink::ui::Rect rect, int itemIndex);
   static std::string previewPath(int itemIndex);
@@ -468,6 +477,9 @@ class PluginCatalogActivity : public CatalogActivity {
   HttpDownloader::DownloadError savePreviewFile(const Item& item, const std::string& previewPath);
   HttpDownloader::DownloadError downloadBundle(const Item& item);
   HttpDownloader::DownloadError downloadBook(const Item& item);
+  bool shouldStreamLowMemoryImage(const Item& item) const;
+  HttpDownloader::DownloadError downloadImageLowMemory(const std::string& url, const std::string& stagingPath,
+                                                       const std::string& publishPath = {});
   void beginAuth();
   void pollAuth();
   bool refreshCredentialToken();  // password grant: mint a token from config creds

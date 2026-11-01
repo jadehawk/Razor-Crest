@@ -8,6 +8,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
@@ -228,9 +229,11 @@ struct BmpConvertCtx {
   uint32_t smoothScaleX_fp;
   uint32_t smoothScaleY_fp;
 
-  // Accumulates one MCU row (up to MAX_MCU_HEIGHT source rows × srcWidth pixels)
-  // Filled column-by-column as JPEGDEC callbacks arrive for the same MCU row
+  // The regular converter keeps one contiguous MCU buffer. The no-PSRAM
+  // wallpaper path splits it into scanlines to tolerate fragmented heap.
+  bool splitMcuRows;
   std::unique_ptr<uint8_t[]> mcuBuf;
+  std::unique_ptr<uint8_t[]> mcuRows[MAX_MCU_HEIGHT];
 
   // Y-axis area averaging accumulators (needsScaling only)
   int currentOutY;
@@ -457,7 +460,8 @@ int bmpDrawCallback(JPEGDRAW* pDraw) {
   for (int r = 0; r < blockH && r < MAX_MCU_HEIGHT; r++) {
     const int copyW = (blockX + validW <= ctx->srcWidth) ? validW : (ctx->srcWidth - blockX);
     if (copyW <= 0) continue;
-    memcpy(ctx->mcuBuf.get() + r * ctx->srcWidth + blockX, pixels + r * stride, copyW);
+    uint8_t* dst = ctx->splitMcuRows ? ctx->mcuRows[r].get() : ctx->mcuBuf.get() + r * ctx->srcWidth;
+    memcpy(dst + blockX, pixels + r * stride, copyW);
   }
 
   // Wait for the last MCU column before processing any rows
@@ -467,7 +471,8 @@ int bmpDrawCallback(JPEGDRAW* pDraw) {
   const int endRow = blockY + blockH;
 
   for (int y = blockY; y < endRow && y < ctx->srcHeight; y++) {
-    const uint8_t* srcRow = ctx->mcuBuf.get() + (y - blockY) * ctx->srcWidth;
+    const uint8_t* srcRow =
+        ctx->splitMcuRows ? ctx->mcuRows[y - blockY].get() : ctx->mcuBuf.get() + (y - blockY) * ctx->srcWidth;
 
     if (ctx->smoothUpscale) {
       processSmoothSourceRow(ctx, srcRow, y);
@@ -512,12 +517,15 @@ int bmpDrawCallback(JPEGDRAW* pDraw) {
 
 // Internal implementation with configurable target size and bit depth
 bool JpegToBmpConverter::jpegFileToBmpStreamInternal(HalFile& jpegFile, Print& bmpOut, int targetWidth,
-                                                     int targetHeight, bool oneBit, bool crop,
-                                                     bool originalThresholds) {
+                                                     int targetHeight, bool oneBit, bool crop, bool originalThresholds,
+                                                     bool lowMemory) {
   LOG_DBG("JPG", "Converting JPEG to %s BMP (target: %dx%d)", oneBit ? "1-bit" : "2-bit", targetWidth, targetHeight);
 
-  if (ESP.getFreeHeap() < MIN_FREE_HEAP) {
-    LOG_ERR("JPG", "Not enough heap for JPEG decoder (%u free, need %u)", ESP.getFreeHeap(), MIN_FREE_HEAP);
+  // Coarse JPEGDEC scaling keeps the low-memory path's MCU allocation small.
+  // The default high-quality decoder retains its original safety threshold.
+  const size_t requiredHeap = lowMemory ? 36u * 1024u : MIN_FREE_HEAP;
+  if (ESP.getFreeHeap() < requiredHeap) {
+    LOG_ERR("JPG", "Not enough heap for JPEG decoder (%u free, need %u)", ESP.getFreeHeap(), (unsigned)requiredHeap);
     return false;
   }
 
@@ -540,10 +548,43 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(HalFile& jpegFile, Print& b
   const int srcWidth = jpeg->getWidth();
   const int srcHeight = jpeg->getHeight();
   const bool progressiveDecode = (jpeg->getJPEGType() == JPEG_MODE_PROGRESSIVE);
-  // JPEGDEC forces progressive streams to JPEG_SCALE_EIGHTH in DecodeJPEG,
-  // so callback coordinates and MCU buffering must use the reduced decode grid.
-  const int decodedSrcWidth = progressiveDecode ? ((srcWidth + 7) >> 3) : srcWidth;
-  const int decodedSrcHeight = progressiveDecode ? ((srcHeight + 7) >> 3) : srcHeight;
+  // JPEGDEC forces progressive streams to JPEG_SCALE_EIGHTH. For the X3
+  // low-memory wallpaper path, request coarse baseline downscaling in the
+  // decoder so the per-MCU grayscale buffer fits fragmented internal RAM.
+  int jpegScale = 0;
+  int scaleDenominator = progressiveDecode ? 8 : 1;
+  if (lowMemory && !progressiveDecode && srcWidth > 0 && srcHeight > 0 && targetWidth > 0 && targetHeight > 0) {
+    const float widthScale = static_cast<float>(targetWidth) / srcWidth;
+    const float heightScale = static_cast<float>(targetHeight) / srcHeight;
+    const float displayScale = crop ? std::max(widthScale, heightScale) : std::min(widthScale, heightScale);
+    if (displayScale <= 0.25f) {
+      jpegScale = JPEG_SCALE_QUARTER;
+      scaleDenominator = 4;
+    } else if (displayScale <= 0.5f || srcWidth > 1024) {
+      jpegScale = JPEG_SCALE_HALF;
+      scaleDenominator = 2;
+    }
+  }
+  if (lowMemory && !progressiveDecode) {
+    // Budget for JPEGDEC's other buffers, output rows and dithering, not just
+    // the MCU scanlines. Prefer the original scale when RAM permits; fall back
+    // to 1/2, 1/4 or 1/8 rather than risking a mid-decode allocation failure.
+    constexpr size_t DECODE_HEADROOM = 16 * 1024;
+    const size_t available = ESP.getFreeHeap();
+    const size_t rowBudget = available > DECODE_HEADROOM ? available - DECODE_HEADROOM : 0;
+    while (scaleDenominator < 8 &&
+           static_cast<size_t>(MAX_MCU_HEIGHT) * ((srcWidth + scaleDenominator - 1) / scaleDenominator) > rowBudget) {
+      scaleDenominator *= 2;
+      jpegScale = scaleDenominator == 2   ? JPEG_SCALE_HALF
+                  : scaleDenominator == 4 ? JPEG_SCALE_QUARTER
+                                          : JPEG_SCALE_EIGHTH;
+    }
+  }
+  const int decodedSrcWidth = (srcWidth + scaleDenominator - 1) / scaleDenominator;
+  const int decodedSrcHeight = (srcHeight + scaleDenominator - 1) / scaleDenominator;
+  if (lowMemory)
+    LOG_INF("JPG", "Low-memory JPEG scale=1/%d decode=%dx%d free=%u max=%u", scaleDenominator, decodedSrcWidth,
+            decodedSrcHeight, (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
 
   LOG_DBG("JPG", "JPEG dimensions: %dx%d", srcWidth, srcHeight);
   if (progressiveDecode) {
@@ -552,10 +593,17 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(HalFile& jpegFile, Print& b
 
   constexpr int MAX_IMAGE_WIDTH = 2048;
   constexpr int MAX_IMAGE_HEIGHT = 3072;
-
-  if (srcWidth <= 0 || srcHeight <= 0 || srcWidth > MAX_IMAGE_WIDTH || srcHeight > MAX_IMAGE_HEIGHT) {
-    LOG_DBG("JPG", "Image too large or invalid (%dx%d), max supported: %dx%d", srcWidth, srcHeight, MAX_IMAGE_WIDTH,
-            MAX_IMAGE_HEIGHT);
+  // Large wallpaper originals can be decoded safely at a reduced JPEGDEC
+  // scale; limit both raw dimensions and the actual MCU decode grid. Keep
+  // the original, stricter bounds for normal book/cover conversions.
+  constexpr int MAX_WALLPAPER_SOURCE = 8192;
+  const bool validDimensions = srcWidth > 0 && srcHeight > 0 &&
+                               (lowMemory ? (srcWidth <= MAX_WALLPAPER_SOURCE && srcHeight <= MAX_WALLPAPER_SOURCE &&
+                                             decodedSrcWidth <= MAX_IMAGE_WIDTH && decodedSrcHeight <= MAX_IMAGE_HEIGHT)
+                                          : (srcWidth <= MAX_IMAGE_WIDTH && srcHeight <= MAX_IMAGE_HEIGHT));
+  if (!validDimensions) {
+    LOG_ERR("JPG", "Unsupported JPEG dimensions: source=%dx%d decoded=%dx%d scale=1/%d", srcWidth, srcHeight,
+            decodedSrcWidth, decodedSrcHeight, scaleDenominator);
     return false;
   }
 
@@ -601,7 +649,7 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(HalFile& jpegFile, Print& b
   }
 
   const bool smoothUpscale =
-      progressiveDecode && needsScaling && scaleSrcWidth <= outWidth && scaleSrcHeight <= outHeight;
+      (progressiveDecode || lowMemory) && needsScaling && scaleSrcWidth <= outWidth && scaleSrcHeight <= outHeight;
 
   // Write BMP header with output dimensions
   int bytesPerRow;
@@ -636,13 +684,27 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(HalFile& jpegFile, Print& b
   ctx.blocksSinceYield = 0;
   ctx.error = false;
 
-  // MCU row buffer: MAX_MCU_HEIGHT rows × decoded srcWidth columns of grayscale
-  ctx.mcuBuf = makeUniqueNoThrow<uint8_t[]>(MAX_MCU_HEIGHT * ctx.srcWidth);
-  if (!ctx.mcuBuf) {
-    LOG_ERR("JPG", "OOM: MCU buffer (%d bytes)", MAX_MCU_HEIGHT * ctx.srcWidth);
-    return false;
+  ctx.splitMcuRows = lowMemory;
+  if (lowMemory) {
+    // Split the MCU into scanlines for fragmented no-PSRAM heaps.
+    for (int row = 0; row < MAX_MCU_HEIGHT; ++row) {
+      ctx.mcuRows[row] = makeUniqueNoThrow<uint8_t[]>(ctx.srcWidth);
+      if (!ctx.mcuRows[row]) {
+        LOG_ERR("JPG", "OOM: MCU scanline %d (%d bytes, free=%u max=%u)", row, ctx.srcWidth,
+                (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
+        return false;
+      }
+      memset(ctx.mcuRows[row].get(), 0, ctx.srcWidth);
+    }
+  } else {
+    // Preserve the established contiguous buffer for normal conversions.
+    ctx.mcuBuf = makeUniqueNoThrow<uint8_t[]>(MAX_MCU_HEIGHT * ctx.srcWidth);
+    if (!ctx.mcuBuf) {
+      LOG_ERR("JPG", "OOM: MCU buffer (%d bytes)", MAX_MCU_HEIGHT * ctx.srcWidth);
+      return false;
+    }
+    memset(ctx.mcuBuf.get(), 0, MAX_MCU_HEIGHT * ctx.srcWidth);
   }
-  memset(ctx.mcuBuf.get(), 0, MAX_MCU_HEIGHT * ctx.srcWidth);
 
   ctx.bmpRow = makeUniqueNoThrow<uint8_t[]>(bytesPerRow);
   if (!ctx.bmpRow) {
@@ -698,7 +760,7 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(HalFile& jpegFile, Print& b
   jpeg->setPixelType(EIGHT_BIT_GRAYSCALE);
   jpeg->setUserPointer(&ctx);
 
-  rc = jpeg->decode(0, 0, 0);
+  rc = jpeg->decode(0, 0, jpegScale);
 
   if (rc == 1 && ctx.smoothUpscale && !ctx.error) {
     finishSmoothUpscale(&ctx);
@@ -719,6 +781,11 @@ bool JpegToBmpConverter::jpegFileToBmpStream(HalFile& jpegFile, Print& bmpOut, b
   const int targetWidth = display.getDisplayHeight();
   const int targetHeight = display.getDisplayWidth();
   return jpegFileToBmpStreamInternal(jpegFile, bmpOut, targetWidth, targetHeight, false, crop, originalThresholds);
+}
+
+bool JpegToBmpConverter::jpegFileToBmpStreamLowMemory(HalFile& jpegFile, Print& bmpOut, bool crop) {
+  return jpegFileToBmpStreamInternal(jpegFile, bmpOut, display.getDisplayHeight(), display.getDisplayWidth(), false,
+                                     crop, false, true);
 }
 
 // Convert with custom target size (for thumbnails, 2-bit)

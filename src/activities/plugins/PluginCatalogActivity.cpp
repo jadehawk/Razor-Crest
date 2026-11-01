@@ -2,8 +2,10 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <FontCacheManager.h>
 #include <FreeInkUIIcon.h>
 #include <GfxRenderer.h>
+#include <HalMemory.h>
 #include <HalStorage.h>
 #include <I18n.h>
 #include <JsonListParser.h>
@@ -169,7 +171,8 @@ const char* imageKindExtension(const ImageFileKind kind) {
   }
 }
 
-bool publishImageForDestination(const std::string& sourcePath, const std::string& destination) {
+bool publishImageForDestination(const std::string& sourcePath, const std::string& destination,
+                                const bool lowMemory = false) {
   const std::string extension = lowerExtension(destination);
   const ImageFileKind kind = detectImageFileKind(sourcePath);
   if (kind == ImageFileKind::Unknown) {
@@ -183,7 +186,8 @@ bool publishImageForDestination(const std::string& sourcePath, const std::string
     HalFile src, dst;
     bool ok = Storage.openFileForRead("PCAT", sourcePath, src) && Storage.openFileForWrite("PCAT", converted, dst);
     if (ok) {
-      ok = kind == ImageFileKind::Jpeg ? JpegToBmpConverter::jpegFileToBmpStream(src, dst, false)
+      ok = kind == ImageFileKind::Jpeg ? (lowMemory ? JpegToBmpConverter::jpegFileToBmpStreamLowMemory(src, dst, false)
+                                                    : JpegToBmpConverter::jpegFileToBmpStream(src, dst, false))
                                        : PngToBmpConverter::pngFileToBmpStream(src, dst, false);
     }
     if (src.isOpen()) src.close();
@@ -478,7 +482,6 @@ bool PluginCatalogActivity::loadManifest() {
   manifest.listsUrlPath = listFields["url"] | "url";
   manifest.listsIdPath = listFields["id"] | "id";
   manifest.listsRequiresPath = listFields["requires"] | "requires";
-  manifest.browseLists.reserve(browse["lists"].size());
   for (JsonVariantConst l : browse["lists"].as<JsonArrayConst>()) {
     if (browseListHidden(l)) continue;
     Manifest::BrowseList entry;
@@ -703,6 +706,9 @@ void PluginCatalogActivity::loadConfig() {
     if (!supported) existing->second = setting.defaultValue;
   }
   resolvePresentation();
+  if (manifest.hasCacheSeed())
+    LOG_INF("PCAT", "presentation: view=%s list_thumbnails=%d", manifest.gridView ? "grid" : "list",
+            manifest.listThumbnails);
 }
 
 std::string PluginCatalogActivity::settingValue(const Manifest::Setting& setting) const {
@@ -732,6 +738,9 @@ bool PluginCatalogActivity::saveSettingValue(const Manifest::Setting& setting, c
   if (!found) config.emplace_back(setting.key, value);
   const bool cacheLimitChanged = manifest.cacheLimitMbTpl == "{cfg." + setting.key + "}";
   resolvePresentation();
+  if (setting.key == "layout" || setting.key == "list_thumbnails")
+    LOG_INF("PCAT", "presentation changed: view=%s list_thumbnails=%d", manifest.gridView ? "grid" : "list",
+            manifest.listThumbnails);
   clearPreviews();
   releaseRows();
   browseRefreshNeeded = true;
@@ -1198,6 +1207,22 @@ void PluginCatalogActivity::enterCatalog() {
   // Let fetchPage decide whether the requested page can be served from SD.
   // Wi-Fi is only requested on an actual cache miss/stale refresh.
   startBrowse();
+
+  // A seed is optional. Explain its benefits once per plugin installation,
+  // without interrupting subsequent launches or requiring one to browse.
+  if (manifest.hasCacheSeed() && cacheUsable()) {
+    const std::string seedPath = cacheSeedMarkerPath();
+    const std::string tipPath = cacheDir() + "/seed-tip-seen";
+    if (!seedPath.empty() && !Storage.exists(seedPath.c_str()) && !Storage.exists(tipPath.c_str()) &&
+        ensureCacheDir() && Storage.writeFile(tipPath.c_str(), String("1"))) {
+      static const char* const options[] = {tr(STR_OK_BUTTON)};
+      pluginHubPopup.showMessage("Faster browsing",
+                                 "Install an optional cache seed under Settings > Cache to improve navigation. "
+                                 "Browsing still works without one.",
+                                 options, 1, 0, [](int) {});
+      requestUpdate();
+    }
+  }
 }
 
 // Leaving the open catalog (Back at its root, or Back out of an error /
@@ -1258,8 +1283,14 @@ void PluginCatalogActivity::switchPluginTab(const int index, const bool keepFocu
   }
   const bool refreshEmptyBrowse = browseTabActive() && items.empty();
   if (browseTabActive() && (browseRefreshNeeded || refreshEmptyBrowse)) {
+    const bool restoreSeedBrowse = seedBrowseRestorePending;
+    seedBrowseRestorePending = false;
     browseRefreshNeeded = false;
-    if (refreshEmptyBrowse) forceCacheRefresh = true;
+    if (refreshEmptyBrowse && !restoreSeedBrowse) forceCacheRefresh = true;
+    if (restoreSeedBrowse && wantsListPicker()) {
+      startBrowse();
+      return;
+    }
     beginLoading();
     fetchPage(1);
     return;
@@ -1294,7 +1325,7 @@ void PluginCatalogActivity::onPageEvent(const fui::ActionEvent& event, void* use
 
 void PluginCatalogActivity::onRefreshEvent(const fui::ActionEvent&, void* user) {
   auto* self = static_cast<PluginCatalogActivity*>(user);
-  if (!self->nativeFooterActive() || !self->manifest.refreshEnabled) return;
+  if (!self->nativeFooterActive() || (!self->manifest.refreshEnabled && self->errorMessage.empty())) return;
   self->app.clearTapFlash();
   self->forceCacheRefresh = true;
   self->beginLoading();
@@ -1311,6 +1342,7 @@ void PluginCatalogActivity::resetBrowse() {
   searchActive = false;
   searchQuery.clear();
   browseRefreshNeeded = false;
+  seedBrowseRestorePending = false;
   browseLoadedFromCache = false;
   forceCacheRefresh = false;
   browseRequestedTop.store(-1);
@@ -1368,6 +1400,16 @@ bool PluginCatalogActivity::loadBrowseListIndex(int& status) {
     status = 0;
     return false;
   }
+  if (HalMemory::getPsramHeap().totalBytes == 0 && manifest.fixedListCount > 0) {
+    const auto heap = HalMemory::getInternalHeap();
+    if (heap.freeBytes < HttpDownloader::MIN_TLS_FREE_HEAP ||
+        heap.largestBlockBytes < HttpDownloader::MIN_TLS_MAX_ALLOC) {
+      LOG_INF("PCAT", "browse list index deferred: free=%u max=%u, using manifest fallback", (unsigned)heap.freeBytes,
+              (unsigned)heap.largestBlockBytes);
+      status = 0;
+      return false;
+    }
+  }
 
   String response;
   const bool preferV2 = !manifest.capabilityListsUrl.empty();
@@ -1421,10 +1463,17 @@ bool PluginCatalogActivity::loadBrowseListIndex(int& status) {
   // Append to the manifest directly as upstream does, keeping its fixed
   // entries untouched. This avoids a second list vector on low-RAM boards.
   manifest.browseLists.resize(manifest.fixedListCount);
-  manifest.browseLists.reserve(manifest.fixedListCount + std::min<size_t>(lists.size(), MAX_BROWSE_LISTS));
   for (JsonVariantConst l : lists) {
     if (manifest.browseLists.size() - manifest.fixedListCount >= MAX_BROWSE_LISTS) break;
     if (browseListHidden(l, manifest.listsRequiresPath)) continue;
+    // The firmware uses -fno-exceptions. Retain heap headroom rather than
+    // allocating more optional lists while the parsed index is still resident.
+    const auto heap = HalMemory::getInternalHeap();
+    if (heap.freeBytes < 24 * 1024 || heap.largestBlockBytes < 4 * 1024) {
+      LOG_ERR("PCAT", "browse list index low heap: free=%u max=%u retained=%u", (unsigned)heap.freeBytes,
+              (unsigned)heap.largestBlockBytes, (unsigned)(manifest.browseLists.size() - manifest.fixedListCount));
+      break;
+    }
 
     Manifest::BrowseList entry;
     entry.title = variantToString(resolvePath(l, manifest.listsTitlePath));
@@ -1446,14 +1495,23 @@ bool PluginCatalogActivity::loadBrowseListIndex(int& status) {
     entry.noticeMessage = notice["message"] | "";
     entry.noticeConfirm = notice["confirm"] | "";
     entry.noticeCancel = notice["cancel"] | "";
-    // A list can use a dedicated URL or a shared browse URL with {list_id}.
-    if (!entry.title.empty() && (!entry.url.empty() || !entry.id.empty()))
+    // Seed-enabled catalogs can embed the same lists as their online index.
+    // Keep the original list positions stable so seeded page keys still match.
+    if (!entry.title.empty() && (!entry.url.empty() || !entry.id.empty())) {
+      if (manifest.hasCacheSeed() &&
+          std::any_of(manifest.browseLists.begin(), manifest.browseLists.end(), [&](const auto& existing) {
+            return existing.url == entry.url && existing.id == entry.id && existing.body == entry.body;
+          }))
+        continue;
       manifest.browseLists.push_back(std::move(entry));
+    }
   }
-  if (manifest.browseLists.size() == manifest.fixedListCount) {
+  if (manifest.browseLists.empty()) {
     LOG_ERR("PCAT", "browse list index has no usable lists: %s", url.c_str());
     return false;
   }
+  LOG_INF("PCAT", "browse list index added %u/%u remote lists",
+          (unsigned)(manifest.browseLists.size() - manifest.fixedListCount), (unsigned)lists.size());
   return true;
 }
 
@@ -1590,7 +1648,8 @@ void PluginCatalogActivity::startBrowse() {
   }
   if (currentList >= 0 && browseRefreshNeeded) {
     browseRefreshNeeded = false;
-    forceCacheRefresh = true;
+    if (!seedBrowseRestorePending) forceCacheRefresh = true;
+    seedBrowseRestorePending = false;
   }
   beginLoading();
   fetchPage(1);
@@ -1643,6 +1702,41 @@ bool PluginCatalogActivity::fetchBrowseResponse() {
         substituted(manifest.isXmlList() ? browseCurrentUrl : activeBrowseUrl(), nullptr), manifest.browseReq.method,
         substituted(manifest.isXmlList() ? manifest.browseReq.body : activeBrowseBody(), nullptr),
         substitutedHeaders(manifest.browseReq.headers, nullptr)};
+    // On a fresh X3 the manifest and plugin picker can consume the last TLS
+    // handshake headroom. Only fixed, seed-capable lists can be reconstructed
+    // without losing a dynamically discovered catalog.
+    const auto heap = HalMemory::getInternalHeap();
+    const bool lowMemoryBrowse = manifest.hasCacheSeed() && HalMemory::getPsramHeap().totalBytes == 0 &&
+                                 currentList >= 0 && currentList < static_cast<int>(manifest.fixedListCount) &&
+                                 (heap.freeBytes < HttpDownloader::MIN_TLS_FREE_HEAP ||
+                                  heap.largestBlockBytes < HttpDownloader::MIN_TLS_MAX_ALLOC);
+    if (lowMemoryBrowse) {
+      // The render task may still hold row pointers from the previous screen.
+      requestUpdateAndWait();
+      session.reset();
+      clearPreviews();
+      releaseRows();
+      std::vector<Item>().swap(items);
+      std::vector<fui::ListItem>().swap(rowItems);
+      if (!manifest.tracksInstalls()) std::vector<PluginRef>().swap(installedPlugins);
+      manifest = Manifest{};
+      pluginhttp::Headers().swap(config);
+      const auto released = HalMemory::getInternalHeap();
+      LOG_INF("PCAT", "browse low-memory transfer: page=%d free=%u max=%u", page, (unsigned)released.freeBytes,
+              (unsigned)released.largestBlockBytes);
+      const int status = pluginhttp::requestToFile(nullptr, req.url, req.method, req.body, req.headers, BROWSE_TMP_PATH,
+                                                   MAX_BROWSE_RESPONSE);
+      if (!loadManifest()) {
+        manifestLoaded = false;
+        fail(StrId::STR_PLUGIN_MANIFEST_INVALID);
+        return -1;
+      }
+      loadConfig();
+      // The selected fixed list is restored from the manifest. Don't fetch a
+      // duplicate live index into the small heap immediately afterward.
+      browseListsRemoteAttempted = true;
+      return status;
+    }
     return pluginhttp::requestToFile(session.get(), req.url, req.method, req.body, req.headers, BROWSE_TMP_PATH,
                                      MAX_BROWSE_RESPONSE);
   };
@@ -1650,6 +1744,9 @@ bool PluginCatalogActivity::fetchBrowseResponse() {
   // Rebuild templates with the refreshed token; retry only once.
   if ((status == 401 || status == 403) && manifest.hasPasswordGrant() && refreshCredentialToken()) status = run();
   if (status >= 200 && status < 300) return true;  // includes WebDAV's 207 Multi-Status
+  const auto heap = HalMemory::getInternalHeap();
+  LOG_ERR("PCAT", "browse fetch failed: list=%d page=%d status=%d free=%u max=%u", currentList, page, status,
+          (unsigned)heap.freeBytes, (unsigned)heap.largestBlockBytes);
   Storage.remove(BROWSE_TMP_PATH);
   if (status == 401 || status == 403) {
     state = State::NO_TOKEN;
@@ -1751,7 +1848,7 @@ int PluginCatalogActivity::footerPreviousSelection() const {
 }
 
 int PluginCatalogActivity::footerRefreshSelection() const {
-  if (!nativeFooterActive() || !manifest.refreshEnabled) return -1;
+  if (!nativeFooterActive() || (!manifest.refreshEnabled && errorMessage.empty())) return -1;
   return contentSelectionOffset() + static_cast<int>(items.size()) +
          (!manifest.paginationHidden && prevRowVisible() ? 1 : 0);
 }
@@ -1759,7 +1856,7 @@ int PluginCatalogActivity::footerRefreshSelection() const {
 int PluginCatalogActivity::footerNextSelection() const {
   if (!nativeFooterActive() || manifest.paginationHidden || !nextRowVisible()) return -1;
   return contentSelectionOffset() + static_cast<int>(items.size()) + (prevRowVisible() ? 1 : 0) +
-         (manifest.refreshEnabled ? 1 : 0);
+         ((manifest.refreshEnabled || !errorMessage.empty()) ? 1 : 0);
 }
 
 int PluginCatalogActivity::navigationCount() const {
@@ -1767,7 +1864,7 @@ int PluginCatalogActivity::navigationCount() const {
   if (nativeFooterActive()) {
     const bool showPagination = !manifest.paginationHidden;
     return offset + static_cast<int>(items.size()) + (showPagination && prevRowVisible() ? 1 : 0) +
-           (manifest.refreshEnabled ? 1 : 0) + (showPagination && nextRowVisible() ? 1 : 0);
+           ((manifest.refreshEnabled || !errorMessage.empty()) ? 1 : 0) + (showPagination && nextRowVisible() ? 1 : 0);
   }
   return offset + rowCount();
 }
@@ -2118,9 +2215,10 @@ void PluginCatalogActivity::refreshCacheStats() {
   cacheStorageValue = buf;
 
   cacheSeedValue = tr(STR_PLUGIN_CACHE_SEED_NOT_INSTALLED);
-  if (manifest.hasCacheSeed()) {
+  const std::string seedMarker = manifest.hasCacheSeed() ? cacheSeedMarkerPath() : "";
+  if (!seedMarker.empty() && Storage.exists(seedMarker.c_str())) {
     std::string seedRaw;
-    if (Storage.readFileToString("PCAT", cacheSeedMarkerPath(), 8 * 1024, seedRaw)) {
+    if (Storage.readFileToString("PCAT", seedMarker, 8 * 1024, seedRaw)) {
       JsonDocument seedDoc;
       if (deserializeJson(seedDoc, seedRaw) == DeserializationError::Ok) {
         const uint32_t built = seedDoc["built_images"] | static_cast<uint32_t>(0);
@@ -2626,11 +2724,59 @@ void PluginCatalogActivity::installCacheSeed() {
     return;
   }
 
+  const std::string seedUrl = substituted(manifest.cacheSeedUrl, nullptr);
   beginDownload(tr(STR_PLUGIN_CACHE_SEED));
   requestUpdateAndWait();
   session.reset();
+  clearPreviews();
+  releaseRows();
+  // Browse rows and picker data are not needed by the download/progress screen.
+  // Free their capacity, not just their elements, before the X3 TLS handshake.
+  std::vector<Item>().swap(items);
+  std::vector<fui::ListItem>().swap(rowItems);
+  if (!manifest.tracksInstalls()) std::vector<PluginRef>().swap(installedPlugins);
+  std::vector<InstalledExtension>().swap(installedExtensions);
+  browseRefreshNeeded = true;
+  seedBrowseRestorePending = true;
+  const auto heap = HalMemory::getInternalHeap();
+  LOG_INF("PCAT", "seed download memory: free=%u max=%u", (unsigned)heap.freeBytes, (unsigned)heap.largestBlockBytes);
   Storage.remove(CACHE_SEED_TMP_PATH);
-  const auto result = downloadFile(substituted(manifest.cacheSeedUrl, nullptr), CACHE_SEED_TMP_PATH);
+  // A full-record TLS reservation needs a large contiguous block, which the
+  // no-PSRAM X3 can lose while browsing the dynamic catalog index.
+  // Stream this seed with the plugin HTTP client (no eager full-record reserve)
+  // after temporarily releasing rebuildable manifest and settings allocations.
+  const bool lowMemorySeed =
+      HalMemory::getPsramHeap().totalBytes == 0 && (heap.freeBytes < HttpDownloader::MIN_TLS_FREE_HEAP ||
+                                                    heap.largestBlockBytes < HttpDownloader::MIN_TLS_MAX_ALLOC);
+  HttpDownloader::DownloadError result;
+  if (lowMemorySeed) {
+    manifest = Manifest{};
+    pluginhttp::Headers().swap(config);
+    const auto released = HalMemory::getInternalHeap();
+    LOG_INF("PCAT", "seed low-memory transfer: free=%u max=%u", (unsigned)released.freeBytes,
+            (unsigned)released.largestBlockBytes);
+    constexpr size_t MAX_CACHE_SEED_ZIP_BYTES = 128u * 1024u * 1024u;
+    const int status = pluginhttp::requestToFile(
+        nullptr, seedUrl, "GET", "", {}, CACHE_SEED_TMP_PATH, MAX_CACHE_SEED_ZIP_BYTES,
+        [this](size_t downloaded, size_t total) { onDownloadProgress(downloaded, total); },
+        [this] { return cancelDownload; });
+    if (!loadManifest()) {
+      LOG_ERR("PCAT", "failed to restore manifest after seed transfer");
+      fail(StrId::STR_PLUGIN_MANIFEST_INVALID);
+      Storage.remove(CACHE_SEED_TMP_PATH);
+      return;
+    }
+    loadConfig();
+    // Use the manifest's local list fallback until the catalog is reopened;
+    // avoid immediately fragmenting the heap with another remote index fetch.
+    browseListsRemoteAttempted = true;
+    currentList = -1;
+    result = cancelDownload ? HttpDownloader::ABORTED
+                            : (status >= 200 && status < 300 ? HttpDownloader::OK : HttpDownloader::HTTP_ERROR);
+    LOG_INF("PCAT", "seed low-memory transfer result: status=%d", status);
+  } else {
+    result = downloadFile(seedUrl, CACHE_SEED_TMP_PATH);
+  }
   if (result == HttpDownloader::ABORTED) {
     Storage.remove(CACHE_SEED_TMP_PATH);
     state = State::BROWSING;
@@ -2683,21 +2829,28 @@ bool PluginCatalogActivity::cachedPreviewValid(const std::string& path) const {
 }
 
 bool PluginCatalogActivity::fetchPreviewToPath(const Item& item, const std::string& dest, const int targetWidth,
-                                               const int targetHeight) {
-  if (dest.empty()) return false;
+                                               const int targetHeight, int* requestStatus) {
   const auto req = substitutedRequest(manifest.imageReq, &item);
-  if (req.url.empty()) return false;
+  return fetchPreparedPreviewToPath(req, item.id, dest, targetWidth, targetHeight, manifest.imageFormat, nullptr,
+                                    requestStatus);
+}
+
+bool PluginCatalogActivity::fetchPreparedPreviewToPath(const pluginhttp::RequestSpec& req, const std::string& itemId,
+                                                       const std::string& dest, const int targetWidth,
+                                                       const int targetHeight, Manifest::ImageFormat imageFormat,
+                                                       freeink::SecureHttpClient* previewSession, int* requestStatus) {
+  if (dest.empty() || req.url.empty()) return false;
 
   Storage.remove(PREVIEW_TMP_PATH);
-  const int status = pluginhttp::requestToFile(nullptr, req.url, req.method, req.body, req.headers, PREVIEW_TMP_PATH,
-                                               MAX_PREVIEW_RESPONSE);
+  const int status = pluginhttp::requestToFile(previewSession, req.url, req.method, req.body, req.headers,
+                                               PREVIEW_TMP_PATH, MAX_PREVIEW_RESPONSE);
+  if (requestStatus) *requestStatus = status;
   if (status < 200 || status >= 300) {
-    LOG_ERR("PCAT", "thumbnail fetch failed: status=%d id=%s", status, item.id.c_str());
+    LOG_ERR("PCAT", "thumbnail fetch failed: status=%d id=%s", status, itemId.c_str());
     Storage.remove(PREVIEW_TMP_PATH);
     return false;
   }
 
-  auto imageFormat = manifest.imageFormat;
   if (imageFormat == Manifest::ImageFormat::Auto) {
     switch (detectImageFileKind(PREVIEW_TMP_PATH)) {
       case ImageFileKind::Bmp:
@@ -2710,7 +2863,7 @@ bool PluginCatalogActivity::fetchPreviewToPath(const Item& item, const std::stri
         imageFormat = Manifest::ImageFormat::Png;
         break;
       default:
-        LOG_ERR("PCAT", "unsupported thumbnail image: id=%s", item.id.c_str());
+        LOG_ERR("PCAT", "unsupported thumbnail image: id=%s", itemId.c_str());
         Storage.remove(PREVIEW_TMP_PATH);
         return false;
     }
@@ -2733,7 +2886,7 @@ bool PluginCatalogActivity::fetchPreviewToPath(const Item& item, const std::stri
     Storage.remove(PREVIEW_TMP_PATH);
     if (!ok || !cachedPreviewValid(dest)) {
       ok = false;
-      LOG_ERR("PCAT", "thumbnail conversion failed: id=%s format=%d", item.id.c_str(), static_cast<int>(imageFormat));
+      LOG_ERR("PCAT", "thumbnail conversion failed: id=%s format=%d", itemId.c_str(), static_cast<int>(imageFormat));
       Storage.remove(dest.c_str());
     }
   }
@@ -2751,6 +2904,88 @@ bool PluginCatalogActivity::preparePreviews() {
       persistent ? GRID_PREVIEW_WIDTH : (manifest.gridView ? GRID_PREVIEW_WIDTH : LIST_PREVIEW_WIDTH);
   const int targetHeight =
       persistent ? GRID_PREVIEW_HEIGHT : (manifest.gridView ? GRID_PREVIEW_HEIGHT : LIST_PREVIEW_HEIGHT);
+
+  // On no-PSRAM boards, parsed catalog rows + the manifest leave too little
+  // contiguous heap for a new thumbnail TLS handshake. Prepare bounded jobs,
+  // release that reconstructible state, reuse one TLS client across the BMP
+  // downloads, then reparse the saved page and paint from the SD cache.
+  const auto heap = HalMemory::getInternalHeap();
+  const bool lowMemoryPreviews = persistent && manifest.hasCacheSeed() && HalMemory::getPsramHeap().totalBytes == 0 &&
+                                 wifiConnected() &&
+                                 (heap.freeBytes < HttpDownloader::MIN_TLS_FREE_HEAP ||
+                                  heap.largestBlockBytes < HttpDownloader::MIN_TLS_MAX_ALLOC);
+  if (lowMemoryPreviews && !browseSourcePath.empty() && Storage.exists(browseSourcePath.c_str())) {
+    struct PreviewJob {
+      pluginhttp::RequestSpec request;
+      std::string id;
+      std::string destination;
+    };
+    std::vector<PreviewJob> jobs;
+    jobs.reserve(std::min(items.size(), static_cast<size_t>(MAX_PAGE_SIZE)));
+    for (size_t i = 0; i < items.size() && i < MAX_PAGE_SIZE; ++i) {
+      const std::string destination = cacheImagePath(items[i]);
+      if (destination.empty() || Storage.exists(destination.c_str())) continue;
+      auto request = substitutedRequest(manifest.imageReq, &items[i]);
+      if (!request.url.empty()) jobs.push_back({std::move(request), items[i].id, destination});
+    }
+    if (!jobs.empty()) {
+      const auto imageFormat = manifest.imageFormat;
+      // The render task must be displaying LOADING before pointers in the
+      // current manifest and item rows are released.
+      const bool resumeBrowsing = state == State::BROWSING;
+      if (resumeBrowsing) beginLoading();
+      requestUpdateAndWait();
+      session.reset();
+      clearPreviews();
+      releaseRows();
+      std::vector<Item>().swap(items);
+      std::vector<fui::ListItem>().swap(rowItems);
+      if (!manifest.tracksInstalls()) std::vector<PluginRef>().swap(installedPlugins);
+      manifest = Manifest{};
+      pluginhttp::Headers().swap(config);
+      const auto released = HalMemory::getInternalHeap();
+      LOG_INF("PCAT", "thumbnail low-memory batch: count=%u free=%u max=%u", (unsigned)jobs.size(),
+              (unsigned)released.freeBytes, (unsigned)released.largestBlockBytes);
+
+      auto thumbnailSession = makeUniqueNoThrow<freeink::SecureHttpClient>();
+      if (!thumbnailSession) LOG_ERR("PCAT", "OOM: thumbnail TLS client");
+      for (const auto& job : jobs) {
+        if (!thumbnailSession) break;
+        int requestStatus = 0;
+        fetchPreparedPreviewToPath(job.request, job.id, job.destination, targetWidth, targetHeight, imageFormat,
+                                   thumbnailSession.get(), &requestStatus);
+        if (requestStatus < 0) {
+          LOG_ERR("PCAT", "thumbnail batch stopped after transport failure: status=%d", requestStatus);
+          break;
+        }
+      }
+      thumbnailSession.reset();
+      std::vector<PreviewJob>().swap(jobs);
+      if (!loadManifest()) {
+        manifestLoaded = false;
+        fail(StrId::STR_PLUGIN_MANIFEST_INVALID);
+        return false;
+      }
+      loadConfig();
+      browseListsRemoteAttempted = true;
+      if (!parseBrowseResponse()) return false;
+      unsigned readyCount = 0;
+      for (size_t i = 0; i < items.size() && i < MAX_PAGE_SIZE; ++i) {
+        const std::string path = cacheImagePath(items[i]);
+        if (!path.empty() && Storage.exists(path.c_str())) {
+          previewReadyMask |= static_cast<uint16_t>(1u << i);
+          ++readyCount;
+        }
+      }
+      LOG_INF("PCAT", "thumbnail low-memory result: ready=%u/%u", readyCount, (unsigned)items.size());
+      cacheStatsDirty = true;
+      if (resumeBrowsing) {
+        state = State::BROWSING;
+        requestUpdate();
+      }
+      return true;
+    }
+  }
   bool needsNetwork = false;
   bool releasedSession = false;
   for (size_t i = 0; i < items.size() && i < MAX_PAGE_SIZE; ++i) {
@@ -2780,8 +3015,23 @@ bool PluginCatalogActivity::preparePreviews() {
       session.reset();
       releasedSession = true;
     }
-    if (fetchPreviewToPath(items[i], dest, targetWidth, targetHeight))
+    // Check after releasing the browse TLS session so its buffers do not cause a false low-heap decision.
+    if (HalMemory::getPsramHeap().totalBytes == 0) {
+      const auto heap = HalMemory::getInternalHeap();
+      if (heap.freeBytes < HttpDownloader::MIN_TLS_FREE_HEAP ||
+          heap.largestBlockBytes < HttpDownloader::MIN_TLS_MAX_ALLOC) {
+        LOG_INF("PCAT", "thumbnail batch deferred: free=%u max=%u", (unsigned)heap.freeBytes,
+                (unsigned)heap.largestBlockBytes);
+        break;
+      }
+    }
+    int requestStatus = 0;
+    if (fetchPreviewToPath(items[i], dest, targetWidth, targetHeight, &requestStatus))
       previewReadyMask |= static_cast<uint16_t>(1u << i);
+    else if (requestStatus < 0) {
+      LOG_INF("PCAT", "thumbnail batch stopped after transport failure");
+      break;
+    }
   }
   if (persistent) cacheStatsDirty = true;
   if (releasedSession) {
@@ -2861,6 +3111,7 @@ void PluginCatalogActivity::fetchPage(const int newPage) {
   browseViewportTop.store(0);
   browseViewportItems.store(1);
   if (!manifest.isXmlList()) page = newPage;
+  errorMessage.clear();
   clearPreviews();
   browseSourcePath = BROWSE_TMP_PATH;
   browseLoadedFromCache = false;
@@ -2902,7 +3153,21 @@ void PluginCatalogActivity::fetchPage(const int newPage) {
       startDeviceAuth();
       return;
     }
-    if (!authFailed) fail(StrId::STR_FETCH_FEED_FAILED);
+    if (!authFailed) {
+      if (manifest.tabs.empty() || !manifestLoaded) {
+        fail(StrId::STR_FETCH_FEED_FAILED);
+      } else {
+        // Keep Settings and Cache reachable even when a first-time online
+        // catalog request cannot establish TLS on a memory-constrained device.
+        errorMessage = tr(STR_FETCH_FEED_FAILED);
+        items.clear();
+        hasMore = false;
+        releaseRows();
+        state = State::BROWSING;
+        activeNav().reset(contentSelectionOffset());
+        requestUpdate();
+      }
+    }
     return;
   }
 
@@ -3209,6 +3474,10 @@ void PluginCatalogActivity::downloadItem(const int itemIndex) {
                           : (manifest.isBundle() && !item.files.empty() ? downloadBundle(item) : downloadBook(item));
   session.reset();
   item = {};
+  if (!manifestLoaded) {
+    fail(StrId::STR_PLUGIN_MANIFEST_INVALID);
+    return;
+  }
   // Reuse the SD response without another network request or resetting navigation.
   if (!parseBrowseResponse()) return;
   session = makeUniqueNoThrow<freeink::SecureHttpClient>();
@@ -3557,6 +3826,7 @@ void PluginCatalogActivity::previewItem(const int itemIndex) {
   }
 
   const std::string rawPreviewPath = std::string(FULL_PREVIEW_TMP_BASE) + ".download";
+  const std::string lowMemoryPreviewPath = std::string(FULL_PREVIEW_TMP_BASE) + ".bmp";
   Storage.remove(rawPreviewPath.c_str());
 
   {
@@ -3574,32 +3844,50 @@ void PluginCatalogActivity::previewItem(const int itemIndex) {
     return downloadFile(fileUrl, rawPreviewPath, substituted(manifest.dlUser, &item),
                         substituted(manifest.dlPass, &item), substitutedHeaders(manifest.downloadReq.headers, &item));
   };
-  auto result = fileUrl.empty() ? HttpDownloader::FILE_ERROR : fetchFile();
+  const bool lowMemoryPreview = shouldStreamLowMemoryImage(item);
+  const bool lowMemoryBmp = lowMemoryPreview && destinationExtension == ".bmp";
+  if (lowMemoryBmp) Storage.remove(lowMemoryPreviewPath.c_str());
+  auto result = fileUrl.empty()    ? HttpDownloader::FILE_ERROR
+                : lowMemoryPreview ? downloadImageLowMemory(pluginhttp::escapeUrl(fileUrl), rawPreviewPath,
+                                                            lowMemoryBmp ? lowMemoryPreviewPath : "")
+                                   : fetchFile();
   if (result == HttpDownloader::UNAUTHORIZED && manifest.hasPasswordGrant() && refreshCredentialToken()) {
     result = fetchFile();
   }
 
   session.reset();
+  if (!manifestLoaded) {
+    Storage.remove(rawPreviewPath.c_str());
+    if (lowMemoryBmp) Storage.remove(lowMemoryPreviewPath.c_str());
+    fail(StrId::STR_PLUGIN_MANIFEST_INVALID);
+    return;
+  }
   if (!parseBrowseResponse()) {
     Storage.remove(rawPreviewPath.c_str());
+    if (lowMemoryBmp) Storage.remove(lowMemoryPreviewPath.c_str());
     return;
   }
   if (result != HttpDownloader::OK) {
     Storage.remove(rawPreviewPath.c_str());
+    if (lowMemoryBmp) Storage.remove(lowMemoryPreviewPath.c_str());
     finishDownload(result);
     return;
   }
 
-  const ImageFileKind previewKind = detectImageFileKind(rawPreviewPath);
+  const ImageFileKind previewKind = detectImageFileKind(lowMemoryBmp ? lowMemoryPreviewPath : rawPreviewPath);
   const char* detectedExtension = imageKindExtension(previewKind);
   if (previewKind == ImageFileKind::Unknown || detectedExtension[0] == '\0') {
     Storage.remove(rawPreviewPath.c_str());
+    if (lowMemoryBmp) Storage.remove(lowMemoryPreviewPath.c_str());
     finishDownload(HttpDownloader::FILE_ERROR);
     return;
   }
 
   std::string previewPath;
-  if (destinationExtension == ".bmp" && previewKind != ImageFileKind::Bmp) {
+  if (lowMemoryBmp) {
+    // Already converted before restoring the manifest and catalog rows.
+    previewPath = lowMemoryPreviewPath;
+  } else if (destinationExtension == ".bmp" && previewKind != ImageFileKind::Bmp) {
     // Convert while the download/TLS session is released and before the image
     // viewer allocates grayscale buffers. Save can then publish the exact BMP
     // that was previewed instead of performing a second heavy conversion.
@@ -3645,6 +3933,74 @@ void PluginCatalogActivity::previewItem(const int itemIndex) {
   });
 }
 
+bool PluginCatalogActivity::shouldStreamLowMemoryImage(const Item& item) const {
+  if (HalMemory::getPsramHeap().totalBytes != 0 || !manifest.hasCacheSeed() || manifest.isBundle() ||
+      !manifest.dlUrlPath.empty() || manifest.hasPasswordGrant() || manifest.downloadReq.method != "GET" ||
+      !manifest.downloadReq.body.empty() || !manifest.downloadReq.headers.empty() ||
+      !substituted(manifest.dlUser, &item).empty() || !substituted(manifest.dlPass, &item).empty() || currentList < 0 ||
+      currentList >= static_cast<int>(manifest.fixedListCount))
+    return false;
+  const auto heap = HalMemory::getInternalHeap();
+  return heap.freeBytes < HttpDownloader::MIN_TLS_FREE_HEAP ||
+         heap.largestBlockBytes < HttpDownloader::MIN_TLS_MAX_ALLOC;
+}
+
+HttpDownloader::DownloadError PluginCatalogActivity::downloadImageLowMemory(const std::string& url,
+                                                                            const std::string& stagingPath,
+                                                                            const std::string& publishPath) {
+  // The selected item, destination, and URL are already resolved. Keep only
+  // that information during the TLS handshake; the catalog is on SD.
+  session.reset();
+  requestUpdateAndWait();
+  const bool keepInstallStatus = manifest.tracksInstalls();
+  manifest = Manifest{};
+  pluginhttp::Headers().swap(config);
+  if (!keepInstallStatus) std::vector<PluginRef>().swap(installedPlugins);
+  std::vector<InstalledExtension>().swap(installedExtensions);
+  const auto heap = HalMemory::getInternalHeap();
+  LOG_INF("PCAT", "wallpaper low-memory download: free=%u max=%u", (unsigned)heap.freeBytes,
+          (unsigned)heap.largestBlockBytes);
+
+  constexpr size_t MAX_WALLPAPER_BYTES = 64u * 1024u * 1024u;
+  const std::string partPath = stagingPath + ".part";
+  Storage.remove(partPath.c_str());
+  const int status = pluginhttp::requestToFile(
+      nullptr, url, "GET", "", {}, partPath.c_str(), MAX_WALLPAPER_BYTES,
+      [this](size_t downloaded, size_t total) { onDownloadProgress(downloaded, total); },
+      [this] { return cancelDownload; }, true);
+  HttpDownloader::DownloadError result =
+      cancelDownload ? HttpDownloader::ABORTED
+                     : (status >= 200 && status < 300 ? HttpDownloader::OK : HttpDownloader::HTTP_ERROR);
+  if (result == HttpDownloader::OK && !Storage.replaceFile(partPath.c_str(), stagingPath.c_str()))
+    result = HttpDownloader::FILE_ERROR;
+  if (result == HttpDownloader::OK && !publishPath.empty()) {
+    // Convert before restoring the catalog manifest: on the X3 those extra
+    // allocations leave too little room for JPEGDEC and the MCU row buffer.
+    {
+      RenderLock lock;
+      if (auto* fcm = renderer.getFontCacheManager()) fcm->releaseSdFontCaches();
+    }
+    const auto decodeHeap = HalMemory::getInternalHeap();
+    LOG_INF("PCAT", "wallpaper conversion memory: free=%u max=%u", (unsigned)decodeHeap.freeBytes,
+            (unsigned)decodeHeap.largestBlockBytes);
+    if (!publishImageForDestination(stagingPath, publishPath, true)) result = HttpDownloader::FILE_ERROR;
+  }
+  if (result != HttpDownloader::OK) {
+    Storage.remove(partPath.c_str());
+    Storage.remove(stagingPath.c_str());
+  }
+
+  if (!loadManifest()) {
+    manifestLoaded = false;
+    LOG_ERR("PCAT", "failed to restore manifest after wallpaper download");
+    return HttpDownloader::FILE_ERROR;
+  }
+  loadConfig();
+  browseListsRemoteAttempted = true;
+  LOG_INF("PCAT", "wallpaper low-memory download result: status=%d result=%d", status, static_cast<int>(result));
+  return result;
+}
+
 HttpDownloader::DownloadError PluginCatalogActivity::downloadBook(const Item& item) {
   // Resolve the file URL: either the template itself, or one API hop away.
   std::string fileUrl;
@@ -3687,6 +4043,11 @@ HttpDownloader::DownloadError PluginCatalogActivity::downloadBook(const Item& it
                         substituted(manifest.dlPass, &item), fileHeaders);
   };
   session.reset();  // free browse TLS before the large file GET
+  if (imageDestination && shouldStreamLowMemoryImage(item)) {
+    const auto result = downloadImageLowMemory(pluginhttp::escapeUrl(fileUrl), downloadPath, dest);
+    if (result != HttpDownloader::OK) return result;
+    return finalizeDownloadedFile(item, dest);
+  }
   auto result = fetchFile();
   // The direct GET carries the catalog's token templates (never a pre-signed
   // url_path target): an expired password-grant token gets one mint-and-retry.
@@ -4360,7 +4721,8 @@ void PluginCatalogActivity::drawFooter() {
         const bool onFooterAction = selected == footerPreviousSelection() || selected == footerRefreshSelection() ||
                                     selected == footerNextSelection();
         confirmLabel =
-            onFooterAction
+            !errorMessage.empty() && selected == footerRefreshSelection() ? tr(STR_RETRY)
+            : onFooterAction
                 ? tr(STR_FETCH)
                 : (count == 0 ? ""
                               : (onDir || manifest.previewOnSelect ? tr(STR_OPEN)
@@ -4583,9 +4945,9 @@ void PluginCatalogActivity::buildCatalogFooter(UiScreen& screen) {
     if (activeNav().selected == footerPreviousSelection()) previous.state = fui::StateFocused;
   }
 
-  if (manifest.refreshEnabled) {
+  if (manifest.refreshEnabled || !errorMessage.empty()) {
     auto& refresh = actions[actionCount++];
-    refresh.label = tr(STR_REFRESH);
+    refresh.label = errorMessage.empty() ? tr(STR_REFRESH) : tr(STR_RETRY);
     refresh.action = ACTION_REFRESH;
     if (activeNav().selected == footerRefreshSelection()) refresh.state = fui::StateFocused;
   }
@@ -4653,7 +5015,9 @@ void PluginCatalogActivity::buildBrowsingScreen(UiScreen& screen) {
 
   if (rowItems.empty()) {
     if (nativeFooterActive()) buildCatalogFooter(screen);
-    screen.centeredText(state == State::PLUGIN_PICKER ? tr(STR_NO_PLUGINS_INSTALLED) : tr(STR_NO_ENTRIES),
+    screen.centeredText(!errorMessage.empty() && state == State::BROWSING
+                            ? errorMessage.c_str()
+                            : (state == State::PLUGIN_PICKER ? tr(STR_NO_PLUGINS_INSTALLED) : tr(STR_NO_ENTRIES)),
                         screen.theme().bodyText);
     return;
   }
