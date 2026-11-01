@@ -266,7 +266,6 @@ void CrossPointWebServer::begin() {
 
   // Settings endpoints
   server->on("/settings", HTTP_GET, [this] { handleSettingsPage(); });
-  server->on("/plugins", HTTP_GET, [this] { handlePluginsPage(); });
   server->on("/api/settings", HTTP_GET, [this] { handleGetSettings(); });
   server->on("/api/settings", HTTP_POST, [this] { handlePostSettings(); });
 
@@ -1412,10 +1411,6 @@ void CrossPointWebServer::handleDelete() const {
   } else {
     server->send(500, "text/plain", "Failed to delete some items: " + failedItems);
   }
-}
-
-void CrossPointWebServer::handlePluginsPage() const {
-  sendStaticContent(server.get(), PluginsPageHtml, sizeof(PluginsPageHtml), PluginsPageHtmlETag, "text/html");
 }
 
 void CrossPointWebServer::handleSettingsPage() const {

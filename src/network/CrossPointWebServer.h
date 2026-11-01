@@ -118,7 +118,6 @@ class CrossPointWebServer {
 
   // Settings handlers
   void handleSettingsPage() const;
-  void handlePluginsPage() const;
   void handleGetSettings() const;
   void handlePostSettings();
 
