@@ -15,8 +15,8 @@
       <a href="/">Home</a>
       <a href="/files">File Manager</a>
       <a href="/settings">Settings</a>
-      <a href="/plugins">Plugins</a>
       <a href="/fonts">Fonts</a>
+      <a href="/plugins">Plugins</a>
     </nav>
   </div>
   <details class="mobile-nav">
@@ -31,8 +31,14 @@
       <a href="/">Home</a>
       <a href="/files">File Manager</a>
       <a href="/settings">Settings</a>
-      <a href="/plugins">Plugins</a>
       <a href="/fonts">Fonts</a>
+      <a href="/plugins">Plugins</a>
     </nav>
   </details>
+  <script>
+    // The server sets cpPlugins=1 on every page while plugins are enabled.
+    if (!document.cookie.split('; ').includes('cpPlugins=1')) {
+      document.querySelectorAll('.brand a[href="/plugins"]').forEach((a) => a.remove());
+    }
+  </script>
 </header>

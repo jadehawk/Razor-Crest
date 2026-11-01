@@ -59,6 +59,7 @@
 #include "util/PluginPickerLayout.h"
 #include "util/QrUtils.h"
 #include "util/StringUtils.h"
+#include "util/UrlUtils.h"
 
 namespace fui = freeink::ui;
 
@@ -1478,6 +1479,7 @@ bool PluginCatalogActivity::loadBrowseListIndex(int& status) {
     Manifest::BrowseList entry;
     entry.title = variantToString(resolvePath(l, manifest.listsTitlePath));
     entry.url = variantToString(resolvePath(l, manifest.listsUrlPath));
+    UrlUtils::resolveServerPath(entry.url, url);
     entry.id = variantToString(resolvePath(l, manifest.listsIdPath));
     entry.body = l["body"] | "";
     // Only explicit extension metadata invokes the extra dispatch contract.
@@ -4004,6 +4006,9 @@ HttpDownloader::DownloadError PluginCatalogActivity::downloadImageLowMemory(cons
 HttpDownloader::DownloadError PluginCatalogActivity::downloadBook(const Item& item) {
   // Resolve the file URL: either the template itself, or one API hop away.
   std::string fileUrl;
+  // The file GET carries the download headers unless url_path answered with a
+  // full URL, which may be pre-signed and reject a second Authorization.
+  bool sendDownloadHeaders = manifest.dlUrlPath.empty();
   if (!manifest.dlUrlPath.empty()) {
     String response;
     int status = apiRequest(substitutedRequest(manifest.downloadReq, &item), response);
@@ -4019,6 +4024,7 @@ HttpDownloader::DownloadError PluginCatalogActivity::downloadBook(const Item& it
       return HttpDownloader::HTTP_ERROR;
     }
     fileUrl = variantToString(resolvePath(doc.as<JsonVariantConst>(), manifest.dlUrlPath));
+    sendDownloadHeaders = UrlUtils::resolveServerPath(fileUrl, substituted(manifest.downloadReq.url, &item));
   } else {
     fileUrl = substituted(manifest.downloadReq.url, &item);
   }
@@ -4033,12 +4039,10 @@ HttpDownloader::DownloadError PluginCatalogActivity::downloadBook(const Item& it
   const std::string downloadPath = imageDestination ? dest + ".download" : dest;
   if (imageDestination) Storage.remove(downloadPath.c_str());
 
-  // url_path already authenticated the JSON hop; the resolved file URL must not
-  // inherit those headers (S3 pre-signed GETs reject a second Authorization).
   const auto fetchFile = [&] {
     const std::vector<HttpDownloader::Header> fileHeaders =
-        manifest.dlUrlPath.empty() ? substitutedHeaders(manifest.downloadReq.headers, &item)
-                                   : std::vector<HttpDownloader::Header>{};
+        sendDownloadHeaders ? substitutedHeaders(manifest.downloadReq.headers, &item)
+                            : std::vector<HttpDownloader::Header>{};
     return downloadFile(pluginhttp::escapeUrl(fileUrl), downloadPath, substituted(manifest.dlUser, &item),
                         substituted(manifest.dlPass, &item), fileHeaders);
   };
@@ -4049,9 +4053,9 @@ HttpDownloader::DownloadError PluginCatalogActivity::downloadBook(const Item& it
     return finalizeDownloadedFile(item, dest);
   }
   auto result = fetchFile();
-  // The direct GET carries the catalog's token templates (never a pre-signed
-  // url_path target): an expired password-grant token gets one mint-and-retry.
-  if (result == HttpDownloader::UNAUTHORIZED && manifest.dlUrlPath.empty() && manifest.hasPasswordGrant() &&
+  // A GET with the catalog's token templates gets one mint-and-retry when an
+  // expired password-grant token is refused.
+  if (result == HttpDownloader::UNAUTHORIZED && sendDownloadHeaders && manifest.hasPasswordGrant() &&
       refreshCredentialToken()) {
     result = fetchFile();
   }
@@ -4621,7 +4625,8 @@ void PluginCatalogActivity::showItemDetails(const int itemIndex) {
       LOG_INF("PCAT", "unsupported item details format: %s", details.detailsFormat.c_str());
     } else {
       pluginhttp::RequestSpec detailsReq;
-      detailsReq.url = details.detailsUrl;
+      detailsReq.url = substituted(details.detailsUrl, &item);
+      UrlUtils::resolveServerPath(detailsReq.url, substituted(activeBrowseUrl(), nullptr));
       detailsReq.method = "GET";
       const std::string identity = "details-v1|" + details.detailsFormat;
       const std::string cachePath = cacheResourcePath(detailsReq, &item, identity, "r_", ".dat");
