@@ -118,6 +118,7 @@ target_link_libraries(GithubReleaseRedirectPolicyTest PRIVATE crosspoint_test_co
 add_test(NAME GithubReleaseRedirectPolicy COMMAND GithubReleaseRedirectPolicyTest)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME translation_spacing COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_translation_spacing.py)
 add_test(NAME TrustedTimeTimezone COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_trusted_time.py)
 
 add_test(NAME TimerWakeArm COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/timer_wake_arm/run.py)
