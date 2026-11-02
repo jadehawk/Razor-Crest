@@ -11,7 +11,7 @@ header = (root / "src/SettingsList.h").read_text(encoding="utf-8")
 
 # The entries must be part of the shared visitor, not only a temporary UI list.
 visitor = settings.split("void forEachBaseSetting(SettingVisitor visit, void* context) {", 1)[1].split(
-    "std::vector<SettingInfo> getBaseSettingsList(", 1
+    "size_t countBaseSettings()", 1
 )[0]
 sleep_screen = visitor.index('StrId::STR_SLEEP_SCREEN, &CrossPointSettings::sleepScreen')
 timer = visitor.index('StrId::STR_TIMED_SLEEP_SCREEN_REFRESH, &CrossPointSettings::timedSleepScreenRefresh')
@@ -44,6 +44,10 @@ assert 'SettingAction::Advanced' not in settings_screen
 # Both the serializer and deserializer must use the same visitor.
 assert storage.count("forEachBaseSetting(visit);") == 2
 assert "forEachBaseSetting(SettingVisitor visit, void* context)" in header
-assert "forEachBaseSetting(" in settings.split("std::vector<SettingInfo> getBaseSettingsList(", 1)[1]
+assert "forEachBaseSetting(" in settings.split("size_t countBaseSettings()", 1)[1]
+assert "forEachSetting(" in header
+assert "s = buildOrientationSetting()" in header
+assert 'isCarousel && wants("continueReadingBookLimit")' in header
+assert "countBaseSettings() + 1 +" in header
 assert "static const std::vector<SettingInfo> baseList" not in settings
 print("Razor-Crest settings visitor: timed refresh + Plugin System keys, menu order, persistence PASS")
