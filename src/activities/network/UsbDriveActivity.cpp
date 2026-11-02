@@ -161,7 +161,7 @@ void UsbDriveActivity::render(RenderLock&&) {
   // Once USB owns the SD card, preserve the already-painted e-ink frame.
   // Redrawing themed glyphs or art would read an unmounted filesystem.
   if (usbFramePainted && !startFailed) return;
-  if (preparing && !startFailed) {
+  if (preparing && !startFailed && UITheme::getInstance().activeExternalScene()) {
     if (drawUsbGrayscale(UITheme::getInstance().usbGrayscalePath(), renderer)) {
       usbFramePainted = true;
       return;

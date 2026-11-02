@@ -60,7 +60,7 @@ void NetworkModeSelectionActivity::activateIndex(const int index) {
   nav.selected = index;
 
 #if FREEINK_CAP_USB_MSC && FREEINK_DEVICE_X4PRO
-  if (static_cast<NetworkMode>(index) == NetworkMode::USB_DRIVE) {
+  if (static_cast<NetworkMode>(index) == NetworkMode::USB_DRIVE && UITheme::getInstance().activeExternalScene()) {
     // Keep the picker on screen with the USB row selected. Draw the
     // confirmation in the same frame so there is no premature mode switch.
     usbConfirmed_ = false;
