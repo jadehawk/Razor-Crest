@@ -968,6 +968,13 @@ void EpubReaderActivity::loop() {
     return;
   }
 
+  if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PWR_DICTIONARY &&
+      mappedInput.wasReleased(MappedInputManager::Button::Power) &&
+      !mappedInput.wasReleased(MappedInputManager::Button::Down)) {
+    openDictionaryWordSelect();
+    return;
+  }
+
   if ((!endOfBookMenuOpen && mappedInput.homeButtonAction() == HomeButtonAction::Footnotes) ||
       (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FOOTNOTES &&
        mappedInput.wasReleased(MappedInputManager::Button::Power) &&

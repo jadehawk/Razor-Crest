@@ -186,6 +186,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     PWR_BOOKMARK = 7,
     PWR_SYNC = 8,
     PWR_READER_MENU = 9,
+    PWR_DICTIONARY = 10,
     SHORT_PWRBTN_COUNT
   };
 
