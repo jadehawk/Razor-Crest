@@ -50,4 +50,14 @@ assert "s = buildOrientationSetting()" in header
 assert 'isCarousel && wants("continueReadingBookLimit")' in header
 assert "countBaseSettings() + 1 +" in header
 assert "static const std::vector<SettingInfo> baseList" not in settings
-print("Razor-Crest settings visitor: timed refresh + Plugin System keys, menu order, persistence PASS")
+vocab_entry = visitor.index("StrId::STR_SAVE_VOCABULARY_LOOKUPS")
+assert vocab_entry < visitor.index("// --- Controls ---")
+assert '"vocabularyHistoryEnabled", StrId::STR_CAT_READER' in visitor[vocab_entry:]
+assert "s.valuePtr == &CrossPointSettings::vocabularyHistoryEnabled" in header
+assert "if (!dictionaryPending) return;" in header
+assert "visitDictionary();" in header[header.index("if (!dictionaryPending) return;"):]
+assert "uint8_t vocabularyHistoryEnabled = 1;" in (root / "src/CrossPointSettings.h").read_text(encoding="utf-8")
+assert "SETTINGS.vocabularyHistoryEnabled &&" in (
+    root / "src/activities/reader/DictionaryWordSelectActivity.cpp"
+).read_text(encoding="utf-8")
+print("Razor-Crest settings visitor: timed refresh, plugin keys, vocabulary toggle, persistence PASS")

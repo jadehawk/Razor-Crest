@@ -380,6 +380,10 @@ void forEachSetting(const SdCardFontRegistry* registry, const std::vector<Dictio
   };
   auto each = [&](SettingInfo& s) {
     if (isHiddenOnDevice(s)) return;
+    if (s.valuePtr == &CrossPointSettings::vocabularyHistoryEnabled) {
+      if (!dictionaryPending) return;
+      visitDictionary();
+    }
     if (dictionaryPending && s.category == StrId::STR_CAT_CONTROLS) visitDictionary();
     const bool isCarousel = s.nameId == StrId::STR_CONTINUE_READING_CAROUSEL;
     if (wants(s.key)) {
