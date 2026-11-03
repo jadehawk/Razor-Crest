@@ -861,6 +861,7 @@ void setup() {
 
   setupDisplayAndFonts(resume != BootResume::Splash);
 
+  uint32_t splashPaintedAtMs = 0;
   switch (resume) {
     case BootResume::Silent:
       // Splash skipped: the routing block below picks the target activity; the
@@ -886,6 +887,7 @@ void setup() {
       break;
     case BootResume::Splash:
       activityManager.goToBoot();
+      splashPaintedAtMs = millis();  // BootActivity::onEnter uses a blocking panel refresh.
       break;
   }
 
@@ -926,6 +928,15 @@ void setup() {
     APP_STATE.readerActivityLoadCount++;
     APP_STATE.saveToFile();
     activityManager.goToReader(path, allowFastInitialReaderRefresh);
+  }
+
+  // A normal splash should remain visible after its physical panel refresh.
+  // The startup route above may consume some of the minimum dwell time.
+  // Recovery, panic, silent reboots and splashless wakes remain unaffected.
+  if (resume == BootResume::Splash && !recoveryFirmwareMode && !rebootedFromPanic) {
+    constexpr uint32_t kMinimumSplashMs = 2000;
+    const uint32_t elapsedMs = millis() - splashPaintedAtMs;
+    if (elapsedMs < kMinimumSplashMs) delay(kMinimumSplashMs - elapsedMs);
   }
 
   if (resume == BootResume::Silent) {

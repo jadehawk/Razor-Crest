@@ -30,8 +30,8 @@
 #include "components/UITheme.h"
 #include "components/wallpapers/WallpaperPackRegistry.h"
 #include "fontIds.h"
-#include "images/Logo120.h"
 #include "images/MoonIcon.h"
+#include "images/RazorCrestLogoImage.h"
 #include "util/FirmwareIdentity.h"
 #include "util/ReadingStatsSleepSource.h"
 #include "util/SleepScreenSource.h"
@@ -928,9 +928,22 @@ void SleepActivity::renderDefaultSleepScreen() const {
     renderer.displayBuffer(kSleepClean);
     return;
   }
-  renderer.drawImage(Logo120, (pageWidth - 200) / 2, (pageHeight - 200) / 2, 200, 200);
-  renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 110, firmwareidentity::ID, true, EpdFontFamily::BOLD);
-  renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 135, tr(STR_SLEEPING));
+  const auto logo = selectRazorCrestLogoImage(pageWidth, pageHeight);
+  const int taglineHeight = renderer.getLineHeight(UI_12_FONT_ID);
+  const int brandHeight = renderer.getLineHeight(UI_10_FONT_ID);
+  const int sleepHeight = renderer.getLineHeight(SMALL_FONT_ID);
+  constexpr int artGap = 16;
+  constexpr int brandGap = 28;
+  constexpr int sleepGap = 6;
+  const int blockHeight = logo.size + artGap + taglineHeight + brandGap + brandHeight + sleepGap + sleepHeight;
+  const int top = std::max(8, (pageHeight - blockHeight) / 2);
+
+  renderer.drawImage(logo.pixels, (pageWidth - logo.size) / 2, top, logo.size, logo.size);
+  const int taglineY = top + logo.size + artGap;
+  renderer.drawCenteredText(UI_12_FONT_ID, taglineY, "This Is the Way", true, EpdFontFamily::BOLD);
+  const int brandY = taglineY + taglineHeight + brandGap;
+  renderer.drawCenteredText(UI_10_FONT_ID, brandY, firmwareidentity::ID, true, EpdFontFamily::BOLD);
+  renderer.drawCenteredText(SMALL_FONT_ID, brandY + brandHeight + sleepGap, tr(STR_SLEEPING));
 
   // Make sleep screen dark unless light is selected in settings
   if (SETTINGS.sleepScreen != CrossPointSettings::SLEEP_SCREEN_MODE::LIGHT) {
