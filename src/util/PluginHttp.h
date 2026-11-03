@@ -94,12 +94,22 @@ bool saveConfigValue(const std::string& file, const std::string& key, const std:
 // (including OAuth polling's 4xx bodies), or -1 on OOM, truncation, or transport failure.
 // responseHeaders (optional) receives the response headers in receive order,
 // duplicates kept. shouldAbort (optional) is polled in every wait loop.
-// heapReserve (0 = no check): fail instead of growing the buffer when that would
-// leave less than heapReserve bytes free, or when no free block is large enough.
+// heapReserve (0 = no check) prevents response buffering from exhausting heap.
 int request(freeink::SecureHttpClient* session, const std::string& url, const std::string& method,
             const std::string& body, const Headers& headers, String& out, size_t maxResponse,
             Headers* responseHeaders = nullptr, const std::function<bool()>& shouldAbort = nullptr,
             size_t heapReserve = 0);
+
+// Same request, nothing buffered: onStart gets the status, the headers and the
+// body length (-1 if unknown) once, before the first body bytes; onData gets
+// each piece as it arrives. Either returning false stops the request. Returns
+// the status, or -1 if the request failed or onStart refused it. `complete` is
+// false if the body was cut short or a callback stopped it.
+using StreamStart = std::function<bool(int status, const Headers& headers, long contentLength)>;
+using StreamData = std::function<bool(const uint8_t* data, size_t len)>;
+int requestStream(freeink::SecureHttpClient* session, const std::string& url, const std::string& method,
+                  const std::string& body, const Headers& headers, const StreamStart& onStart, const StreamData& onData,
+                  bool& complete, const std::function<bool()>& shouldAbort = nullptr);
 
 // Same request, body streamed to a file on SD instead of DRAM.
 // Redirect-following is permitted only for anonymous GETs: plugin credentials
