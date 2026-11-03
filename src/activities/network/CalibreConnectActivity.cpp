@@ -9,6 +9,7 @@
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
 #include "WifiSelectionActivity.h"
+#include "components/TransferProgress.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/TaskWatchdog.h"
@@ -213,11 +214,22 @@ void CalibreConnectActivity::render(RenderLock&&) {
                                        EpdFontFamily::REGULAR);
       }
       renderer.drawText(SMALL_FONT_ID, metrics.contentSidePadding, y, label.c_str());
+      const int barY = y + height + metrics.verticalSpacing;
       GUI.drawProgressBar(renderer,
-                          Rect{metrics.contentSidePadding, y + height + metrics.verticalSpacing,
-                               pageWidth - metrics.contentSidePadding * 2, metrics.progressBarHeight},
+                          Rect{metrics.contentSidePadding, barY, pageWidth - metrics.contentSidePadding * 2,
+                               transferprogress::kBarHeight},
                           lastProgressReceived, lastProgressTotal);
-      y += height + metrics.verticalSpacing * 2 + metrics.progressBarHeight;
+      y = barY + transferprogress::kBarHeight + 15 + height + metrics.verticalSpacing;
+      renderer.drawCenteredText(UI_10_FONT_ID, y,
+                                transferprogress::formatTransfer(lastProgressReceived, lastProgressTotal).c_str());
+      y += height + metrics.verticalSpacing;
+    }
+
+    if (lastProgressTotal == 0 && lastProgressReceived > 0) {
+      renderer.drawText(SMALL_FONT_ID, metrics.contentSidePadding, y, tr(STR_CALIBRE_RECEIVING));
+      y += height + metrics.verticalSpacing;
+      renderer.drawCenteredText(UI_10_FONT_ID, y, transferprogress::formatBytes(lastProgressReceived).c_str());
+      y += height + metrics.verticalSpacing;
     }
 
     if (lastCompleteAt > 0 && (millis() - lastCompleteAt) < 6000) {

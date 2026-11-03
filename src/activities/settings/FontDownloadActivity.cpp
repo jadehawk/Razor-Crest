@@ -19,6 +19,7 @@
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/ConfirmationActivity.h"
+#include "components/TransferProgress.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "network/HttpDownloader.h"
@@ -968,10 +969,15 @@ void FontDownloadActivity::render(RenderLock&& lock) {
     }
 
     int barY = centerY + metrics.verticalSpacing;
-    GUI.drawProgressBar(
-        renderer,
-        Rect{metrics.contentSidePadding, barY, pageWidth - metrics.contentSidePadding * 2, metrics.progressBarHeight},
-        static_cast<int>(progress * 100), 100);
+    if (fileTotal_ > 0)
+      GUI.drawProgressBar(renderer,
+                          Rect{metrics.contentSidePadding, barY, pageWidth - metrics.contentSidePadding * 2,
+                               transferprogress::kBarHeight},
+                          static_cast<int>(progress * 100), 100);
+
+    const int detailY = barY + transferprogress::kBarHeight + 15 + lineHeight + metrics.verticalSpacing;
+    renderer.drawCenteredText(UI_10_FONT_ID, detailY,
+                              transferprogress::formatTransfer(fileProgress_, fileTotal_).c_str());
 
     const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

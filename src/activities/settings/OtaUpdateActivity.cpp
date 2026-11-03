@@ -7,6 +7,7 @@
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
+#include "components/TransferProgress.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "network/OtaUpdater.h"
@@ -113,7 +114,9 @@ void OtaUpdateActivity::render(RenderLock&&) {
   float updaterProgress = 0;
   if (state == UPDATE_IN_PROGRESS) {
     LOG_DBG("OTA", "Update progress: %d / %d", updater.getProcessedSize(), updater.getTotalSize());
-    updaterProgress = static_cast<float>(updater.getProcessedSize()) / static_cast<float>(updater.getTotalSize());
+    updaterProgress = updater.getTotalSize() > 0
+                          ? static_cast<float>(updater.getProcessedSize()) / static_cast<float>(updater.getTotalSize())
+                          : 0.0f;
     // Only update every 2% at the most
     if (static_cast<int>(updaterProgress * 50) == lastUpdaterPercentage / 2) {
       return;
@@ -139,16 +142,15 @@ void OtaUpdateActivity::render(RenderLock&&) {
     int y = top + height + metrics.verticalSpacing;
     GUI.drawProgressBar(
         renderer,
-        Rect{metrics.contentSidePadding, y, pageWidth - metrics.contentSidePadding * 2, metrics.progressBarHeight},
+        Rect{metrics.contentSidePadding, y, pageWidth - metrics.contentSidePadding * 2, transferprogress::kBarHeight},
         static_cast<int>(updaterProgress * 100), 100);
 
-    y += metrics.progressBarHeight + metrics.verticalSpacing;
+    y += transferprogress::kBarHeight + metrics.verticalSpacing;
     // Percent label is drawn by BaseTheme::drawProgressBar; this slot is left intentionally empty
     // so the bytes line below stays at the same Y it was at when the activity drew its own percent.
     y += height + metrics.verticalSpacing;
     renderer.drawCenteredText(
-        UI_10_FONT_ID, y,
-        (std::to_string(updater.getProcessedSize()) + " / " + std::to_string(updater.getTotalSize())).c_str());
+        UI_10_FONT_ID, y, transferprogress::formatTransfer(updater.getProcessedSize(), updater.getTotalSize()).c_str());
   } else if (state == NO_UPDATE) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_NO_UPDATE), true, EpdFontFamily::BOLD);
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");

@@ -9,6 +9,7 @@
 #include <numeric>
 
 #include "HeaderBackTapTarget.h"
+#include "TransferProgress.h"
 #include "UITheme.h"
 #include "icons/headerIcons.h"
 
@@ -67,7 +68,7 @@ void catalogScreenHeader(UiAppHost::UiScreen& screen, const GfxRenderer& rendere
     // renders the same as the resting state instead of sticking.
     header.leadingStyles = fui::plainStyles(fui::Paint::solid(fui::Color::Black));
     HeaderBackTapTarget::set(frameRect.x, metrics.topPadding, band.x + 4 + header.leadingSize - frameRect.x,
-                                 band.y + 4 + header.actionOffsetY + header.leadingSize - metrics.topPadding);
+                             band.y + 4 + header.actionOffsetY + header.leadingSize - metrics.topPadding);
   }
   if (trailingIcon && trailingAction != fui::NO_ACTION) {
     header.trailingIcon = trailingIcon;
@@ -127,8 +128,10 @@ void catalogDownloadScreen(UiAppHost::UiScreen& screen, const char* heading, con
   centered.align = fui::TextAlign::Center;
   const int16_t lh = screen.target().lineHeight(centered.font);
   const int16_t gap = theme.spaceMd;
-  const bool showBytes = total == 0;
-  const int16_t progressH = showBytes ? lh : 16;
+  const bool hasTotal = total > 0;
+  const int16_t progressH = hasTotal ? transferprogress::kBarHeight : 0;
+  const int16_t percentH = hasTotal ? lh : 0;
+  const int16_t bytesH = lh;
   const bool withCancel = cancelAction != fui::NO_ACTION;
   const int16_t btnH = withCancel ? theme.rowHeight : 0;
   const bool hasStatus = status && status[0] != '\0';
@@ -138,32 +141,33 @@ void catalogDownloadScreen(UiAppHost::UiScreen& screen, const char* heading, con
   title.maxLines = 2;
   const int16_t titleH = hasStatus ? static_cast<int16_t>(lh * 2) : 0;
   const int16_t pad = static_cast<int16_t>(UITheme::getInstance().getMetrics().contentSidePadding);
-  const int16_t gaps = static_cast<int16_t>(1 + (hasStatus ? 1 : 0) + (withCancel ? 1 : 0));
-  const int16_t blockH = static_cast<int16_t>(lh + titleH + progressH + btnH + gap * gaps);
+  const int16_t gaps = static_cast<int16_t>(1 + (hasStatus ? 1 : 0) + (hasTotal ? 2 : 0) + (withCancel ? 1 : 0));
+  const int16_t blockH = static_cast<int16_t>(lh + titleH + progressH + percentH + bytesH + btnH + gap * gaps);
   const fui::Rect body = screen.body();
   if (body.height > blockH) screen.spacer(static_cast<int16_t>((body.height - blockH) / 2));
 
   screen.target().text(screen.takeTop(lh, gap), heading ? heading : tr(STR_DOWNLOADING), centered);
   if (hasStatus) screen.target().text(screen.takeTop(titleH, gap).inset(fui::Insets{0, pad, 0, pad}), status, title);
 
-  const fui::Rect progressArea = screen.takeTop(progressH, gap).inset(fui::Insets{0, 50, 0, 50});
-  if (!showBytes) {
-    fui::ProgressBarProps progressProps;
-    progressProps.value = static_cast<int32_t>(progress);
-    progressProps.max = static_cast<int32_t>(total);
-    progressProps.border = fui::Paint::solid(fui::Color::Black);
-    progressProps.borderWidth = 1;
-    fui::progressBar(screen.frame(), progressArea, progressProps);
-  } else {
-    char bytes[24];
-    if (progress >= 1024 * 1024) {
-      snprintf(bytes, sizeof(bytes), "%u.%u MB", static_cast<unsigned>(progress >> 20),
-               static_cast<unsigned>((progress >> 10) % 1024 * 10 / 1024));
-    } else {
-      snprintf(bytes, sizeof(bytes), "%u KB", static_cast<unsigned>(progress >> 10));
+  if (hasTotal) {
+    const fui::Rect progressArea = screen.takeTop(progressH, gap).inset(fui::Insets{0, 50, 0, 50});
+    // Match BaseTheme::drawProgressBar: a 1px outline, with a 2px inset
+    // around the solid fill (FreeInkUI's default fills over its outline).
+    const auto black = fui::Paint::solid(fui::Color::Black);
+    screen.target().stroke(progressArea, black, 1, 0);
+    const int percent = transferprogress::percent(progress, total);
+    const int16_t fillWidth = static_cast<int16_t>((progressArea.width - 4) * percent / 100);
+    if (fillWidth > 0) {
+      screen.target().fill(fui::Rect{static_cast<int16_t>(progressArea.x + 2), static_cast<int16_t>(progressArea.y + 2),
+                                     fillWidth, static_cast<int16_t>(progressArea.height - 4)},
+                           black);
     }
-    screen.target().text(progressArea, bytes, centered);
+
+    const auto percentage = transferprogress::formatPercent(progress, total);
+    screen.target().text(screen.takeTop(percentH, gap), percentage.c_str(), centered);
   }
+  const auto bytes = transferprogress::formatTransfer(progress, total);
+  screen.target().text(screen.takeTop(bytesH, withCancel ? gap : 0), bytes.c_str(), centered);
 
   if (withCancel) {
     const fui::Rect btnArea = screen.takeTop(btnH);

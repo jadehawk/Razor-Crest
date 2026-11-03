@@ -10,6 +10,7 @@
 #include "MappedInputManager.h"
 #include "activities/home/FileBrowserActivity.h"
 #include "activities/util/ConfirmationActivity.h"
+#include "components/TransferProgress.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "network/FirmwareFlasher.h"
@@ -225,7 +226,8 @@ void SdFirmwareUpdateActivity::render(RenderLock&&) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_VALIDATING_FIRMWARE));
   } else if (state == State::UPDATING) {
     // Throttle redraws to once per percent.
-    const unsigned int pct = firmwareSize > 0 ? static_cast<unsigned int>((writtenBytes * 100) / firmwareSize) : 0;
+    const unsigned int pct =
+        firmwareSize > 0 ? static_cast<unsigned int>(transferprogress::percent(writtenBytes, firmwareSize)) : 0;
     if (pct == lastRenderedPercent) {
       return;
     }
@@ -236,11 +238,13 @@ void SdFirmwareUpdateActivity::render(RenderLock&&) {
     int y = top + lineHeight + metrics.verticalSpacing;
     GUI.drawProgressBar(
         renderer,
-        Rect{metrics.contentSidePadding, y, pageWidth - metrics.contentSidePadding * 2, metrics.progressBarHeight},
+        Rect{metrics.contentSidePadding, y, pageWidth - metrics.contentSidePadding * 2, transferprogress::kBarHeight},
         static_cast<int>(pct), 100);
-    y += metrics.progressBarHeight + metrics.verticalSpacing;
+    y += transferprogress::kBarHeight + metrics.verticalSpacing;
     // Percent label is drawn by BaseTheme::drawProgressBar; this slot is left intentionally empty
     // so the do-not-power-off line below stays at the same Y as before.
+    y += lineHeight + metrics.verticalSpacing;
+    renderer.drawCenteredText(UI_10_FONT_ID, y, transferprogress::formatTransfer(writtenBytes, firmwareSize).c_str());
     y += lineHeight + metrics.verticalSpacing;
     renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_FIRMWARE_UPDATE_DO_NOT_POWER_OFF));
   } else if (state == State::SUCCESS) {
