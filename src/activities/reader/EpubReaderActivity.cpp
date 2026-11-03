@@ -582,8 +582,7 @@ void EpubReaderActivity::startClipSelection(const int initialX, const int initia
         requestUpdate();
         return;
       }
-      // Remember the selected word indices and the selection window's first page.
-      // Reopening a selector with no anchor otherwise highlights the page center.
+      // Retain the selected range on both touch and button devices, including multi-page selections.
       const ClipSelectionActivity::Selection restore{clipping.startPageOffset, clipping.endPageOffset,
                                                      clipping.startWordIndex, clipping.endWordIndex, true};
       startActivityForResult(std::move(lookup), [this, spineIndex, pageNumber, restore](const ActivityResult& result) {
