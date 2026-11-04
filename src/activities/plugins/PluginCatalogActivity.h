@@ -464,6 +464,7 @@ class PluginCatalogActivity : public CatalogActivity {
   // Read installed versions once per page, outside the render path.
   void computeInstallStatus();
   bool parseXmlList();
+  bool parseUpdateFirstBrowseResponse(size_t pageOffset, bool& applied);
   bool parseBrowseResponse();
   void activateItem(int itemIndex);  // XML list: navigate into a folder, else details/preview/download
   void previewItem(int itemIndex);

@@ -347,6 +347,21 @@ void readPluginMetadata(const std::string& path, PluginRef& ref, const bool clas
     ref.deviceKind = PluginLocations::classifyDeviceManifest(browseUrl[0] != '\0', hasEvents);
   }
 }
+
+// Keep catalog ranking consistent with the installed-version Update badge.
+bool catalogItemHasUpdate(const std::string& id, const std::string& version) {
+  if (id.empty() || version.empty()) return false;
+  const std::string dir = PluginLocations::findPluginDir(id.c_str());
+  std::string raw;
+  if (dir.empty() || !Storage.readFileToString("PCAT", dir + "/manifest.json", MAX_MANIFEST_SIZE, raw)) return false;
+  JsonDocument filter;
+  filter["version"] = true;
+  JsonDocument doc;
+  std::string installed;
+  if (deserializeJson(doc, raw, DeserializationOption::Filter(filter)) == DeserializationError::Ok)
+    installed = doc["version"] | "";
+  return PluginLocations::isNewerVersion(version, installed);
+}
 }  // namespace
 
 std::vector<PluginRef> discoverPlugins() {
@@ -3187,6 +3202,176 @@ void PluginCatalogActivity::fetchPage(const int newPage) {
   requestUpdate();
 }
 
+// Sort static, version-tracked plugin catalogs globally before slicing a page.
+// The generic six-slot JSON parser cannot hold all five Razor-Crest
+// compatibility selectors plus id/version. Keep a bounded one-bit-per-source-row
+// eligibility map so that the two ranking passes use the full compatibility
+// policy without retaining catalog entries.
+bool PluginCatalogActivity::parseUpdateFirstBrowseResponse(const size_t pageOffset, bool& applied) {
+  applied = true;
+  const char* source = browseSourcePath.empty() ? BROWSE_TMP_PATH : browseSourcePath.c_str();
+  const bool filterCompatibility = manifest.filtersCompatibility();
+  const std::string unused;
+  std::vector<bool> compatibleBits;
+  if (filterCompatibility) {
+    // A 1 MiB feed with more than this many entries falls back to the
+    // existing unsorted browser instead of growing an unbounded bitmap.
+    constexpr size_t MAX_RANK_ROWS = 32768;
+    bool exceeded = false;
+    auto scan = [&](JsonListParser::Row& row) {
+      if (compatibleBits.size() >= MAX_RANK_ROWS) {
+        exceeded = true;
+        return;
+      }
+      const bool shown = !row.field[JsonListParser::F_TITLE].empty() &&
+                         catalogEntryCompatible(row.field[JsonListParser::F_AUTHOR], row.field[JsonListParser::F_ID],
+                                                row.field[JsonListParser::F_URL], row.field[JsonListParser::F_VERSION],
+                                                row.field[JsonListParser::F_BASE]);
+      compatibleBits.push_back(shown);
+    };
+    const std::string* const compatFields[] = {&manifest.titlePath,          &manifest.compatFamilyPath,
+                                               &manifest.compatFirmwarePath, &manifest.compatApiMinPath,
+                                               &manifest.compatRequiresPath, &manifest.compatAdvisoryPath};
+    auto parser = makeUniqueNoThrow<JsonListParser>(
+        manifest.itemsPath, compatFields, unused,
+        [](void* context, JsonListParser::Row& row) { (*static_cast<decltype(scan)*>(context))(row); }, &scan);
+    if (!streamBrowseFile(parser.get(), source)) {
+      fail(StrId::STR_PARSE_FEED_FAILED);
+      return false;
+    }
+    if (exceeded) {
+      applied = false;
+      return true;
+    }
+  }
+
+  const std::string* const rankingFields[] = {&manifest.titlePath,   &unused, &manifest.idPath, &unused,
+                                              &manifest.versionPath, &unused};
+  const auto eligible = [&](const JsonListParser::Row& row, const size_t sourceRow) {
+    return filterCompatibility ? sourceRow < compatibleBits.size() && compatibleBits[sourceRow]
+                               : !row.field[JsonListParser::F_TITLE].empty();
+  };
+  size_t eligibleCount = 0;
+  size_t updateCount = 0;
+  size_t countRow = 0;
+  auto count = [&](JsonListParser::Row& row) {
+    const size_t sourceRow = countRow++;
+    if (!eligible(row, sourceRow)) return;
+    ++eligibleCount;
+    if (catalogItemHasUpdate(row.field[JsonListParser::F_ID], row.field[JsonListParser::F_VERSION])) ++updateCount;
+  };
+  {
+    auto parser = makeUniqueNoThrow<JsonListParser>(
+        manifest.itemsPath, rankingFields, unused,
+        [](void* context, JsonListParser::Row& row) { (*static_cast<decltype(count)*>(context))(row); }, &count);
+    if (!streamBrowseFile(parser.get(), source) || (filterCompatibility && countRow != compatibleBits.size())) {
+      fail(StrId::STR_PARSE_FEED_FAILED);
+      return false;
+    }
+  }
+
+  releaseRows();
+  items.clear();
+  const size_t visibleCount =
+      pageOffset < eligibleCount ? std::min<size_t>(manifest.pageSize, eligibleCount - pageOffset) : 0;
+  if (!visibleCount) {
+    hasMore = false;
+    return true;
+  }
+
+  struct RankedRow {
+    size_t sourceIndex;
+    size_t displayIndex;
+  };
+  RankedRow chosen[MAX_PAGE_SIZE] = {};
+  bool usedSlots[MAX_PAGE_SIZE] = {};
+  bool inconsistentRanking = false;
+  size_t chosenCount = 0;
+  size_t sourceIndex = 0;
+  size_t seenUpdates = 0;
+  size_t seenOthers = 0;
+  auto choose = [&](JsonListParser::Row& row) {
+    const size_t thisRow = sourceIndex++;
+    if (!eligible(row, thisRow)) return;
+    const bool update = catalogItemHasUpdate(row.field[JsonListParser::F_ID], row.field[JsonListParser::F_VERSION]);
+    const size_t rank = update ? seenUpdates++ : updateCount + seenOthers++;
+    if (rank >= pageOffset && rank - pageOffset < visibleCount) {
+      const size_t slot = rank - pageOffset;
+      if (chosenCount >= visibleCount || usedSlots[slot]) {
+        inconsistentRanking = true;
+        return;
+      }
+      usedSlots[slot] = true;
+      chosen[chosenCount++] = {thisRow, slot};
+    }
+  };
+  {
+    auto parser = makeUniqueNoThrow<JsonListParser>(
+        manifest.itemsPath, rankingFields, unused,
+        [](void* context, JsonListParser::Row& row) { (*static_cast<decltype(choose)*>(context))(row); }, &choose);
+    if (!streamBrowseFile(parser.get(), source) || inconsistentRanking || chosenCount != visibleCount ||
+        seenUpdates + seenOthers != eligibleCount || (filterCompatibility && sourceIndex != compatibleBits.size())) {
+      fail(StrId::STR_PARSE_FEED_FAILED);
+      return false;
+    }
+  }
+  // The eligibility map is no longer needed when the selected page is known.
+  std::vector<bool>().swap(compatibleBits);
+
+  // Selected source indexes are in feed order; display indexes put updates
+  // first without rearranging either group internally.
+  items.resize(visibleCount);
+  size_t parsedIndex = 0;
+  size_t chosenIndex = 0;
+  auto append = [&](JsonListParser::Row& row) {
+    const size_t thisRow = parsedIndex++;
+    if (chosenIndex >= chosenCount || chosen[chosenIndex].sourceIndex != thisRow) return;
+    Item& item = items[chosen[chosenIndex++].displayIndex];
+    item.title = std::move(row.field[JsonListParser::F_TITLE]);
+    item.author = std::move(row.field[JsonListParser::F_AUTHOR]);
+    item.id = std::move(row.field[JsonListParser::F_ID]);
+    item.url = std::move(row.field[JsonListParser::F_URL]);
+    item.version = std::move(row.field[JsonListParser::F_VERSION]);
+    item.base = std::move(row.field[JsonListParser::F_BASE]);
+    item.files = std::move(row.files);
+  };
+  const std::string* const fields[] = {&manifest.titlePath, &manifest.authorPath,  &manifest.idPath,
+                                       &manifest.urlPath,   &manifest.versionPath, &manifest.bundleBasePath};
+  {
+    auto parser = makeUniqueNoThrow<JsonListParser>(
+        manifest.itemsPath, fields, manifest.bundleFilesPath,
+        [](void* context, JsonListParser::Row& row) { (*static_cast<decltype(append)*>(context))(row); }, &append);
+    if (!streamBrowseFile(parser.get(), source) || chosenIndex != chosenCount) {
+      fail(StrId::STR_PARSE_FEED_FAILED);
+      return false;
+    }
+  }
+
+  // Keep preview URLs paired with their items even when their display order
+  // differs from the catalog's source order.
+  if (!manifest.thumbnailPath.empty()) {
+    const std::string* const thumbnailFields[] = {&unused, &unused, &unused, &unused, &unused, &manifest.thumbnailPath};
+    size_t thumbnailSource = 0;
+    size_t thumbnailChosen = 0;
+    auto appendThumbnail = [&](JsonListParser::Row& row) {
+      const size_t thisRow = thumbnailSource++;
+      if (thumbnailChosen >= chosenCount || chosen[thumbnailChosen].sourceIndex != thisRow) return;
+      items[chosen[thumbnailChosen++].displayIndex].thumbnail = std::move(row.field[JsonListParser::F_BASE]);
+    };
+    auto parser = makeUniqueNoThrow<JsonListParser>(
+        manifest.itemsPath, thumbnailFields, unused,
+        [](void* context, JsonListParser::Row& row) { (*static_cast<decltype(appendThumbnail)*>(context))(row); },
+        &appendThumbnail);
+    if (!streamBrowseFile(parser.get(), source) || thumbnailChosen != chosenCount) {
+      fail(StrId::STR_PARSE_FEED_FAILED);
+      return false;
+    }
+  }
+  hasMore = eligibleCount > pageOffset + visibleCount;
+  computeInstallStatus();
+  return true;
+}
+
 bool PluginCatalogActivity::parseBrowseResponse() {
   if (manifest.isXmlList()) return parseXmlList();
 
@@ -3200,6 +3385,16 @@ bool PluginCatalogActivity::parseBrowseResponse() {
   const std::string& ids = extension ? extId : manifest.idPath;
   const std::string& urls = extension ? extUrl : manifest.urlPath;
   const std::string& itemsPath = extension ? manifest.browseLists[currentList].itemsPath : manifest.itemsPath;
+
+  // Prioritize installed plugins with updates across the full static catalog.
+  // Extension packs use different installation/version rules and retain their
+  // existing browser until their own ranking can be integrated separately.
+  if (!extension && manifest.tracksInstalls() && browsePaging() == plugincatalogpaging::Paging::Static) {
+    const size_t offset = static_cast<size_t>(std::max(0, page - 1)) * static_cast<size_t>(manifest.pageSize);
+    bool applied = false;
+    if (!parseUpdateFirstBrowseResponse(offset, applied)) return false;
+    if (applied) return true;
+  }
 
   // Server-paged API requests substitute {page}; static JSON feeds must
   // advance through the streamed response locally, without retaining all rows.
@@ -3475,6 +3670,7 @@ void PluginCatalogActivity::downloadItem(const int itemIndex) {
                           ? downloadExtension(item)
                           : (manifest.isBundle() && !item.files.empty() ? downloadBundle(item) : downloadBook(item));
   session.reset();
+  const std::string selectedId = std::move(item.id);
   item = {};
   if (!manifestLoaded) {
     fail(StrId::STR_PLUGIN_MANIFEST_INVALID);
@@ -3482,6 +3678,28 @@ void PluginCatalogActivity::downloadItem(const int itemIndex) {
   }
   // Reuse the SD response without another network request or resetting navigation.
   if (!parseBrowseResponse()) return;
+  // An updated item can move after re-sorting; only restore the selected row
+  // when its ID is unique on the new page.
+  if (result == HttpDownloader::OK && !selectedId.empty()) {
+    size_t matchCount = 0;
+    size_t matchIndex = 0;
+    for (size_t i = 0; i < items.size(); ++i) {
+      if (items[i].id != selectedId) continue;
+      ++matchCount;
+      matchIndex = i;
+      if (matchCount > 1) break;
+    }
+    if (matchCount == 1) {
+      // During DOWNLOADING, the tab and pager helpers are inactive. Use the
+      // browse layout that will be restored when the completion screen closes.
+      const bool tabbed = activePluginTab >= 0 && activePluginTab < static_cast<int>(manifest.tabs.size()) &&
+                          pluginTabNavs.size() == manifest.tabs.size();
+      const bool footer = tabbed || manifest.hasImages() || manifest.refreshEnabled;
+      const int previousRow = !footer && !manifest.isXmlList() && page > 1 ? 1 : 0;
+      auto& browseNav = tabbed ? pluginTabNavs[activePluginTab] : nav;
+      browseNav.requestSelection((tabbed ? 1 : 0) + previousRow + static_cast<int>(matchIndex));
+    }
+  }
   session = makeUniqueNoThrow<freeink::SecureHttpClient>();
   if (!session) LOG_ERR("PCAT", "OOM: browse client; using per-request connections");
   finishDownload(result);
