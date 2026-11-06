@@ -7,7 +7,7 @@
 #include "components/OptionPopup.h"
 #endif
 
-enum class NetworkMode { JOIN_NETWORK, CONNECT_CALIBRE, CREATE_HOTSPOT, USB_DRIVE };
+enum class NetworkMode { JOIN_NETWORK, CONNECT_CALIBRE, CREATE_HOTSPOT, USB_DRIVE, LOCAL_SEND };
 
 /**
  * NetworkModeSelectionActivity presents the user with a choice:
@@ -25,9 +25,14 @@ class NetworkModeSelectionActivity final : public UiListActivity {
   explicit NetworkModeSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput);
 
 #if FREEINK_CAP_USB_MSC
-  static constexpr int MENU_ITEM_COUNT = 4;
+  static constexpr int BASE_MENU_ITEM_COUNT = 4;
 #else
-  static constexpr int MENU_ITEM_COUNT = 3;
+  static constexpr int BASE_MENU_ITEM_COUNT = 3;
+#endif
+#if defined(CROSSPOINT_LOCALSEND) && CROSSPOINT_LOCALSEND
+  static constexpr int MENU_ITEM_COUNT = BASE_MENU_ITEM_COUNT + 1;
+#else
+  static constexpr int MENU_ITEM_COUNT = BASE_MENU_ITEM_COUNT;
 #endif
 
   void onModeSelected(NetworkMode mode);
@@ -50,4 +55,5 @@ class NetworkModeSelectionActivity final : public UiListActivity {
   // built once in the constructor instead of every buildScreen() call, into
   // fixed-capacity storage that avoids any heap allocation for the row list.
   freeink::ui::ListItem rowItems_[MENU_ITEM_COUNT]{};
+  int visibleItems_ = MENU_ITEM_COUNT;
 };

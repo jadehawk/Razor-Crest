@@ -75,11 +75,13 @@ bool overlaySleepMode() {
 }  // namespace
 
 BmpViewerActivity::BmpViewerActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string path,
-                                     const bool actionMode, std::string backLabel, std::string confirmLabel)
+                                     const bool actionMode, std::string backLabel, std::string confirmLabel,
+                                     const bool returnToCaller)
     : Activity("BmpViewer", renderer, mappedInput),
       UiAppHost(renderer),
       filePath(std::move(path)),
       actionMode(actionMode),
+      returnToCaller(returnToCaller),
       actionBackLabel(std::move(backLabel)),
       actionConfirmLabel(std::move(confirmLabel)) {}
 
@@ -634,7 +636,10 @@ void BmpViewerActivity::loop() {
   };
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    activityManager.goToFileBrowser(filePath);
+    if (returnToCaller)
+      finish();
+    else
+      activityManager.goToFileBrowser(filePath);
     return;
   }
 

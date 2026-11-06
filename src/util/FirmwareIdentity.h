@@ -27,12 +27,18 @@
 #define CROSSPOINT_PLUGIN_API_VERSION 1
 #endif
 
+#if defined(CROSSPOINT_LOCALSEND) && CROSSPOINT_LOCALSEND
+#define CROSSPOINT_LOCALSEND_CAPABILITY ",transfer.localsend.v1"
+#else
+#define CROSSPOINT_LOCALSEND_CAPABILITY ""
+#endif
+
 #ifndef CROSSPOINT_PLUGIN_CAPABILITIES
 #define CROSSPOINT_PLUGIN_CAPABILITIES                                                                             \
   "catalog.lists,catalog.notices,catalog.bundle_install,catalog.version_tracking,catalog.compatibility,catalog."   \
   "images,"                                                                                                        \
   "catalog.cache,catalog.refresh,catalog.item_details,catalog.encoded_item_fields,catalog.list_index_mapping,"     \
-  "catalog.list_requirements,catalog.server_paths,"                                                                                     \
+  "catalog.list_requirements,catalog.server_paths,"                                                                \
   "catalog.hardware_filter.v1,stats."                                                                              \
   "native.v1,ui.dashboard.v1,"                                                                                     \
   "theme.sd.v1,theme.metrics.v1,theme.images.v1,theme.composition.v1,theme.fonts.v1,"                              \
@@ -40,7 +46,7 @@
   "theme.screen-decoration.v1,theme.screen-background.v1,theme.header-back.v1,theme.sleep-gallery.v1,theme.sleep-" \
   "grayscale.v1,"                                                                                                  \
   "theme.usb-scene.v1,theme.usb-grayscale.v1,ui.carousel.v1,home.book-carousel.v1,home.shortcuts."                 \
-  "v1,wallpaper.packs.v1"
+  "v1,wallpaper.packs.v1" CROSSPOINT_LOCALSEND_CAPABILITY
 #endif
 
 namespace firmwareidentity {

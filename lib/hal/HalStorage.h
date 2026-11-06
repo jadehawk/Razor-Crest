@@ -24,6 +24,10 @@ class HalStorage {
   HalStorage();
   bool begin();
   bool ready() const;
+  // Cached card capacity and FAT usage from the pinned SD manager.
+  // A zero result means the information is unavailable.
+  uint64_t sdTotalBytes() const;
+  uint64_t sdUsedBytes();
   // Stop the SD card for deep sleep: unmount, stop the SDMMC host, and release
   // the bus pads (no-op on SPI boards). Call only after all file users have
   // stopped; open HalFiles become invalid. A deep-sleep wake resets the MCU and
