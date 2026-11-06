@@ -65,6 +65,18 @@ bool LocalSendReceiver::setAdvertisedId(const char* id) {
   std::snprintf(advertisedAlias, sizeof(advertisedAlias), "Razor-Crest(%s)", id);
   return true;
 }
+bool LocalSendReceiver::validFingerprint(const char* id) {
+  if (!id || std::strlen(id) != 32) return false;
+  for (const char* p = id; *p; ++p)
+    if ((*p < '0' || *p > '9') && (*p < 'a' || *p > 'f')) return false;
+  return true;
+}
+bool LocalSendReceiver::setFingerprint(const char* id) {
+  if (!validFingerprint(id)) return false;
+  std::memcpy(fingerprint, id, sizeof(fingerprint));
+  return true;
+}
+LocalSendReceiver::LocalSendReceiver() { randomId(fingerprint); }
 LocalSendReceiver::~LocalSendReceiver() { stop(); }
 bool LocalSendReceiver::setDestination(const char* path) {
   if (!localsend::safeDestinationFolder(path)) return false;
@@ -76,7 +88,6 @@ bool LocalSendReceiver::begin(CancelCheck check, void* context) {
   if (WiFi.status() != WL_CONNECTED) return false;
   cancelCheck = check;
   cancelContext = context;
-  randomId(fingerprint);
   listener.begin();
   if (!listener) {
     LOG_ERR("LSEND", "Cannot listen on port %u", PORT);
@@ -274,17 +285,6 @@ void LocalSendReceiver::serve(NetworkClient& client) {
         char response[160];
         std::snprintf(response, sizeof(response), "{\"message\":\"%s\"}", reason);
         reply(client, result, response);
-        return;
-      }
-      uint64_t requestedBytes = 0;
-      for (uint8_t i = 0; i < session.fileCount; ++i) requestedBytes += session.files[i].expected;
-      const uint64_t cardBytes = Storage.sdTotalBytes();
-      const uint64_t usedBytes = Storage.sdUsedBytes();
-      if (cardBytes && usedBytes <= cardBytes && requestedBytes > cardBytes - usedBytes) {
-        LOG_ERR("LSEND", "Prepare rejected: SD has insufficient space for %llu bytes",
-                static_cast<unsigned long long>(requestedBytes));
-        session.reset();
-        reply(client, 507, "{\"message\":\"Not enough free space on SD card\"}");
         return;
       }
       for (uint8_t i = 0; i < session.fileCount; ++i) {
@@ -516,6 +516,18 @@ void LocalSendReceiver::decide(bool accept) {
         code = 403;
         break;
       }
+    }
+  }
+  if (code == 200) {
+    uint64_t requestedBytes = 0;
+    for (uint8_t i = 0; i < session.fileCount; ++i) requestedBytes += session.files[i].expected;
+    const uint64_t cardBytes = Storage.sdTotalBytes();
+    const uint64_t usedBytes = Storage.sdUsedBytes();
+    if (cardBytes && usedBytes <= cardBytes && requestedBytes > cardBytes - usedBytes) {
+      LOG_ERR("LSEND", "Transfer acceptance rejected: SD has insufficient space for %llu bytes",
+              static_cast<unsigned long long>(requestedBytes));
+      rejectionReason = "Not enough free space on SD card";
+      code = 507;
     }
   }
   if (code == 200) {

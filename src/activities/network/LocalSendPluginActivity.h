@@ -1,6 +1,7 @@
 #pragma once
 #if defined(CROSSPOINT_LOCALSEND) && CROSSPOINT_LOCALSEND
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -56,6 +57,7 @@ class LocalSendPluginActivity final : public UiTabListActivity {
   } labels;
   char ipAddress[24]{};
   char deviceId[33]{};
+  char fingerprint[33]{};
   char sessionNames[MAX_SESSION_NAMES][129]{};
   char sessionPaths[MAX_SESSION_NAMES][96]{};
   localsend::History history;
@@ -75,6 +77,7 @@ class LocalSendPluginActivity final : public UiTabListActivity {
   uint8_t gridColumns = 2, gridRows = 3;
   OptionPopup popup;
   bool consentPopup = false;
+  std::atomic<bool> checkingStorage{false};
   bool confirmHeld = false;
   bool listening = false;
   bool leaveRequested = false;
@@ -83,7 +86,7 @@ class LocalSendPluginActivity final : public UiTabListActivity {
   static bool cancelled(void* context);
   bool loadDefinition();
   void loadPreferences();
-  void saveState();
+  bool saveState();
   void refreshCovers();
   void loadRecentWindow(int first);
   const localsend::History::Entry* windowEntry(int index);

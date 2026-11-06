@@ -71,7 +71,10 @@ of triggering the normal File Transfer exit restart; the reader or image
 viewer opens without returning to Home.
 
 Destination, Device ID, and display settings are stored in the bounded
-`/.crosspoint/localsend/localsend.json` file. The received-file index
+`/.crosspoint/localsend/localsend.json` file. The same state file stores
+one randomly generated receiver fingerprint so discovery and Favorites keep the
+same identity across restarts. The receiver will not advertise a new fingerprint
+if its initial state write fails. The received-file index
 is independent: `/.crosspoint/localsend/history.bin` holds fixed-size
 SD records (folder and filename), newest-first when browsed. Only the
 small visible window is loaded into RAM. Remove/Delete rewrites this
@@ -91,7 +94,12 @@ rejection rules.
 A duplicate filename is rejected at Prepare with HTTP 403, the on-device
 log identifies the existing destination path and the sender receives
 `File already exists in destination folder`. A duplicate created during
-the consent window is also rejected without overwriting it.
+the consent window is also rejected without overwriting it. The potentially
+slow SD free-space scan starts only after Accept, with the consent dialog
+replaced by a non-interactive "Checking SD card space..." notice while the
+scan runs. The notice clears after the check, with no fixed duration promised;
+Decline does not scan the card. An accepted offer that cannot fit is rejected
+with HTTP 507 before upload credentials are issued.
 
 Leave with Back or Home to stop TCP/UDP listening, discard any pending
 offer, and close the network activity. Ordinary File Transfer / hotspot

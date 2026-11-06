@@ -13,6 +13,7 @@ inline std::string testRemoveFailPath;
 inline bool testNestedStagingDirEnsured = false, testBadStagingPath = false;
 inline size_t testWriteCalls = 0;
 inline uint64_t testCardTotalBytes = 0, testCardUsedBytes = 0;
+inline size_t testSpaceCheckCalls = 0;
 class HalFile {
   std::string path;
   bool open = false;
@@ -61,7 +62,10 @@ class HalFile {
 };
 struct TestStorage {
   uint64_t sdTotalBytes() const { return testCardTotalBytes; }
-  uint64_t sdUsedBytes() const { return testCardUsedBytes; }
+  uint64_t sdUsedBytes() const {
+    ++testSpaceCheckCalls;
+    return testCardUsedBytes;
+  }
   bool ensureDirectoryExists(const char* path) {
     if (!std::strcmp(path, "/.crosspoint/localsend")) testNestedStagingDirEnsured = true;
     return true;
