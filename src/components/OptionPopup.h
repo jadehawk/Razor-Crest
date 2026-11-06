@@ -64,6 +64,9 @@ class OptionPopup {
     message = messageStr ? messageStr : "";
   }
 
+  // Detail messages can use more lines without changing ordinary prompts.
+  void setMessageMaxLines(uint8_t lines) { messageMaxLines = std::clamp<uint8_t>(lines, 1, 10); }
+
   void show(StrId titleId, const std::vector<std::string>& options, int currentIndex,
             std::function<void(int)> onSelect) {
     title = I18N.get(titleId);
@@ -72,7 +75,8 @@ class OptionPopup {
     activate(currentIndex, std::move(onSelect));
   }
 
-  bool handleInput(MappedInputManager& input, const std::function<void()>& requestUpdate) {
+  bool handleInput(MappedInputManager& input, const std::function<void()>& requestUpdate,
+                   bool blockConfirmRelease = false) {
     if (!active) return false;
 
     const freeink::ui::InputSnapshot snap = touchSnapshotFrom(input);
@@ -120,7 +124,7 @@ class OptionPopup {
 
     return handleButtons(input.wasPressed(MappedInputManager::Button::NavPrevious),
                          input.wasPressed(MappedInputManager::Button::NavNext),
-                         input.wasReleased(MappedInputManager::Button::Confirm),
+                         input.wasReleased(MappedInputManager::Button::Confirm) && !blockConfirmRelease,
                          input.wasReleased(MappedInputManager::Button::Back), requestUpdate);
   }
 
@@ -201,7 +205,7 @@ class OptionPopup {
       props.message = message.c_str();
       props.messageText.font = fui::GfxRendererTarget::FONT_BODY;
       props.messageText.align = fui::TextAlign::Center;
-      props.messageText.maxLines = 6;
+      props.messageText.maxLines = messageMaxLines;
     }
     props.options = options;
     props.optionCount = count;
@@ -281,6 +285,7 @@ class OptionPopup {
     selectedIndex = currentIndex >= 0 && currentIndex < count ? currentIndex : 0;
     onSelectCallback = std::move(onSelect);
     message.clear();
+    messageMaxLines = 6;
     uiReady = false;
     active = count > 0;
   }
@@ -289,6 +294,7 @@ class OptionPopup {
   std::string title;
   std::string headline;
   std::string message;
+  uint8_t messageMaxLines = 6;
   std::vector<std::string> ownedStrings;
   int selectedIndex = 0;
   std::function<void(int)> onSelectCallback;

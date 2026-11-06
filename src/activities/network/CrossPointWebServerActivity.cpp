@@ -6,12 +6,19 @@
 #include <GfxRenderer.h>
 #include <HalGPIO.h>
 #include <I18n.h>
+#if defined(CROSSPOINT_LOCALSEND) && CROSSPOINT_LOCALSEND
+#include <Memory.h>
+#endif
 #include <WiFi.h>
 
 #include <cstddef>
+#include <cstdio>
 
 #include "MappedInputManager.h"
 #include "NetworkModeSelectionActivity.h"
+#if defined(CROSSPOINT_LOCALSEND) && CROSSPOINT_LOCALSEND
+#include "LocalSendPluginActivity.h"
+#endif
 #include "SilentRestart.h"
 #include "WifiSelectionActivity.h"
 #include "activities/network/CalibreConnectActivity.h"
@@ -130,6 +137,17 @@ void CrossPointWebServerActivity::onExit() {
       WiFi.disconnect(false);
     }
     delay(30);
+#if defined(CROSSPOINT_LOCALSEND) && CROSSPOINT_LOCALSEND
+    // LocalSend is a child screen; opening a received file replaces the whole
+    // activity stack. The normal WebUI exit reboot would discard that reader
+    // transition and restart at Home. Touch boards can clean up in place.
+    if (networkMode == NetworkMode::LOCAL_SEND && mappedInput.hasTouch()) {
+      WiFi.mode(WIFI_OFF);
+      LOG_INF("LSEND", "Local Send closed without reboot; free=%u max_block=%u", unsigned(ESP.getFreeHeap()),
+              unsigned(ESP.getMaxAllocHeap()));
+      return;
+    }
+#endif
     silentRestart();
   }
 
@@ -151,6 +169,10 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
     modeName = "Connect to Calibre";
   } else if (mode == NetworkMode::CREATE_HOTSPOT) {
     modeName = "Create Hotspot";
+#if defined(CROSSPOINT_LOCALSEND) && CROSSPOINT_LOCALSEND
+  } else if (mode == NetworkMode::LOCAL_SEND) {
+    modeName = "Local Send";
+#endif
 #if FREEINK_CAP_USB_MSC
   } else if (mode == NetworkMode::USB_DRIVE) {
     modeName = "USB Drive";
@@ -185,7 +207,11 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
     return;
   }
 
-  if (mode == NetworkMode::JOIN_NETWORK) {
+  if (mode == NetworkMode::JOIN_NETWORK
+#if defined(CROSSPOINT_LOCALSEND) && CROSSPOINT_LOCALSEND
+      || mode == NetworkMode::LOCAL_SEND
+#endif
+  ) {
     // STA mode - launch WiFi selection
     LOG_DBG("WEBACT", "Turning on WiFi (STA mode)...");
     WiFi.mode(WIFI_STA);
@@ -216,10 +242,20 @@ void CrossPointWebServerActivity::onWifiSelectionComplete(const bool connected) 
     // Get connection info before exiting subactivity
     isApMode = false;
 
-    // Start mDNS for hostname resolution
+#if defined(CROSSPOINT_LOCALSEND) && CROSSPOINT_LOCALSEND
+    if (networkMode == NetworkMode::LOCAL_SEND) {
+      auto activity = makeUniqueNoThrow<LocalSendPluginActivity>(renderer, mappedInput);
+      if (!activity) {
+        LOG_ERR("LSEND", "OOM: Local Send screen");
+        onGoHome();
+        return;
+      }
+      startActivityForResult(std::move(activity), [this](const ActivityResult&) { onGoHome(); });
+      return;
+    }
+#endif
+    // Start mDNS for the normal File Transfer web server.
     restartMdns(AP_HOSTNAME, "WEBACT");
-
-    // Start the web server
     startWebServer();
   } else {
     // User cancelled - go back to mode selection

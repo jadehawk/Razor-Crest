@@ -10,7 +10,8 @@
 class BmpViewerActivity final : public Activity, private UiAppHost {
  public:
   BmpViewerActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string filePath,
-                    bool actionMode = false, std::string backLabel = {}, std::string confirmLabel = {});
+                    bool actionMode = false, std::string backLabel = {}, std::string confirmLabel = {},
+                    bool returnToCaller = false);
 
   void onEnter() override;
   void onExit() override;
@@ -36,6 +37,7 @@ class BmpViewerActivity final : public Activity, private UiAppHost {
 
   std::string filePath;
   bool actionMode = false;
+  bool returnToCaller = false;
   bool actionReady = false;
   bool actionCanConfirm = false;
   std::string actionBackLabel;
