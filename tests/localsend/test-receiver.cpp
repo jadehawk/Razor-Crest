@@ -106,9 +106,29 @@ int main() {
   auto info = jsonBody(transact(receiver, "/api/localsend/v2/info"));
   require(info["protocol"] == "http" && info["port"] == 53317 && info["alias"] == "Razor-Crest(X3)",
           "model-specific advertised identity");
+  const std::string stableFingerprint = info["fingerprint"].as<std::string>();
+  require(LocalSendReceiver::validFingerprint(stableFingerprint.c_str()), "random device fingerprint is valid");
+  receiver.stop();
+  require(receiver.begin(cancelled, nullptr), "restart receiver");
+  info = jsonBody(transact(receiver, "/api/localsend/v2/info"));
+  require(info["fingerprint"] == stableFingerprint, "restart keeps same fingerprint");
+  LocalSendReceiver restored;
+  require(restored.setFingerprint(stableFingerprint.c_str()), "restore saved fingerprint");
+  require(!restored.setFingerprint("") && !restored.setFingerprint("invalid") &&
+              !restored.setFingerprint(std::string(32, 'z').c_str()) &&
+              !restored.setFingerprint(std::string(33, 'a').c_str()) &&
+              std::strcmp(restored.deviceFingerprint(), stableFingerprint.c_str()) == 0,
+          "invalid stored fingerprint cannot replace identity");
+  receiver.stop();
+  require(restored.begin(cancelled, nullptr), "start receiver with restored fingerprint");
+  info = jsonBody(transact(restored, "/api/localsend/v2/register", "{\"fingerprint\":\"sender\"}"));
+  require(info["fingerprint"] == stableFingerprint, "registered device uses restored fingerprint");
+  restored.stop();
+  require(receiver.begin(cancelled, nullptr), "resume original receiver");
   require(receiver.setAdvertisedId("User_Custom_ID"), "custom ID accepted");
   info = jsonBody(transact(receiver, "/api/localsend/v2/info"));
-  require(info["alias"] == "Razor-Crest(User_Custom_ID)", "custom identity shown in HTTP info");
+  require(info["alias"] == "Razor-Crest(User_Custom_ID)" && info["fingerprint"] == stableFingerprint,
+          "changing Device ID changes alias without rotating fingerprint");
   require(!receiver.setAdvertisedId("") && !receiver.setAdvertisedId("../bad") &&
               !receiver.setAdvertisedId("name (bad)") && !receiver.setAdvertisedId(std::string(33, 'x').c_str()),
           "empty, unsafe or too-long custom IDs rejected");
@@ -126,9 +146,21 @@ int main() {
   book += std::string(2044, 'x');
   testCardTotalBytes = 1024 * 1024;
   testCardUsedBytes = testCardTotalBytes - 128;
-  const auto noSpace = prepare(receiver, "no-space.epub", book.size());
-  require(status(noSpace, 507) && noSpace.find("Not enough free space") != std::string::npos && noTemporary(),
-          "SD capacity checked before accepting a large upload");
+  const size_t scansBeforeOffer = testSpaceCheckCalls;
+  const auto offeredNoSpace = prepare(receiver, "no-space.epub", book.size(), nullptr, false);
+  require(offeredNoSpace.empty() && receiver.pendingOffer() && testSpaceCheckCalls == scansBeforeOffer,
+          "offer reaches consent without scanning SD free space");
+  receiver.decide(true);
+  const auto noSpace = active->output;
+  require(status(noSpace, 507) && noSpace.find("Not enough free space") != std::string::npos &&
+              testSpaceCheckCalls == scansBeforeOffer + 1 && !receiver.pendingOffer() && noTemporary(),
+          "SD capacity checked after accepting, before authorizing upload");
+  const size_t scansBeforeDecline = testSpaceCheckCalls;
+  const auto offeredDeclined = prepare(receiver, "declined-before-scan.epub", book.size(), nullptr, false);
+  require(offeredDeclined.empty() && receiver.pendingOffer(), "declined offer reaches consent");
+  receiver.decide(false);
+  require(status(active->output, 403) && testSpaceCheckCalls == scansBeforeDecline && !receiver.pendingOffer(),
+          "declined transfer never scans SD free space");
   testCardTotalBytes = testCardUsedBytes = 0;
   auto prepared = prepare(receiver, "first.epub", book.size());
   require(status(prepared, 200), "prepare first book");

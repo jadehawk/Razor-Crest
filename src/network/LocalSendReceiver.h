@@ -7,6 +7,7 @@
 class LocalSendReceiver {
  public:
   using CancelCheck = bool (*)(void*);
+  LocalSendReceiver();
   ~LocalSendReceiver();
   bool begin(CancelCheck check, void* context);
   void stop();
@@ -16,7 +17,10 @@ class LocalSendReceiver {
   void decide(bool accept);
   bool setDestination(const char* path);
   static bool validDeviceId(const char* id);
+  static bool validFingerprint(const char* id);
   bool setAdvertisedId(const char* id);
+  bool setFingerprint(const char* id);
+  const char* deviceFingerprint() const { return fingerprint; }
   const char* destinationFolder() const { return destination; }
   uint32_t completedSequence() const { return savedSequence; }
   const char* completedName() const { return savedName; }

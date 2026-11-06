@@ -179,6 +179,9 @@ void LocalSendPluginActivity::loadPreferences() {
   gridRows = static_cast<uint8_t>(std::clamp(doc["grid_rows"] | 3, 1, 3));
   const char* id = doc["device_id"].as<const char*>();
   if (LocalSendReceiver::validDeviceId(id)) std::snprintf(deviceId, sizeof(deviceId), "%s", id);
+  const char* storedFingerprint = doc["fingerprint"].as<const char*>();
+  if (LocalSendReceiver::validFingerprint(storedFingerprint))
+    std::memcpy(fingerprint, storedFingerprint, sizeof(fingerprint));
   const JsonString destination = doc["destination"].as<JsonString>();
   if (destination && destination.size() == std::strlen(destination.c_str())) {
     for (int i = 0; i < folderCount; ++i)
@@ -235,8 +238,13 @@ const localsend::History::Entry* LocalSendPluginActivity::windowEntry(int index)
   return offset >= 0 && offset < recentWindowCount ? &recentEntries[offset] : nullptr;
 }
 
-void LocalSendPluginActivity::saveState() {
+bool LocalSendPluginActivity::saveState() {
+  if (!LocalSendReceiver::validFingerprint(fingerprint)) {
+    LOG_ERR("LSEND", "Cannot save Local Send state without a valid fingerprint");
+    return false;
+  }
   JsonDocument doc;
+  doc["fingerprint"] = fingerprint;
   doc["destination"] = folders[selectedFolder].path;
   if (deviceId[0]) doc["device_id"] = deviceId;
   doc["layout"] = gridView ? "grid" : "list";
@@ -248,12 +256,12 @@ void LocalSendPluginActivity::saveState() {
   if (doc.overflowed() || raw.size() > MAX_STATE_BYTES || !Storage.ensureDirectoryExists("/.crosspoint") ||
       !Storage.ensureDirectoryExists("/.crosspoint/localsend")) {
     LOG_ERR("LSEND", "Cannot prepare Local Send state for save");
-    return;
+    return false;
   }
   HalFile file;
   if (!Storage.openFileForWrite("LSEND", STATE_TMP_PATH, file)) {
     LOG_ERR("LSEND", "Cannot open temporary Local Send state");
-    return;
+    return false;
   }
   const bool written = file.write(raw.data(), raw.size()) == raw.size();
   file.flush();
@@ -261,7 +269,7 @@ void LocalSendPluginActivity::saveState() {
   if (!written || !closed) {
     Storage.remove(STATE_TMP_PATH);
     LOG_ERR("LSEND", "Cannot write complete Local Send state");
-    return;
+    return false;
   }
   const bool hadOld = Storage.exists(STATE_PATH);
   if (hadOld) {
@@ -269,16 +277,17 @@ void LocalSendPluginActivity::saveState() {
         !Storage.rename(STATE_PATH, STATE_BACKUP_PATH)) {
       Storage.remove(STATE_TMP_PATH);
       LOG_ERR("LSEND", "Cannot back up previous Local Send state");
-      return;
+      return false;
     }
   }
   if (!Storage.rename(STATE_TMP_PATH, STATE_PATH)) {
     if (hadOld) Storage.rename(STATE_BACKUP_PATH, STATE_PATH);
     Storage.remove(STATE_TMP_PATH);
     LOG_ERR("LSEND", "Cannot publish Local Send state");
-    return;
+    return false;
   }
   if (Storage.exists(STATE_BACKUP_PATH)) Storage.remove(STATE_BACKUP_PATH);
+  return true;
 }
 
 bool LocalSendPluginActivity::cancelled(void* context) {
@@ -313,13 +322,17 @@ void LocalSendPluginActivity::onEnter() {
   loadPreferences();
   recentCount = history.count();
   if (recentCount) loadRecentWindow(0);
-  // Create persistent state on first launch, even before the first receive.
-  // An uninstall must not erase the destination and history file.
-  if (!Storage.exists(STATE_PATH)) saveState();
   std::snprintf(ipAddress, sizeof(ipAddress), "%s:53317", WiFi.localIP().toString().c_str());
   receiver = makeUniqueNoThrow<LocalSendReceiver>();
   if (!receiver) {
     LOG_ERR("LSEND", "OOM: receiver for plugin screen");
+  } else {
+    const bool newIdentity = !fingerprint[0];
+    if (newIdentity) std::snprintf(fingerprint, sizeof(fingerprint), "%s", receiver->deviceFingerprint());
+    if (!receiver->setFingerprint(fingerprint) || ((newIdentity || !Storage.exists(STATE_PATH)) && !saveState())) {
+      LOG_ERR("LSEND", "Cannot persist stable Local Send identity; receiver disabled");
+      receiver.reset();
+    }
   }
   // Display the Receive tab before advertising or accepting any incoming
   // transfer. ActivityManager enters this screen without a render lock.
@@ -389,7 +402,15 @@ void LocalSendPluginActivity::showConsent() {
   confirmHeld = mappedInput.isPressed(MappedInputManager::Button::Confirm);
   consentPopup = true;
   popup.showMessage(tr(STR_LOCALSEND_RECEIVE_TITLE), message, actions, 2, 0, [this](int index) {
-    if (receiver) receiver->decide(index == 1);
+    if (index == 1) {
+      // Paint a non-interactive status while the potentially slow SD FAT scan runs.
+      checkingStorage.store(true);
+      requestUpdateAndWait();
+      if (receiver) receiver->decide(true);
+      checkingStorage.store(false);
+    } else if (receiver) {
+      receiver->decide(false);
+    }
   });
   requestUpdate();
 }
@@ -1006,7 +1027,31 @@ void LocalSendPluginActivity::buildScreen(UiScreen& screen) {
 }
 
 void LocalSendPluginActivity::renderOverlay() {
-  if (popup.isActive()) popup.render(renderer);
+  if (checkingStorage.load()) {
+    // A standalone status overlay has no buttons and needs only one e-ink flush.
+    fui::GfxRendererTarget target = makeUiTarget(renderer);
+    const fui::ThemeTokens& theme = refreshSharedUiThemeTokens(target);
+    const fui::DeviceContext device = target.deviceContext();
+    fui::InteractionBuffer<1> interactions;
+    const fui::InputSnapshot noInput{};
+    fui::Frame<1> frame(target, device, noInput, interactions);
+    fui::PopupProps props;
+    props.message = "Checking SD card space...\nTransfer starts after verification.\nThis may take a while.";
+    props.text = theme.bodyText;
+    props.text.align = fui::TextAlign::Center;
+    props.text.maxLines = 5;
+    props.styles = theme.popup;
+    const fui::Rect bounds = device.screen();
+    const int16_t width =
+        static_cast<int16_t>(std::max<int>(1, std::min<int>(bounds.width * 3 / 4, bounds.width - 16)));
+    const int16_t textWidth = static_cast<int16_t>(std::max<int>(1, width - props.padding.left - props.padding.right));
+    const fui::Size textSize = fui::measureWrappedText(target, props.message, props.text, textWidth);
+    const int16_t height = static_cast<int16_t>(std::max<int>(
+        1, std::min<int>(bounds.height - 16, textSize.height + props.padding.top + props.padding.bottom)));
+    fui::popup(frame, fui::centeredRect(bounds, fui::Size{width, height}), props);
+  } else if (popup.isActive()) {
+    popup.render(renderer);
+  }
 }
 
 #endif
