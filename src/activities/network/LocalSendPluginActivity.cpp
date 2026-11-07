@@ -1036,7 +1036,7 @@ void LocalSendPluginActivity::renderOverlay() {
     const fui::InputSnapshot noInput{};
     fui::Frame<1> frame(target, device, noInput, interactions);
     fui::PopupProps props;
-    props.message = "Checking SD card space...\nTransfer starts after verification.\nThis may take a while.";
+    props.message = "Checking SD card space... Transfer starts after verification. This may take a while.";
     props.text = theme.bodyText;
     props.text.align = fui::TextAlign::Center;
     props.text.maxLines = 5;
