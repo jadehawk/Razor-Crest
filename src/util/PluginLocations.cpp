@@ -1,12 +1,21 @@
 #include "PluginLocations.h"
 
 #include <HalStorage.h>
+#include <MD5Builder.h>
 
 #include <algorithm>
 
 #include "CrossPointSettings.h"
 
 namespace PluginLocations {
+
+std::string noticeMarkerDir(const std::string& pluginDir) {
+  MD5Builder md5;
+  md5.begin();
+  md5.add(reinterpret_cast<const uint8_t*>(pluginDir.data()), pluginDir.size());
+  md5.calculate();
+  return "/.crosspoint/notice_" + std::string(md5.toString().c_str());
+}
 
 std::vector<Entry> scanPluginsOnDisk() {
   std::vector<Entry> plugins;

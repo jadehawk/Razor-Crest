@@ -154,6 +154,7 @@ class PluginCatalogActivity : public CatalogActivity {
       std::string itemsPath;        // v2 item array key
       std::string id;               // fills {list_id} for shared browse URLs
       std::string noticeTitle, noticeMessage, noticeConfirm, noticeCancel;
+      std::string noticeId;  // nonempty only for valid notice.id with notice.once=true
       bool hasNotice() const { return !noticeMessage.empty(); }
     };
     // Keep remote catalog entries in small allocations: a single contiguous vector
@@ -324,7 +325,7 @@ class PluginCatalogActivity : public CatalogActivity {
   void resetBrowse();
   // JSON catalog with named lists and none picked yet.
   bool wantsListPicker() const;
-  void openList(int index);
+  void openList(int index, bool exitOnCancel = true);
   bool loadManifest();
   // `status` is the index request's HTTP status (200 when there is no index).
   bool loadBrowseListIndex(int& status);

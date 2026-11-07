@@ -2184,6 +2184,9 @@ void CrossPointWebServer::handlePluginRemove() const {
       server->send(500, "application/json", "{\"error\":\"plugin removal failed\"}");
       return;
     }
+    const std::string markerDir = PluginLocations::noticeMarkerDir(e.dir);
+    if (Storage.exists(markerDir.c_str()) && !Storage.removeDir(markerDir.c_str()))
+      LOG_ERR("WEB", "Failed to clear plugin notices: %s", markerDir.c_str());
     pluginevents::refreshSubscriptions();
     server->send(200, "application/json", "{\"ok\":true}");
     return;

@@ -290,6 +290,25 @@ std::string pluginNameFromManifestPath(const std::string& manifestPath) {
   return manifestPath.substr(parent + 1, slash - parent - 1);
 }
 
+std::string persistentNoticeId(JsonVariantConst notice) {
+  if (!notice["once"].is<bool>() || !notice["once"].as<bool>() || !notice["id"].is<const char*>()) return {};
+  const char* id = notice["id"].as<const char*>();
+  if (!id) return {};
+  constexpr size_t MAX_NOTICE_ID = 64;
+  for (size_t i = 0; i <= MAX_NOTICE_ID; ++i) {
+    const unsigned char c = static_cast<unsigned char>(id[i]);
+    if (!c) return i ? std::string(id, i) : std::string{};
+    if (c > 127 || (!std::isalnum(c) && c != '-' && c != '_' && c != '.')) return {};
+  }
+  return {};
+}
+
+std::string noticeMarkerPath(const std::string& manifestPath, const std::string& noticeId) {
+  if (noticeId.empty() || pluginNameFromManifestPath(manifestPath).empty()) return {};
+  const size_t slash = manifestPath.rfind('/');
+  return PluginLocations::noticeMarkerDir(manifestPath.substr(0, slash)) + "/" + md5Hex(noticeId) + ".ok";
+}
+
 // book.downloaded plugin event, fired after a catalog download lands on SD.
 void emitBookDownloaded(const std::string& manifestPath, const std::string& path, const std::string& title) {
   if (!pluginevents::anySubscriber(pluginevents::Event::BookDownloaded)) return;
@@ -510,6 +529,7 @@ bool PluginCatalogActivity::loadManifest() {
     entry.noticeMessage = notice["message"] | "";
     entry.noticeConfirm = notice["confirm"] | "";
     entry.noticeCancel = notice["cancel"] | "";
+    entry.noticeId = persistentNoticeId(notice);
     if (!entry.title.empty()) manifest.browseLists.push_back(std::move(entry));
   }
   manifest.fixedListCount = manifest.browseLists.size();
@@ -1179,6 +1199,11 @@ void PluginCatalogActivity::confirmUninstallPlugin(const int pickerIndex) {
     if (result.isCancelled) return;
     const bool removed = !Storage.exists(plugin.dir.c_str()) || Storage.removeDir(plugin.dir.c_str());
     if (!removed) LOG_ERR("PCAT", "Failed to recursively uninstall plugin: %s", plugin.dir.c_str());
+    if (removed) {
+      const std::string markerDir = PluginLocations::noticeMarkerDir(plugin.dir);
+      if (Storage.exists(markerDir.c_str()) && !Storage.removeDir(markerDir.c_str()))
+        LOG_ERR("PCAT", "Failed to clear plugin notices: %s", markerDir.c_str());
+    }
 
     pickerReturnName = returnPluginName;
     enterPluginPicker();
@@ -1378,9 +1403,10 @@ void PluginCatalogActivity::resetBrowse() {
 
 // Shows the list's notice first when it has one. Declining stays on the
 // picker, or leaves the catalog when this list is the only one.
-void PluginCatalogActivity::openList(const int index) {
+void PluginCatalogActivity::openList(const int index, const bool exitOnCancel) {
   const auto& list = manifest.browseLists[index];
-  if (!list.hasNotice()) {
+  const std::string marker = noticeMarkerPath(manifestPath, list.noticeId);
+  if (!list.hasNotice() || (!marker.empty() && Storage.exists(marker.c_str()))) {
     currentList = index;
     startBrowse();
     return;
@@ -1392,13 +1418,20 @@ void PluginCatalogActivity::openList(const int index) {
   auto confirmation = makeUniqueNoThrow<ConfirmationActivity>(renderer, mappedInput, heading, message, cancel, confirm);
   if (!confirmation) {
     LOG_ERR("PCAT", "OOM: browse-list notice");
-    if (manifest.browseLists.size() == 1) exitCatalog();
+    if (exitOnCancel && manifest.browseLists.size() == 1) exitCatalog();
     return;
   }
-  startActivityForResult(std::move(confirmation), [this, index](const ActivityResult& result) {
+  startActivityForResult(std::move(confirmation), [this, index, exitOnCancel](const ActivityResult& result) {
     if (result.isCancelled) {
-      if (manifest.browseLists.size() == 1) exitCatalog();
+      if (exitOnCancel && manifest.browseLists.size() == 1) exitCatalog();
       return;
+    }
+    const std::string marker = noticeMarkerPath(manifestPath, manifest.browseLists[index].noticeId);
+    if (!marker.empty()) {
+      const std::string markerDir = marker.substr(0, marker.rfind('/'));
+      if (!Storage.ensureDirectoryExists("/.crosspoint") || !Storage.ensureDirectoryExists(markerDir.c_str()) ||
+          !Storage.writeFile(marker.c_str(), String("1")))
+        LOG_ERR("PCAT", "Failed to persist browse-list notice: %s", marker.c_str());
     }
     currentList = index;
     startBrowse();
@@ -1512,6 +1545,7 @@ bool PluginCatalogActivity::loadBrowseListIndex(int& status) {
     entry.noticeMessage = notice["message"] | "";
     entry.noticeConfirm = notice["confirm"] | "";
     entry.noticeCancel = notice["cancel"] | "";
+    entry.noticeId = persistentNoticeId(notice);
     // Seed-enabled catalogs can embed the same lists as their online index.
     // Keep the original list positions stable so seeded page keys still match.
     if (!entry.title.empty() && (!entry.url.empty() || !entry.id.empty())) {
@@ -4713,27 +4747,7 @@ void PluginCatalogActivity::activateIndex(const int index) {
   if (state == State::LIST_PICKER) {
     if (index < 0 || index >= static_cast<int>(manifest.browseLists.size())) return;
     app.clearTapFlash();
-    const auto& list = manifest.browseLists[index];
-    if (list.hasNotice()) {
-      const std::string heading = substituted(list.noticeTitle.empty() ? list.title : list.noticeTitle, nullptr);
-      const std::string message = substituted(list.noticeMessage, nullptr);
-      const std::string cancel = substituted(list.noticeCancel, nullptr);
-      const std::string confirm = substituted(list.noticeConfirm, nullptr);
-      auto confirmation =
-          makeUniqueNoThrow<ConfirmationActivity>(renderer, mappedInput, heading, message, cancel, confirm);
-      if (!confirmation) {
-        LOG_ERR("PCAT", "OOM: browse-list notice");
-        return;
-      }
-      startActivityForResult(std::move(confirmation), [this, index](const ActivityResult& result) {
-        if (result.isCancelled) return;
-        currentList = index;
-        startBrowse();
-      });
-      return;
-    }
-    currentList = index;
-    startBrowse();
+    openList(index, false);
     return;
   }
   if (nativeFooterActive()) {
