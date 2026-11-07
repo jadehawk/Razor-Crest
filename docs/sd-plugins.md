@@ -429,7 +429,9 @@ JSON catalogs may also map `description`, `detail_author`, and `repository` for 
           "title": "Community content",        // defaults to the list title
           "message": "Review this notice before continuing.",
           "confirm": "Continue",               // defaults to translated Confirm
-          "cancel": "Go Back"                  // defaults to translated Cancel
+          "cancel": "Go Back",                 // defaults to translated Cancel
+          "id": "content-guidance",           // stable ID shared by related lists
+          "once": true                       // remember Continue across restarts
         } }
     ],                                      // omitted keys fall back to browse's
                                             // an "id" fills {list_id} and {list_id_enc},
@@ -504,6 +506,15 @@ JSON catalogs may also map `description`, `detail_author`, and `repository` for 
 
 ### Behavior
 
+- **Named-list notices (`notice`)**: optionally include `once: true` (boolean) and
+  a stable `id` of 1–64 ASCII letters, digits, hyphens, underscores, or dots.
+  The firmware remembers **Continue** per plugin installation directory and
+  notice ID on the SD card, across reboots and plugin updates. Lists sharing
+  the same ID within a plugin share the acknowledgement; uninstalling the
+  plugin clears its acknowledgements. **Go Back** never acknowledges. Missing,
+  invalid, or mistyped `id`/`once` fields keep the normal per-visit notice.
+  If the SD write fails, Continue still opens the list, but the notice returns
+  on a later visit.
 - **Sign-in (`device_code`)**: when a token is needed, firmware establishes Wi-Fi
   before starting authorization. It then shows the verification URL (text + QR)
   and user code and polls until authorized, honoring `authorization_pending`,

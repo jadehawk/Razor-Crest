@@ -90,6 +90,9 @@ struct Entry {
 // The physical scan still uses root priority and direct child folders only.
 std::vector<Entry> scanPlugins();
 
+// SD acknowledgement directory for an installed plugin (shared by UI and WebUI uninstall).
+std::string noticeMarkerDir(const std::string& pluginDir);
+
 // Raw on-disk probes used only for migration/bootstrap UI. These ignore the
 // global Plugin System switch and installation quarantine so recovery can still
 // detect pre-existing or interrupted plugin directories.
