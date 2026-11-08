@@ -22,6 +22,7 @@ struct Parsed {
   bool nightly = false;
   unsigned int nightlyDate = 0;
   unsigned int nightlyRun = 0;
+  char nightlyCommit[8] = {};
   bool valid = false;
 };
 

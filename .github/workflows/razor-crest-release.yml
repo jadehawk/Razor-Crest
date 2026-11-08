@@ -91,7 +91,7 @@ jobs:
                 exit 0
               fi
             fi
-            version="${base_version}-n$(TZ=America/New_York date +%Y%m%d).${GITHUB_RUN_NUMBER}"
+            version="RC.${base_version}n-${source_sha:0:7}"
             tag="rn-v${version}"
           elif [ "$EVENT_NAME" = 'push' ]; then
             tag="$GITHUB_REF_NAME"
@@ -455,6 +455,21 @@ jobs:
           (cd dist && sha256sum razor-crest-*.bin | sort -k2 > SHA256SUMS.txt)
           mkdir -p site
           cp dist/latest-nightly.json site/latest-nightly.json
+          cat > site/index.html <<'HTML'
+          <!doctype html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <meta http-equiv="refresh" content="0;url=https://flasher.razor-crest.com/">
+            <link rel="canonical" href="https://flasher.razor-crest.com/">
+            <title>Razor-Crest Firmware Flasher</title>
+          </head>
+          <body>
+            <p>Continue to the <a href="https://flasher.razor-crest.com/">Razor-Crest Firmware Flasher</a>.</p>
+          </body>
+          </html>
+          HTML
 
       - name: Create Razor-Crest prerelease
         env:
@@ -478,13 +493,20 @@ jobs:
       - uses: actions/deploy-pages@v4
         id: deploy
 
-      - name: Retain seven newest Nightly releases
+      - name: Retire old numbering and retain seven Nightlies
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-            --jq '[.[] | select(.prerelease and (.tag_name | startswith("rn-v"))) | .tag_name][7:] | .[]' |
+            --jq '[.[] | select(.prerelease and (.tag_name | startswith("rn-v"))) | .tag_name] | .[]' |
+            while IFS= read -r tag; do
+              if [[ "$tag" =~ ^rn-v[0-9]+\.[0-9]+\.[0-9]+-n[0-9]{8}\.[0-9]+$ ]]; then
+                gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+              fi
+            done
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '[.[] | select(.prerelease and (.tag_name | startswith("rn-vRC."))) | .tag_name][7:] | .[]' |
             while IFS= read -r tag; do
               [ -n "$tag" ] || continue
               gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes

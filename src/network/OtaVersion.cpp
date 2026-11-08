@@ -7,10 +7,11 @@
 
 namespace {
 
-// Tags may carry a firmware prefix ("razor-crest-v2.0.0-r5") or a leading "v";
-// the numeric version always starts at the first digit.
+// Preserve the RC. prefix for commit-based Nightly asset names.
 const char* versionStart(const char* value) {
   if (value == nullptr) return "";
+  if (strncmp(value, "rn-vRC.", 7) == 0) return value + 4;
+  if (strncmp(value, "RC.", 3) == 0) return value;
   while (*value != '\0' && (*value < '0' || *value > '9')) ++value;
   return value;
 }
@@ -30,7 +31,9 @@ Parsed parse(const char* value) {
   Parsed out;
   if (value == nullptr) return out;
 
-  const char* base = versionStart(value);
+  const char* taggedVersion = versionStart(value);
+  const bool commitNightly = strncmp(taggedVersion, "RC.", 3) == 0;
+  const char* base = commitNightly ? taggedVersion + 3 : taggedVersion;
   int consumed = 0;
   if (base[0] == '\0' || sscanf(base, "%d.%d.%d%n", &out.major, &out.minor, &out.patch, &consumed) != 3) return out;
 
@@ -40,7 +43,20 @@ Parsed parse(const char* value) {
   out.releaseCandidate =
       (suffix[0] == 'r' && suffix[1] == 'c') || (suffix[0] == '-' && suffix[1] == 'r' && suffix[2] == 'c');
   out.development = strstr(base, "-dev") != nullptr;
-  if (strncmp(suffix, "-n", 2) == 0) {
+  if (commitNightly) {
+    if (strncmp(suffix, "n-", 2) != 0 || strlen(suffix + 2) != 7) {
+      out.valid = false;
+      return out;
+    }
+    for (const char* p = suffix + 2; *p; ++p) {
+      if (!((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f'))) {
+        out.valid = false;
+        return out;
+      }
+    }
+    memcpy(out.nightlyCommit, suffix + 2, 7);
+    out.nightly = true;
+  } else if (strncmp(suffix, "-n", 2) == 0) {
     unsigned int date = 0;
     unsigned int run = 0;
     char trailing = '\0';
@@ -102,6 +118,11 @@ bool isNewerForChannel(const char* latestTag, const char* currentVersion, const 
   }
 
   if (current.nightly && latest.nightly) {
+    if (latest.nightlyCommit[0] != '\0') {
+      // A commit hash is an identity, not an ordered version number.
+      return strcmp(latest.nightlyCommit, current.nightlyCommit) != 0;
+    }
+    if (current.nightlyCommit[0] != '\0') return false;
     if (latest.nightlyDate != current.nightlyDate) return latest.nightlyDate > current.nightlyDate;
     return latest.nightlyRun > current.nightlyRun;
   }

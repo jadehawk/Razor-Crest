@@ -204,6 +204,42 @@ TEST(OtaVersion, StableIsExplicitSwitchFromNightly) {
   EXPECT_FALSE(otaversion::isNewerForChannel("razor-crest-v2.0.0-r10", "2.0.0-r10", Channel::Stable));
 }
 
+TEST(OtaVersion, ParsesCommitBasedNightlyVersion) {
+  const auto v = otaversion::parse("rn-vRC.2.0.0n-a1b2c3d");
+  EXPECT_TRUE(v.valid);
+  EXPECT_TRUE(v.nightly);
+  EXPECT_EQ(v.major, 2);
+  EXPECT_STREQ(v.nightlyCommit, "a1b2c3d");
+  EXPECT_STREQ(otaversion::parse("RC.2.0.0n-abcdef0").nightlyCommit, "abcdef0");
+}
+
+TEST(OtaVersion, RejectsMalformedCommitNightlyVersions) {
+  for (const char* version : {"RC.2.0.0n-abc123", "RC.2.0.0n-abc12345", "RC.2.0.0n-abcdefg", "RC.2.0.0n-ABC1234",
+                              "RC.2.0.0n-1234567x", "RC.2.0.0-r10"}) {
+    EXPECT_FALSE(otaversion::parse(version).valid) << version;
+  }
+}
+
+TEST(OtaVersion, ComparesCommitNightliesByIdentityAndMigratesLegacy) {
+  using otaversion::Channel;
+  EXPECT_TRUE(otaversion::isNewerForChannel("rn-vRC.2.0.0n-a1b2c3d", "2.0.0-n20261108.23", Channel::Nightly));
+  EXPECT_FALSE(otaversion::isNewerForChannel("rn-vRC.2.0.0n-a1b2c3d", "RC.2.0.0n-a1b2c3d", Channel::Nightly));
+  EXPECT_TRUE(otaversion::isNewerForChannel("rn-vRC.2.0.0n-b1b2c3d", "RC.2.0.0n-a1b2c3d", Channel::Nightly));
+  EXPECT_TRUE(otaversion::isNewerForChannel("rn-vRC.2.0.0n-a1b2c3d", "2.0.0-r10", Channel::Nightly));
+  EXPECT_FALSE(otaversion::isNewerForChannel("rn-vRC.1.9.9n-a1b2c3d", "2.0.0-r10", Channel::Nightly));
+  EXPECT_FALSE(otaversion::isNewerForChannel("rn-v2.0.0-n20261108.23", "RC.2.0.0n-a1b2c3d", Channel::Nightly));
+  EXPECT_TRUE(otaversion::isSwitchingToStable("RC.2.0.0n-a1b2c3d", Channel::Stable));
+  EXPECT_TRUE(otaversion::isNewerForChannel("razor-crest-v2.0.0-r10", "RC.2.0.0n-a1b2c3d", Channel::Stable));
+}
+
+TEST(OtaVersion, BuildsCommitNightlyAssetsWithRCPrefix) {
+  char out[80] = {};
+  ASSERT_TRUE(otaversion::buildAssetName("razor-crest-", "rn-vRC.2.0.0n-a1b2c3d", "-x3-x4", out, sizeof(out)));
+  EXPECT_STREQ(out, "razor-crest-RC.2.0.0n-a1b2c3d-x3-x4.bin");
+  ASSERT_TRUE(otaversion::buildAssetName("razor-crest-", "rn-vRC.2.0.0n-a1b2c3d", "-metalio-eink4", out, sizeof(out)));
+  EXPECT_STREQ(out, "razor-crest-RC.2.0.0n-a1b2c3d-metalio-eink4.bin");
+}
+
 TEST(OtaVersion, BuildsNightlyAssetsWithExistingBoardNaming) {
   char suffix[24] = {};
   char asset[80] = {};
