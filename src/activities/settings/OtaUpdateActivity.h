@@ -6,6 +6,7 @@
 
 class OtaUpdateActivity : public Activity {
   enum State {
+    CHANNEL_SELECTION,
     WIFI_SELECTION,
     CHECKING_FOR_UPDATE,
     WAITING_CONFIRMATION,
@@ -19,7 +20,8 @@ class OtaUpdateActivity : public Activity {
   // Can't initialize this to 0 or the first render doesn't happen
   static constexpr unsigned int UNINITIALIZED_PERCENTAGE = 111;
 
-  State state = WIFI_SELECTION;
+  State state = CHANNEL_SELECTION;
+  otaversion::Channel channel = otaversion::Channel::Stable;
   unsigned int lastUpdaterPercentage = UNINITIALIZED_PERCENTAGE;
   OtaUpdater updater;
   // Optional detail line shown under the generic "Update failed" heading.
@@ -31,6 +33,7 @@ class OtaUpdateActivity : public Activity {
   OptionPopup confirmPopup;
 
   void onWifiSelectionComplete(bool success);
+  void startWifiSelection();
   void runUpdateInstall();
 
  public:

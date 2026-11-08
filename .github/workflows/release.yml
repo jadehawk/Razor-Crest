@@ -12,6 +12,8 @@ permissions:
 
 jobs:
   build-release:
+    # Razor-Crest prereleases and stable tags use razor-crest-release.yml.
+    if: startsWith(github.event.release.tag_name, 'v')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

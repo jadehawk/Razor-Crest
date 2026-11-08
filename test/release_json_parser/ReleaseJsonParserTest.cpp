@@ -650,3 +650,19 @@ TEST(ReleaseJsonParser, ChunkedRealisticEveryBoundary) {
     EXPECT_EQ(p.getFirmwareSize(), 9999u) << "split=" << split;
   }
 }
+
+TEST(ReleaseJsonParser, ParsesCompactNightlyFeedUsingStableReleaseParser) {
+  const char* json =
+      R"({"tag_name":"rn-v2.0.0-n20261108.123","channel":"nightly","source_commit":"1234567890123456789012345678901234567890","assets":[{"name":"razor-crest-2.0.0-n20261108.123-x4pro.bin","size":5378176,"browser_download_url":"https://github.com/jadehawk/Razor-Crest/releases/download/rn-v2.0.0-n20261108.123/razor-crest-2.0.0-n20261108.123-x4pro.bin"},{"name":"razor-crest-2.0.0-n20261108.123-metalio-eink4.bin","size":6123456,"browser_download_url":"https://github.com/jadehawk/Razor-Crest/releases/download/rn-v2.0.0-n20261108.123/razor-crest-2.0.0-n20261108.123-metalio-eink4.bin"}]})";
+  ReleaseJsonParser p;
+  p.setFirmwareAssetName("razor-crest-2.0.0-n20261108.123-metalio-eink4.bin");
+  feedChunked(p, json, 7);
+
+  ASSERT_TRUE(p.foundTag());
+  ASSERT_TRUE(p.foundFirmware());
+  EXPECT_STREQ(p.getTagName(), "rn-v2.0.0-n20261108.123");
+  EXPECT_EQ(p.getFirmwareSize(), 6123456u);
+  EXPECT_STREQ(p.getFirmwareUrl(),
+               "https://github.com/jadehawk/Razor-Crest/releases/download/rn-v2.0.0-n20261108.123/"
+               "razor-crest-2.0.0-n20261108.123-metalio-eink4.bin");
+}

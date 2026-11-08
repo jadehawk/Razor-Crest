@@ -27,7 +27,7 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
   }
   requestUpdateAndWait();
 
-  const auto res = updater.checkForUpdate();
+  const auto res = updater.checkForUpdate(channel);
   // NO_UPDATE here means the release carries no firmware asset for this board
   // (expected until per-board assets are published) — not a failure.
   if (res == OtaUpdater::NO_UPDATE) {
@@ -63,7 +63,8 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
   const char* options[] = {tr(STR_CANCEL), tr(STR_UPDATE)};
   // Default the selection to Update so the hardware Confirm button installs,
   // matching the pre-popup layout (Back = cancel, Confirm = update).
-  confirmPopup.show(tr(STR_NEW_UPDATE), options, 2, 1, [this](const int idx) {
+  const char* channelLabel = channel == otaversion::Channel::Nightly ? "Release: Nightly" : "Release: Stable";
+  confirmPopup.show(tr(STR_NEW_UPDATE), channelLabel, options, 2, 1, [this](const int idx) {
     if (idx == 1) {
       runUpdateInstall();
     } else {
@@ -75,13 +76,26 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
 
 void OtaUpdateActivity::onEnter() {
   Activity::onEnter();
+  state = CHANNEL_SELECTION;
+  const char* options[] = {"Stable", "Nightly", tr(STR_CANCEL)};
+  confirmPopup.show(tr(STR_CHECK_UPDATES), options, 3, 0, [this](const int idx) {
+    if (idx == 2) {
+      finish();
+      return;
+    }
+    channel = idx == 1 ? otaversion::Channel::Nightly : otaversion::Channel::Stable;
+    startWifiSelection();
+  });
+  requestUpdate();
+}
 
-  // Turn on WiFi immediately
-  LOG_DBG("OTA", "Turning on WiFi...");
+void OtaUpdateActivity::startWifiSelection() {
+  {
+    RenderLock lock(*this);
+    state = WIFI_SELECTION;
+  }
+  LOG_DBG("OTA", "Turning on WiFi for %s update check", channel == otaversion::Channel::Nightly ? "nightly" : "stable");
   WiFi.mode(WIFI_STA);
-
-  // Launch WiFi selection subactivity
-  LOG_DBG("OTA", "Launching WifiSelectionActivity...");
   startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
                          [this](const ActivityResult& result) { onWifiSelectionComplete(!result.isCancelled); });
 }
@@ -124,16 +138,23 @@ void OtaUpdateActivity::render(RenderLock&&) {
     lastUpdaterPercentage = static_cast<int>(updaterProgress * 100);
   }
 
-  if (state == CHECKING_FOR_UPDATE) {
+  if (state == CHANNEL_SELECTION) {
+    if (confirmPopup.processRender(renderer, mappedInput)) return;
+  } else if (state == CHECKING_FOR_UPDATE) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_CHECKING_UPDATE));
   } else if (state == WAITING_CONFIRMATION) {
     // Version info sits in the upper part of the screen so the centered
     // Cancel/Update popup doesn't cover it (same layout as ConfirmationActivity).
     const int infoTop = pageHeight / 6;
+    const int lineStep = height + metrics.verticalSpacing;
     renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, infoTop,
                       (std::string(tr(STR_CURRENT_VERSION)) + CROSSPOINT_VERSION).c_str());
-    renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, infoTop + height + metrics.verticalSpacing,
+    renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, infoTop + lineStep,
                       (std::string(tr(STR_NEW_VERSION)) + updater.getLatestVersion()).c_str());
+    if (otaversion::isSwitchingToStable(CROSSPOINT_VERSION, channel)) {
+      renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, infoTop + 2 * lineStep,
+                        "Stable may be older than Nightly.");
+    }
 
     if (confirmPopup.processRender(renderer, mappedInput)) return;
   } else if (state == UPDATE_IN_PROGRESS) {
@@ -215,7 +236,7 @@ void OtaUpdateActivity::runUpdateInstall() {
 }
 
 void OtaUpdateActivity::loop() {
-  if (state == WAITING_CONFIRMATION) {
+  if (state == CHANNEL_SELECTION || state == WAITING_CONFIRMATION) {
     if (confirmPopup.handleInput(mappedInput, [this] { requestUpdate(); })) return;
     // Popup dismissed without a selection (Back button or tap outside): cancel.
     finish();

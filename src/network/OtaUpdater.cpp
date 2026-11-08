@@ -33,11 +33,18 @@
 
 namespace {
 constexpr char latestReleaseUrl[] = "https://api.github.com/repos/" CROSSPOINT_OTA_REPO "/releases/latest";
+constexpr char nightlyFeedUrl[] = "https://jadehawk.github.io/Razor-Crest/latest-nightly.json";
 
 }  // namespace
 
-OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
-  LOG_DBG("OTA", "Checking for update (current: %s)", CROSSPOINT_VERSION);
+OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate(const otaversion::Channel channel) {
+  selectedChannel = channel;
+  updateAvailable = false;
+  latestVersion.clear();
+  otaUrl.clear();
+  otaSize = 0;
+  LOG_DBG("OTA", "Checking for %s update (current: %s)", channel == otaversion::Channel::Nightly ? "nightly" : "stable",
+          CROSSPOINT_VERSION);
 
   // Stream the ~32KB release JSON straight into the parser as it arrives.
   // Buffering the whole body in a std::string would add a growing allocation
@@ -61,9 +68,10 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
     LOG_ERR("OTA", "Board name too long for release asset suffix");
     return INTERNAL_UPDATE_ERROR;
   }
-  char assetName[64] = {};
+  char assetName[80] = {};
   bool assetNameSet = false;
-  const bool ok = HttpDownloader::fetchUrl(latestReleaseUrl, [&](const uint8_t* data, size_t len) {
+  const char* const feedUrl = channel == otaversion::Channel::Nightly ? nightlyFeedUrl : latestReleaseUrl;
+  const bool ok = HttpDownloader::fetchUrl(feedUrl, [&](const uint8_t* data, size_t len) {
     size_t offset = 0;
     while (!assetNameSet && offset < len) {
       releaseParser.feed(reinterpret_cast<const char*>(data + offset), 1);
@@ -112,7 +120,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
 
 bool OtaUpdater::isUpdateNewer() const {
   if (!updateAvailable || latestVersion.empty()) return false;
-  return otaversion::isNewer(latestVersion.c_str(), CROSSPOINT_VERSION);
+  return otaversion::isNewerForChannel(latestVersion.c_str(), CROSSPOINT_VERSION, selectedChannel);
 }
 
 const std::string& OtaUpdater::getLatestVersion() const { return latestVersion; }

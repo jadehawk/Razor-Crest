@@ -2,7 +2,10 @@
 
 #include <string>
 
+#include "OtaVersion.h"
+
 class OtaUpdater {
+  otaversion::Channel selectedChannel = otaversion::Channel::Stable;
   bool updateAvailable = false;
   std::string latestVersion;
   std::string otaUrl;
@@ -33,6 +36,6 @@ class OtaUpdater {
   OtaUpdater() = default;
   bool isUpdateNewer() const;
   const std::string& getLatestVersion() const;
-  OtaUpdaterError checkForUpdate();
+  OtaUpdaterError checkForUpdate(otaversion::Channel channel = otaversion::Channel::Stable);
   OtaUpdaterError installUpdate(ProgressCallback onProgress = nullptr, void* ctx = nullptr);
 };

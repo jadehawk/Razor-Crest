@@ -40,6 +40,30 @@ Parsed parse(const char* value) {
   out.releaseCandidate =
       (suffix[0] == 'r' && suffix[1] == 'c') || (suffix[0] == '-' && suffix[1] == 'r' && suffix[2] == 'c');
   out.development = strstr(base, "-dev") != nullptr;
+  if (strncmp(suffix, "-n", 2) == 0) {
+    unsigned int date = 0;
+    unsigned int run = 0;
+    char trailing = '\0';
+    // The nightly stamp is YYYYMMDD.<run number>, with only decimal digits.
+    const char* stamp = suffix + 2;
+    bool validStamp = strlen(stamp) >= 10 && stamp[8] == '.';
+    if (validStamp) {
+      for (int i = 0; i < 8; ++i) {
+        if (stamp[i] < '0' || stamp[i] > '9') validStamp = false;
+      }
+      for (const char* p = stamp + 9; *p; ++p) {
+        if (*p < '0' || *p > '9') validStamp = false;
+      }
+    }
+    if (!validStamp || sscanf(stamp, "%8u.%u%c", &date, &run, &trailing) != 2 || date < 20260101 || date > 20991231 ||
+        (date / 100) % 100 < 1 || (date / 100) % 100 > 12 || date % 100 < 1 || date % 100 > 31 || run == 0) {
+      out.valid = false;
+      return out;
+    }
+    out.nightly = true;
+    out.nightlyDate = date;
+    out.nightlyRun = run;
+  }
   return out;
 }
 
@@ -59,6 +83,35 @@ bool isNewer(const char* latestTag, const char* currentVersion) {
   // An RC build of the same base version is older than its final release.
   if (current.releaseCandidate && !latest.releaseCandidate) return true;
   return false;
+}
+
+bool isNewerForChannel(const char* latestTag, const char* currentVersion, const Channel channel) {
+  const Parsed latest = parse(latestTag);
+  const Parsed current = parse(currentVersion);
+  if (!latest.valid || !current.valid || latest.nightly != (channel == Channel::Nightly)) return false;
+
+  if (latest.major != current.major) {
+    // Switching to Stable is an explicit opt-in even if it rolls the base back.
+    return channel == Channel::Stable && current.nightly ? true : latest.major > current.major;
+  }
+  if (latest.minor != current.minor) {
+    return channel == Channel::Stable && current.nightly ? true : latest.minor > current.minor;
+  }
+  if (latest.patch != current.patch) {
+    return channel == Channel::Stable && current.nightly ? true : latest.patch > current.patch;
+  }
+
+  if (current.nightly && latest.nightly) {
+    if (latest.nightlyDate != current.nightlyDate) return latest.nightlyDate > current.nightlyDate;
+    return latest.nightlyRun > current.nightlyRun;
+  }
+  if (current.nightly && channel == Channel::Stable) return true;
+  if (channel == Channel::Nightly) return !current.development;
+  return isNewer(latestTag, currentVersion);
+}
+
+bool isSwitchingToStable(const char* currentVersion, const Channel channel) {
+  return channel == Channel::Stable && parse(currentVersion).nightly;
 }
 
 bool buildBoardAssetSuffix(const char* boardName, size_t boardNameLen, bool hyphenBoardSuffixes, char* out,

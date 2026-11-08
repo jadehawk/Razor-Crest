@@ -163,3 +163,51 @@ TEST(OtaVersion, BoardSuffixRejectsInvalidInputAndTruncation) {
       otaversion::buildBoardAssetSuffix("metalio_eink4;", sizeof("metalio_eink4") - 1, true, suffix, sizeof(suffix)));
   EXPECT_FALSE(otaversion::buildBoardAssetSuffix("x4pro;", sizeof("x4pro") - 1, true, suffix, 0));
 }
+
+TEST(OtaVersion, ParsesNightlyDateAndRunNumber) {
+  const auto v = otaversion::parse("2.0.0-n20261107.1");
+  EXPECT_TRUE(v.valid);
+  EXPECT_TRUE(v.nightly);
+  EXPECT_EQ(v.nightlyDate, 20261107u);
+  EXPECT_EQ(v.nightlyRun, 1u);
+  EXPECT_TRUE(otaversion::parse("rn-v2.0.0-n20261108.123").nightly);
+}
+
+TEST(OtaVersion, RejectsMalformedNightlyStamp) {
+  for (const char* version : {"2.0.0-n20261107", "2.0.0-n20261107.0", "2.0.0-n20261107.1abc", "2.0.0-n20261107.+1",
+                              "2.0.0-n20261107.-1", "2.0.0-n20261307.1", "2.0.0-n20261100.1", "2.0.0-n2026117.1"}) {
+    EXPECT_FALSE(otaversion::parse(version).valid) << version;
+  }
+}
+
+TEST(OtaVersion, ComparesNightliesWithinSelectedChannel) {
+  using otaversion::Channel;
+  EXPECT_TRUE(otaversion::isNewerForChannel("rn-v2.0.0-n20261108.1", "2.0.0-n20261107.99", Channel::Nightly));
+  EXPECT_TRUE(otaversion::isNewerForChannel("rn-v2.0.0-n20261107.2", "2.0.0-n20261107.1", Channel::Nightly));
+  EXPECT_FALSE(otaversion::isNewerForChannel("rn-v2.0.0-n20261107.1", "2.0.0-n20261107.1", Channel::Nightly));
+  EXPECT_FALSE(otaversion::isNewerForChannel("rn-v2.0.0-n20261107.1", "2.0.0-n20261108.2", Channel::Nightly));
+  EXPECT_TRUE(otaversion::isNewerForChannel("rn-v2.0.0-n20261107.1", "2.0.0-r10", Channel::Nightly));
+  EXPECT_FALSE(otaversion::isNewerForChannel("rn-v1.9.9-n20261107.1", "2.0.0-r10", Channel::Nightly));
+  EXPECT_FALSE(otaversion::isNewerForChannel("razor-crest-v2.0.0-r12", "2.0.0-r10", Channel::Nightly));
+  EXPECT_FALSE(otaversion::isNewerForChannel("rn-v2.0.0-n20261108.1", "2.0.0-dev-custom", Channel::Nightly));
+}
+
+TEST(OtaVersion, StableIsExplicitSwitchFromNightly) {
+  using otaversion::Channel;
+  EXPECT_TRUE(otaversion::isSwitchingToStable("2.0.0-n20261108.8", Channel::Stable));
+  EXPECT_FALSE(otaversion::isSwitchingToStable("2.0.0-r10", Channel::Stable));
+  EXPECT_FALSE(otaversion::isSwitchingToStable("2.0.0-n20261108.8", Channel::Nightly));
+  EXPECT_TRUE(otaversion::isNewerForChannel("razor-crest-v2.0.0-r10", "2.0.0-n20261108.8", Channel::Stable));
+  EXPECT_TRUE(otaversion::isNewerForChannel("razor-crest-v1.9.9-r2", "2.0.0-n20261108.8", Channel::Stable));
+  EXPECT_FALSE(otaversion::isNewerForChannel("rn-v2.0.0-n20261108.8", "2.0.0-r10", Channel::Stable));
+  EXPECT_TRUE(otaversion::isNewerForChannel("razor-crest-v2.0.0-r11", "2.0.0-r10", Channel::Stable));
+  EXPECT_FALSE(otaversion::isNewerForChannel("razor-crest-v2.0.0-r10", "2.0.0-r10", Channel::Stable));
+}
+
+TEST(OtaVersion, BuildsNightlyAssetsWithExistingBoardNaming) {
+  char suffix[24] = {};
+  char asset[80] = {};
+  ASSERT_TRUE(otaversion::buildBoardAssetSuffix("metalio_eink4;", 13, true, suffix, sizeof(suffix)));
+  ASSERT_TRUE(otaversion::buildAssetName("razor-crest-", "rn-v2.0.0-n20261108.123", suffix, asset, sizeof(asset)));
+  EXPECT_STREQ(asset, "razor-crest-2.0.0-n20261108.123-metalio-eink4.bin");
+}

@@ -1,4 +1,4 @@
-name: Build Razor-Crest Release
+name: Build Razor-Crest Release / Nightly
 
 # Public Razor-Crest firmware releases. Tags must point at a Razor-Crest commit
 # and follow: razor-crest-v<upstream-version>-r<revision>
@@ -8,31 +8,48 @@ on:
   push:
     tags:
       - 'razor-crest-v*'
+  schedule:
+    - cron: '0 0 * * *'
+      timezone: America/New_York
   workflow_dispatch:
     inputs:
+      channel:
+        description: 'Firmware channel'
+        required: true
+        type: choice
+        default: stable
+        options: [stable, nightly]
       version:
-        description: 'Optional version; leave blank for automatic next base-rN'
+        description: 'Stable only: optional version; blank picks next base-rN'
         required: false
         type: string
+      force:
+        description: 'Nightly only: build even if source has not changed'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
-# Serialize manual releases so two clicks cannot pick the same revision.
+# Nightly and manual releases cannot publish over each other's builds.
 concurrency:
-  # Tags are independent; automatic manual releases share a single slot.
-  group: ${{ github.event_name == 'push' && github.ref || 'razor-crest-manual-release' }}
+  group: ${{ (github.event_name == 'schedule' || inputs.channel == 'nightly') && 'razor-crest-nightly' || (github.event_name == 'push' && github.ref || 'razor-crest-manual-release') }}
   cancel-in-progress: false
 
 jobs:
   prepare:
     name: Validate Razor-Crest release
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: read
     outputs:
       version: ${{ steps.release.outputs.version }}
       tag: ${{ steps.release.outputs.tag }}
       base_version: ${{ steps.release.outputs.base_version }}
       source_sha: ${{ steps.release.outputs.source_sha }}
+      channel: ${{ steps.release.outputs.channel }}
+      skip: ${{ steps.release.outputs.skip }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -42,7 +59,10 @@ jobs:
         id: release
         env:
           EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_CHANNEL: ${{ inputs.channel }}
           DISPATCH_VERSION: ${{ inputs.version }}
+          FORCE_NIGHTLY: ${{ inputs.force || false }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -52,7 +72,28 @@ jobs:
             exit 1
           fi
 
-          if [ "$EVENT_NAME" = 'push' ]; then
+          channel=stable
+          if [ "$EVENT_NAME" = 'schedule' ] || [ "$DISPATCH_CHANNEL" = 'nightly' ]; then
+            channel=nightly
+            pages_source="$(gh api "repos/$GITHUB_REPOSITORY/pages" --jq '.build_type' 2>/dev/null || true)"
+            if [ "$pages_source" != 'workflow' ]; then
+              echo '::error::Enable GitHub Pages with GitHub Actions as publishing source before Nightly builds.'
+              exit 1
+            fi
+            source_sha="$(git rev-parse HEAD)"
+            if [ "$FORCE_NIGHTLY" != "true" ]; then
+              feed="$(curl --silent --show-error --location --fail --max-time 15 \
+                'https://jadehawk.github.io/Razor-Crest/latest-nightly.json' || true)"
+              published="$(printf '%s' "$feed" | jq -r '.source_commit // empty' 2>/dev/null || true)"
+              if [ "$published" = "$source_sha" ]; then
+                echo "skip=true" >> "$GITHUB_OUTPUT"
+                echo "Nightly is already published for $source_sha" >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
+            fi
+            version="${base_version}-n$(TZ=America/New_York date +%Y%m%d).${GITHUB_RUN_NUMBER}"
+            tag="rn-v${version}"
+          elif [ "$EVENT_NAME" = 'push' ]; then
             tag="$GITHUB_REF_NAME"
             version="${tag#razor-crest-v}"
             if [ "$version" = "$tag" ]; then
@@ -76,14 +117,15 @@ jobs:
             done <<< "$tag_refs"
             version="${base_version}-r$((latest + 1))"
           fi
-          if [ "$EVENT_NAME" != 'push' ]; then
-            tag="razor-crest-v${version}"
-          fi
-
-          escaped_base="${base_version//./\\.}"
-          if ! printf '%s\n' "$version" | grep -Eq "^${escaped_base}-r[1-9][0-9]*$"; then
-            echo "Version must match ${base_version}-rN (N >= 1); got: $version" >&2
-            exit 1
+          if [ "$channel" = 'stable' ]; then
+            if [ "$EVENT_NAME" != 'push' ]; then
+              tag="razor-crest-v${version}"
+            fi
+            escaped_base="${base_version//./\\.}"
+            if ! printf '%s\n' "$version" | grep -Eq "^${escaped_base}-r[1-9][0-9]*$"; then
+              echo "Version must match ${base_version}-rN (N >= 1); got: $version" >&2
+              exit 1
+            fi
           fi
 
           if ! grep -Fq '#define CROSSPOINT_FIRMWARE_ID "Razor-Crest"' src/util/FirmwareIdentity.h; then
@@ -92,6 +134,8 @@ jobs:
           fi
 
           source_sha="$(git rev-parse HEAD)"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "base_version=$base_version" >> "$GITHUB_OUTPUT"
@@ -108,6 +152,7 @@ jobs:
   unit-tests:
     name: Unit tests
     needs: prepare
+    if: needs.prepare.outputs.skip != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -133,10 +178,13 @@ jobs:
 
       - name: Run tests
         run: ctest --test-dir build/test --output-on-failure -j
+      - name: Validate nightly feed generator
+        run: python3 test/nightly_manifest_test.py
 
   build:
     name: Build Razor-Crest ${{ matrix.device }}
     needs: prepare
+    if: needs.prepare.outputs.skip != 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -248,11 +296,12 @@ jobs:
           compression-level: 0
 
   publish:
-    name: Publish Razor-Crest release
+    name: Publish Razor-Crest stable release
     needs:
       - prepare
       - unit-tests
       - build
+    if: needs.prepare.outputs.channel == 'stable'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -366,3 +415,77 @@ jobs:
             dist/release-manifest.json \
             --repo "$GITHUB_REPOSITORY" \
             --clobber
+
+  publish-nightly:
+    name: Publish complete Razor-Crest Nightly
+    needs:
+      - prepare
+      - unit-tests
+      - build
+    if: needs.prepare.outputs.channel == 'nightly'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download validated firmware artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: razor-crest-*.bin
+          merge-multiple: true
+
+      - name: Validate all seven binaries and prepare feed
+        env:
+          RAZOR_VERSION: ${{ needs.prepare.outputs.version }}
+          RAZOR_TAG: ${{ needs.prepare.outputs.tag }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/nightly_manifest.py \
+            --dist dist --repository "$GITHUB_REPOSITORY" \
+            --tag "$RAZOR_TAG" --version "$RAZOR_VERSION" \
+            --commit "$SOURCE_SHA" --output dist/latest-nightly.json
+          (cd dist && sha256sum razor-crest-*.bin | sort -k2 > SHA256SUMS.txt)
+          mkdir -p site
+          cp dist/latest-nightly.json site/latest-nightly.json
+
+      - name: Create Razor-Crest prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RAZOR_TAG: ${{ needs.prepare.outputs.tag }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          gh release create "$RAZOR_TAG" \
+            dist/razor-crest-*.bin dist/SHA256SUMS.txt dist/latest-nightly.json \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$SOURCE_SHA" \
+            --title "Razor-Crest Nightly ${RAZOR_TAG#rn-v}" \
+            --notes "Development build from ${SOURCE_SHA:0:7}. Not a stable release." \
+            --prerelease
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - uses: actions/deploy-pages@v4
+        id: deploy
+
+      - name: Retain seven newest Nightly releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '[.[] | select(.prerelease and (.tag_name | startswith("rn-v"))) | .tag_name][7:] | .[]' |
+            while IFS= read -r tag; do
+              [ -n "$tag" ] || continue
+              gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+            done
