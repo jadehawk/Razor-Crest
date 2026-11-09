@@ -1,57 +1,67 @@
-# Local Notes native plugin host (experimental Razor-Crest)
+# Native Vocabulary & Highlights (experimental Razor-Crest)
 
-## Objective
+## Milestone 2 — validated
 
-Open a small, offline, firmware-rendered list browser for local vocabulary and
-highlight exports from an installed SD plugin. No plugin-side JavaScript runs
-inside the e-reader. This host is optional; stock CrossPoint uses the normal
-README fallback. This is a pre-build experimental implementation until
-physical X3 and touch-device verification.
+The initial Razor-Crest native reader has been tested on device. It renders the installed plugin's
+versioned `device.json` marker `local_library.source = "vocabulary-highlights.v1"`
+through existing firmware activities, without executing plugin JavaScript.
+Stock CrossPoint continues to use the normal on-device README and browser WebUI.
 
-## Contract
+The on-device viewer offers offline Vocabulary/Highlights sections, book and entry
+lists, sorting, and full saved definitions/passages. It reads only the SD-root
+`/Vocabulary.txt` and `/My Clippings.txt`, regardless of manifest path values.
 
-An installed plugin supplies a device.json with the source marker
-"local_library": {"source": "vocabulary-highlights.v1"}.
-The firmware reads the two fixed SD-root exports /Vocabulary.txt and
-/My Clippings.txt. Manifest-supplied paths are deliberately ignored.
-A companion manifest.json may add a home_shortcut with target "dashboard".
+## Milestone 3 — device-tested native progress editing
 
-Razor-Crest advertises ui.local-notes.v1 in pluginCapabilities.
-Stock CrossPoint continues to show the plugin README on-device, and the
-ordinary browser WebUI remains functional on both firmware families.
+The device-tested implementation adds a native `VocabularyHighlightsState` interface
+to the same saved-state contract as the browser:
 
-## Current native behavior
+- `/.crosspoint/vocabulary-highlights/state-v1.json`
+- Falls back to `/.crosspoint/vocabulary-builder/state-v1.json` if the new
+  state is absent, retaining the legacy file as a backup
+- Version 1 JSON with `statuses` containing `learning`/`mastered` per
+  `vocab:<32-hex-id>` and `hidden` containing true-valued tombstones
+- Long-press a vocabulary row to change status, hide the entry, restore it,
+  or open entry sorting
+- Long-press a book row to sort or toggle **Show deleted** for vocabulary
+- Normal vocabulary lists omit entries hidden in either native firmware or WebUI
+- A confirmation warns that hiding does not delete firmware export records
+- Saved files are read and validated fresh before every edit; updates go to
+  a temporary file, close, and replace the prior state file
+- Unrelated statuses, clipping tombstones and other JSON metadata are preserved
 
-- Home shortcut and Home > Plugins entry open an offline e-ink activity
-- Choose Vocabulary or Highlights, select a book, select a saved entry
-- Reuses UiListActivity for touch and button navigation
-- Reuses DictionaryDefinitionActivity to display full saved details
-- Long-press Select or long-press a touch row for sorting options
-- Sorting: books A-Z/recent; words A-Z/reading order/recent;
-  highlights reading order/recent
-- Reads exports in 256-byte chunks with 6 KiB maximum record buffers;
-  incomplete JSONL tails and clipping blocks are ignored
-- The first-stage limits are 64 books/192 entries per book on X3 and
-  128 books/512 entries per book on other boards. Limits are visibly
-  reported in the on-device UI.
+**Protection:** No source export file is rewritten. Corrupt, unsupported or
+oversized state disables native editing rather than resetting progress.
+The bounded native state-reader cap is **8 KiB on X3** and **24 KiB on other
+boards**, deliberately lower than the WebUI's maximum of 240 KiB.
+Large progress files remain editable in the browser WebUI.
 
-## Before broad rollout
+**Not implemented:** Native highlight hide/restore editing. Browser highlights
+have content-derived IDs with Unicode-sensitive hashing and occurrence numbers;
+those must be reproduced exactly before a native editing operation can safely
+target them. Highlights continue to be read-only on-device, including highlights
+hidden in the browser.
 
-- Native editing of New/Learning/Mastered and delete/restore is not yet
-  implemented. These remain in the WebUI. This first-stage viewer does not
-  apply hidden-entry flags either, so items hidden in the WebUI still appear
-  in the native read-only list. Future native state writes must
-  use the shared versioned state-v1.json and must not rewrite source exports.
-- Larger libraries need an SD-backed paginated index instead of retaining
-  all record keys in RAM. Current caps are not suitable for unlimited libraries.
-- Highlights use saved page/chapter, vocabulary uses spine/page/text offset.
-- Validate physically on no-PSRAM X3, non-touch X4, and Picco/X4Pro.
-- No firmware build, push or release is implied by this implementation.
+## Resource limits and validation
 
-## Paths
+- Records scan in 256-byte chunks with a 6 KiB record cap.
+- X3: 64 books, 192 visible entries per selected book.
+- Other boards: 128 books, 512 visible entries per selected book.
+- Larger lists require an SD-backed paginated index.
+- Milestone 3 was reported passed on Razor-Crest firmware. Other device targets
+  and large-library edge cases still need separate coverage.
+- Verify round trips with an existing WebUI-generated state, missing state,
+  legacy-state migration, invalid state, and a file exceeding native size limits.
+- The firmware build and on-device test were performed by the user. No push or
+  release is included in this local integration.
 
-Firmware worktree:
-crosspoint-reader-(Razor-Crest)/.thinkforge-worktrees/vocabulary-highlights-native
+## Worktrees
 
-Plugin repository:
-vocabulary&highlights.crosspoint-plugin/vocabulary-highlights
+Milestone 2, device-tested and committed:
+`crosspoint-reader-(Razor-Crest)/.thinkforge-worktrees/vocabulary-highlights-native`
+
+Milestone 3, device-tested:
+`crosspoint-reader-(Razor-Crest)/.thinkforge-worktrees/vocabulary-highlights-native-state`
+
+Companion plugin:
+`vocabulary&highlights.crosspoint-plugin/vocabulary-highlights`.

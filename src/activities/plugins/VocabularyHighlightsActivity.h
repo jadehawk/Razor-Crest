@@ -7,6 +7,7 @@
 
 #include "activities/UiListActivity.h"
 #include "components/OptionPopup.h"
+#include "util/VocabularyHighlightsState.h"
 
 // Firmware-rendered, offline browser for the shared v1 vocabulary JSONL and
 // CrossPoint clipping export. Its SD-plugin marker does not execute JavaScript.
@@ -39,6 +40,9 @@ class VocabularyHighlightsActivity final : public UiListActivity {
     uint16_t page = 0;
     std::string label;
     std::string chapter;
+    std::string id;
+    VocabularyHighlightsState::Status status = VocabularyHighlightsState::Status::New;
+    bool hidden = false;
   };
 
 #if FREEINK_DEVICE_X3
@@ -59,6 +63,11 @@ class VocabularyHighlightsActivity final : public UiListActivity {
   uint64_t selectedBook = 0;
   bool booksOverflow = false;
   bool entriesOverflow = false;
+  bool showDeleted = false;
+  bool pendingSortDialog = false;
+  bool pendingErrorDialog = false;
+  std::string pendingDeleteId;
+  VocabularyHighlightsState learningState;
   std::array<std::string, kVisibleRows> labels{};
   std::array<std::string, kVisibleRows> subtitles{};
   std::array<freeink::ui::ListItem, kVisibleRows> rowItems{};
@@ -70,6 +79,9 @@ class VocabularyHighlightsActivity final : public UiListActivity {
   void sortEntries();
   void openDetail(int index);
   void showSortOptions();
+  void showEntryOptions(int index);
+  void showStateError();
+  void showDeleteConfirmation(const std::string& id);
   void refreshWindow(int start);
 
   int listCount() const override;

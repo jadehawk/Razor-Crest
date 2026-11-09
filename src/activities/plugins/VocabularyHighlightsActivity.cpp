@@ -32,6 +32,7 @@ constexpr size_t kChunkBytes = 256;
 struct RecordSummary {
   std::string title;
   std::string author;
+  std::string id;
   std::string label;
   std::string chapter;
   uint32_t timestamp = 0;
@@ -129,6 +130,7 @@ bool vocabularySummary(const std::string& line, RecordSummary& out) {
   filter["v"] = true;
   filter["title"] = true;
   filter["author"] = true;
+  filter["id"] = true;
   filter["headword"] = true;
   filter["chapter"] = true;
   filter["timestamp"] = true;
@@ -140,7 +142,14 @@ bool vocabularySummary(const std::string& line, RecordSummary& out) {
   if ((doc["v"] | 0) != 1) return false;
   const char* title = doc["title"] | "";
   const char* word = doc["headword"] | "";
-  if (!*title || !*word) return false;
+  const char* id = doc["id"] | "";
+  if (!*title || !*word || strlen(id) != 32) return false;
+  for (const char* p = id; *p; ++p)
+    if (!std::isxdigit(static_cast<unsigned char>(*p))) return false;
+  out.id = "vocab:";
+  out.id += id;
+  std::transform(out.id.begin() + 6, out.id.end(), out.id.begin() + 6,
+                 [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
   out.title = title;
   out.author = doc["author"] | "";
   out.label = shortLabel(word, 90);
@@ -257,6 +266,11 @@ bool VocabularyHighlightsActivity::supportsManifest(const std::string& deviceMan
 
 void VocabularyHighlightsActivity::onEnter() {
   UiListActivity::onEnter();
+  showDeleted = false;
+  pendingSortDialog = false;
+  pendingErrorDialog = false;
+  pendingDeleteId.clear();
+  learningState.load();
   screen = Screen::Sections;
   books.clear();
   entries.clear();
@@ -309,6 +323,7 @@ void VocabularyHighlightsActivity::scanEntries() {
     RecordSummary info;
     const bool valid = source == Source::Vocabulary ? vocabularySummary(raw, info) : clippingSummary(raw, info);
     if (!valid || bookKey(info.title, info.author) != selectedBook) return;
+    if (source == Source::Vocabulary && !showDeleted && learningState.hidden(info.id)) return;
     if (entries.size() >= kMaxEntries) {
       entriesOverflow = true;
       return;
@@ -322,6 +337,10 @@ void VocabularyHighlightsActivity::scanEntries() {
     entry.page = info.page;
     entry.label = std::move(info.label);
     entry.chapter = std::move(info.chapter);
+    entry.status = learningState.status(info.id);
+    entry.hidden = learningState.hidden(info.id);
+    if (source == Source::Vocabulary && entry.hidden && !showDeleted) return;
+    entry.id = std::move(info.id);
     entries.push_back(std::move(entry));
   };
   if (source == Source::Vocabulary)
@@ -426,13 +445,13 @@ void VocabularyHighlightsActivity::onBackButton() {
 
 void VocabularyHighlightsActivity::showSortOptions() {
   if (screen == Screen::Sections || sortPopup.isActive()) return;
-  static constexpr const char* bookChoices[] = {"Title A-Z", "Recently added"};
+  const char* bookChoices[] = {"Title A-Z", "Recently added", showDeleted ? "Hide deleted" : "Show deleted"};
   static constexpr const char* wordChoices[] = {"Word A-Z", "Reading order", "Recently added"};
   static constexpr const char* highlightChoices[] = {"Reading order", "Recently added"};
   const bool booksScreen = screen == Screen::Books;
   const bool isWords = source == Source::Vocabulary;
   const char* const* names = booksScreen ? bookChoices : isWords ? wordChoices : highlightChoices;
-  const int count = booksScreen || !isWords ? 2 : 3;
+  const int count = booksScreen ? (isWords ? 3 : 2) : !isWords ? 2 : 3;
   const Sort current = booksScreen ? bookSort : entrySort;
   const int selected = booksScreen ? (current == Sort::Recent ? 1 : 0)
                        : isWords   ? (current == Sort::Recent         ? 2
@@ -441,7 +460,10 @@ void VocabularyHighlightsActivity::showSortOptions() {
                                    : (current == Sort::Recent ? 1 : 0);
   sortPopup.show("Sort", names, count, selected, [this, booksScreen, isWords](int index) {
     if (booksScreen) {
-      bookSort = index == 0 ? Sort::Alphabetical : Sort::Recent;
+      if (index == 2)
+        showDeleted = !showDeleted;
+      else
+        bookSort = index == 0 ? Sort::Alphabetical : Sort::Recent;
       sortBooks();
     } else {
       entrySort = isWords ? (index == 0   ? Sort::Alphabetical
@@ -456,15 +478,125 @@ void VocabularyHighlightsActivity::showSortOptions() {
   requestUpdate();
 }
 
-void VocabularyHighlightsActivity::onRowLongPress(int) { showSortOptions(); }
+void VocabularyHighlightsActivity::showStateError() {
+  static constexpr const char* options[] = {"OK"};
+  const std::string explanation = learningState.error().empty() ? "Unable to save progress" : learningState.error();
+  sortPopup.showMessage("Progress unavailable", explanation.c_str(), options, 1, 0, [](int) {});
+  requestUpdate();
+}
+
+void VocabularyHighlightsActivity::showEntryOptions(const int index) {
+  if (screen != Screen::Entries || source != Source::Vocabulary || index < 0 || index >= listCount()) {
+    showSortOptions();
+    return;
+  }
+  const Entry& item = entries[static_cast<size_t>(index)];
+  const bool wasHidden = item.hidden;
+  const std::string id = item.id;
+  const char* readonlyChoices[] = {"Sort entries", "Why editing is disabled", "Cancel"};
+  const char* normalChoices[] = {"Sort entries", "New", "Learning", "Mastered", "Delete from list", "Cancel"};
+  const char* hiddenChoices[] = {"Sort entries", "Restore entry", "Cancel"};
+  const bool readonly = !learningState.writable();
+  const char* const* choices = readonly ? readonlyChoices : wasHidden ? hiddenChoices : normalChoices;
+  const int count = readonly || wasHidden ? 3 : 6;
+  const int selected = readonly || wasHidden                                        ? 0
+                       : item.status == VocabularyHighlightsState::Status::New      ? 1
+                       : item.status == VocabularyHighlightsState::Status::Learning ? 2
+                                                                                    : 3;
+  sortPopup.show("Word actions", item.label.c_str(), choices, count, selected,
+                 [this, id, wasHidden, readonly](const int choice) {
+                   if (choice == 0) {
+                     pendingSortDialog = true;
+                     return;
+                   }
+                   if (readonly) {
+                     if (choice == 1) pendingErrorDialog = true;
+                     return;
+                   }
+                   if (wasHidden) {
+                     if (choice == 1) {
+                       if (!learningState.setHidden(id, false)) {
+                         pendingErrorDialog = true;
+                         return;
+                       }
+                       scanEntries();
+                       nav.reset();
+                       requestUpdate();
+                     }
+                     return;
+                   }
+                   if (choice >= 1 && choice <= 3) {
+                     const auto status = choice == 1   ? VocabularyHighlightsState::Status::New
+                                         : choice == 2 ? VocabularyHighlightsState::Status::Learning
+                                                       : VocabularyHighlightsState::Status::Mastered;
+                     if (!learningState.setStatus(id, status)) {
+                       pendingErrorDialog = true;
+                       return;
+                     }
+                     scanEntries();
+                     nav.reset();
+                     requestUpdate();
+                   } else if (choice == 4) {
+                     pendingDeleteId = id;
+                   }
+                 });
+  requestUpdate();
+}
+
+void VocabularyHighlightsActivity::showDeleteConfirmation(const std::string& id) {
+  static constexpr const char* choices[] = {"Cancel", "Hide word"};
+  sortPopup.showMessage("Delete from list?", "The original Vocabulary.txt record will not be deleted.", choices, 2, 0,
+                        [this, id](const int choice) {
+                          if (choice != 1) return;
+                          if (!learningState.setHidden(id, true)) {
+                            pendingErrorDialog = true;
+                            return;
+                          }
+                          scanEntries();
+                          nav.reset();
+                          requestUpdate();
+                        });
+  requestUpdate();
+}
+
+void VocabularyHighlightsActivity::onRowLongPress(const int index) {
+  if (screen == Screen::Entries && source == Source::Vocabulary) {
+    showEntryOptions(index);
+    return;
+  }
+  showSortOptions();
+}
 
 bool VocabularyHighlightsActivity::handleCustomInput() {
-  return sortPopup.handleInput(mappedInput, [this] { requestUpdate(); });
+  const bool handled = sortPopup.handleInput(mappedInput, [this] { requestUpdate(); });
+  // Never open another popup from within OptionPopup's own callback: doing so
+  // would replace that std::function while it is executing.
+  if (pendingSortDialog) {
+    pendingSortDialog = false;
+    showSortOptions();
+    return true;
+  }
+  if (pendingErrorDialog) {
+    pendingErrorDialog = false;
+    showStateError();
+    return true;
+  }
+  if (!pendingDeleteId.empty()) {
+    std::string id = std::move(pendingDeleteId);
+    pendingDeleteId.clear();
+    showDeleteConfirmation(id);
+    return true;
+  }
+  return handled;
 }
 
 bool VocabularyHighlightsActivity::handleButtons() {
   if (sortPopup.isActive()) return false;
   if (screen != Screen::Sections && mappedInput.wasLongPressed(MappedInputManager::Button::Confirm, 700)) {
+    if (screen == Screen::Entries && source == Source::Vocabulary) {
+      showEntryOptions(nav.selected);
+      return true;
+    }
     showSortOptions();
     return true;
   }
@@ -498,6 +630,14 @@ void VocabularyHighlightsActivity::refreshWindow(int start) {
       subtitle = entry.chapter;
       if (!subtitle.empty()) subtitle += " - ";
       subtitle += "Page " + std::to_string(entry.page);
+      if (source == Source::Vocabulary) {
+        if (entry.hidden)
+          subtitle += " - Deleted";
+        else if (entry.status == VocabularyHighlightsState::Status::Learning)
+          subtitle += " - Learning";
+        else if (entry.status == VocabularyHighlightsState::Status::Mastered)
+          subtitle += " - Mastered";
+      }
     }
     fui::ListItem row;
     row.label = label.c_str();
