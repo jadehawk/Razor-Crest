@@ -30,6 +30,7 @@
 #include "plugins/PluginCatalogActivity.h"
 #include "plugins/StatsDashboardActivity.h"
 #include "plugins/StatsDashboardPluginCatalogActivity.h"
+#include "plugins/VocabularyHighlightsActivity.h"
 #include "reader/ReaderActivity.h"
 #include "reader/RemoteTurnGate.h"
 #include "settings/OpdsServerListActivity.h"
@@ -348,7 +349,13 @@ void ActivityManager::goToPlugins(bool showOpds) {
 }
 
 void ActivityManager::goToPluginDashboard(std::string deviceManifest) {
-  if (!SETTINGS.pluginsEnabled || !StatsDashboardActivity::supportsManifest(deviceManifest)) return;
+  if (!SETTINGS.pluginsEnabled) return;
+  if (VocabularyHighlightsActivity::supportsManifest(deviceManifest)) {
+    auto activity = makeUniqueNoThrow<VocabularyHighlightsActivity>(renderer, mappedInput);
+    if (activity) replaceActivity(std::move(activity));
+    return;
+  }
+  if (!StatsDashboardActivity::supportsManifest(deviceManifest)) return;
   auto activity = makeUniqueNoThrow<StatsDashboardActivity>(renderer, mappedInput, std::move(deviceManifest));
   if (activity) replaceActivity(std::move(activity));
 }

@@ -10,6 +10,7 @@
 
 #include "CrossPointSettings.h"
 #include "activities/plugins/StatsDashboardActivity.h"
+#include "activities/plugins/VocabularyHighlightsActivity.h"
 #include "util/HomeMenuGeometry.h"
 #include "util/PluginLocations.h"
 
@@ -55,7 +56,8 @@ void HomeMenuRegistry::load(const int capacity, const bool pluginsEnabled, const
       if (!title || !target || !name || strlen(title) > 48 || !*title || strcmp(target, "dashboard") != 0 ||
           install.name != name)
         continue;
-      if (!StatsDashboardActivity::supportsManifest(device)) continue;
+      if (!StatsDashboardActivity::supportsManifest(device) && !VocabularyHighlightsActivity::supportsManifest(device))
+        continue;
       const char* icon = shortcut["icon"].as<const char*>();
       const UIIcon artwork = icon && strcmp(icon, "stats") == 0     ? Blocks
                              : icon && strcmp(icon, "library") == 0 ? Library
