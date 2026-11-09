@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <iterator>
 #include <utility>
 
 #include "MappedInputManager.h"
@@ -19,6 +20,7 @@
 #include "components/UITheme.h"
 #include "components/UiAppHelpers.h"
 #include "fontIds.h"
+#include "util/ClippingFingerprint.h"
 
 namespace fui = freeink::ui;
 
@@ -33,6 +35,7 @@ struct RecordSummary {
   std::string title;
   std::string author;
   std::string id;
+  std::string fingerprint;
   std::string label;
   std::string chapter;
   uint32_t timestamp = 0;
@@ -164,19 +167,19 @@ bool vocabularySummary(const std::string& line, RecordSummary& out) {
 }
 
 std::string trim(const std::string& text) {
-  const auto first = text.find_first_not_of(" \r\n\t");
+  const auto first = text.find_first_not_of(" \r\n\t\v\f");
   if (first == std::string::npos) return {};
-  const auto last = text.find_last_not_of(" \r\n\t");
+  const auto last = text.find_last_not_of(" \r\n\t\v\f");
   return text.substr(first, last - first + 1);
 }
 
-bool clippingSummary(const std::string& block, RecordSummary& out) {
+bool clippingSummary(const std::string& block, RecordSummary& out, const uint64_t selectedBook = 0) {
   const auto titleEnd = block.find('\n');
   if (titleEnd == std::string::npos) return false;
   const auto metaEnd = block.find('\n', titleEnd + 1);
   if (metaEnd == std::string::npos) return false;
   std::string heading = trim(block.substr(0, titleEnd));
-  if (heading.compare(0, 3, "\xef\xbb\xbf") == 0) heading.erase(0, 3);
+  if (heading.compare(0, 3, "\xef\xbb\xbf") == 0) heading = trim(heading.substr(3));
   const std::string metadata = trim(block.substr(titleEnd + 1, metaEnd - titleEnd - 1));
   const auto contentStart = block.find("\n\n", titleEnd + 1);
   if (contentStart == std::string::npos) return false;
@@ -191,6 +194,8 @@ bool clippingSummary(const std::string& block, RecordSummary& out) {
   while (*digits >= '0' && *digits <= '9') {
     page = std::min<unsigned long>(UINT16_MAX, page * 10 + (*digits++ - '0'));
   }
+  const std::string suffix = trim(digits);
+  if (!suffix.empty() && suffix.front() != '|') return false;
   out.page = static_cast<uint16_t>(page);
 
   const auto authorStart = heading.rfind(" (");
@@ -209,6 +214,13 @@ bool clippingSummary(const std::string& block, RecordSummary& out) {
     const std::string section = trim(metadata.substr(chapterStart + 3, chapterEnd - chapterStart - 3));
     if (section.compare(0, 8, "Added on") != 0) out.chapter = shortLabel(section, 90);
   }
+  // A browser hash must never target the wrong clipping tombstone.
+  if (selectedBook != 0 && bookKey(out.title, out.author) == selectedBook && heading.find('\r') == std::string::npos &&
+      metadata.find('\r') == std::string::npos && body.find('\r') == std::string::npos &&
+      !clippingfingerprint::hasUnsupportedTrimBoundary(heading) &&
+      !clippingfingerprint::hasUnsupportedTrimBoundary(metadata) &&
+      !clippingfingerprint::hasUnsupportedTrimBoundary(body))
+    out.fingerprint = clippingfingerprint::fromUtf8(heading + "\n" + metadata + "\n" + body);
   out.label = shortLabel(body, 90);
   std::replace(out.label.begin(), out.label.end(), '\n', ' ');
   return true;
@@ -319,11 +331,22 @@ void VocabularyHighlightsActivity::scanBooks() {
 void VocabularyHighlightsActivity::scanEntries() {
   entries.clear();
   entriesOverflow = false;
-  const auto onRecord = [this](const std::string& raw, uint64_t offset, uint32_t length) {
+  std::vector<std::pair<std::string, uint32_t>> clipOccurrences;
+  const auto onRecord = [this, &clipOccurrences](const std::string& raw, uint64_t offset, uint32_t length) {
     RecordSummary info;
-    const bool valid = source == Source::Vocabulary ? vocabularySummary(raw, info) : clippingSummary(raw, info);
+    const bool valid =
+        source == Source::Vocabulary ? vocabularySummary(raw, info) : clippingSummary(raw, info, selectedBook);
     if (!valid || bookKey(info.title, info.author) != selectedBook) return;
-    if (source == Source::Vocabulary && !showDeleted && learningState.hidden(info.id)) return;
+    if (source == Source::Highlights && !info.fingerprint.empty()) {
+      auto found = std::find_if(clipOccurrences.begin(), clipOccurrences.end(),
+                                [&info](const auto& value) { return value.first == info.fingerprint; });
+      if (found == clipOccurrences.end() && clipOccurrences.size() < kMaxEntries) {
+        clipOccurrences.emplace_back(info.fingerprint, 0);
+        found = std::prev(clipOccurrences.end());
+      }
+      if (found != clipOccurrences.end()) info.id = "clip:" + info.fingerprint + ":" + std::to_string(++found->second);
+    }
+    if (!showDeleted && !info.id.empty() && learningState.hidden(info.id)) return;
     if (entries.size() >= kMaxEntries) {
       entriesOverflow = true;
       return;
@@ -339,7 +362,7 @@ void VocabularyHighlightsActivity::scanEntries() {
     entry.chapter = std::move(info.chapter);
     entry.status = learningState.status(info.id);
     entry.hidden = learningState.hidden(info.id);
-    if (source == Source::Vocabulary && entry.hidden && !showDeleted) return;
+    if (entry.hidden && !showDeleted) return;
     entry.id = std::move(info.id);
     entries.push_back(std::move(entry));
   };
@@ -451,7 +474,7 @@ void VocabularyHighlightsActivity::showSortOptions() {
   const bool booksScreen = screen == Screen::Books;
   const bool isWords = source == Source::Vocabulary;
   const char* const* names = booksScreen ? bookChoices : isWords ? wordChoices : highlightChoices;
-  const int count = booksScreen ? (isWords ? 3 : 2) : !isWords ? 2 : 3;
+  const int count = booksScreen ? 3 : !isWords ? 2 : 3;
   const Sort current = booksScreen ? bookSort : entrySort;
   const int selected = booksScreen ? (current == Sort::Recent ? 1 : 0)
                        : isWords   ? (current == Sort::Recent         ? 2
@@ -480,13 +503,15 @@ void VocabularyHighlightsActivity::showSortOptions() {
 
 void VocabularyHighlightsActivity::showStateError() {
   static constexpr const char* options[] = {"OK"};
-  const std::string explanation = learningState.error().empty() ? "Unable to save progress" : learningState.error();
+  const std::string explanation = learningState.error().empty()
+                                      ? "This highlight cannot be safely matched to the WebUI. Edit it in the browser."
+                                      : learningState.error();
   sortPopup.showMessage("Progress unavailable", explanation.c_str(), options, 1, 0, [](int) {});
   requestUpdate();
 }
 
 void VocabularyHighlightsActivity::showEntryOptions(const int index) {
-  if (screen != Screen::Entries || source != Source::Vocabulary || index < 0 || index >= listCount()) {
+  if (screen != Screen::Entries || index < 0 || index >= listCount()) {
     showSortOptions();
     return;
   }
@@ -495,16 +520,20 @@ void VocabularyHighlightsActivity::showEntryOptions(const int index) {
   const std::string id = item.id;
   const char* readonlyChoices[] = {"Sort entries", "Why editing is disabled", "Cancel"};
   const char* normalChoices[] = {"Sort entries", "New", "Learning", "Mastered", "Delete from list", "Cancel"};
+  const char* clipChoices[] = {"Sort entries", "Delete from list", "Cancel"};
   const char* hiddenChoices[] = {"Sort entries", "Restore entry", "Cancel"};
-  const bool readonly = !learningState.writable();
-  const char* const* choices = readonly ? readonlyChoices : wasHidden ? hiddenChoices : normalChoices;
-  const int count = readonly || wasHidden ? 3 : 6;
-  const int selected = readonly || wasHidden                                        ? 0
+  const bool readonly = !learningState.writable() || id.empty();
+  const char* const* choices = readonly                       ? readonlyChoices
+                               : wasHidden                    ? hiddenChoices
+                               : source == Source::Vocabulary ? normalChoices
+                                                              : clipChoices;
+  const int count = readonly || wasHidden || source == Source::Highlights ? 3 : 6;
+  const int selected = readonly || wasHidden || source == Source::Highlights        ? 0
                        : item.status == VocabularyHighlightsState::Status::New      ? 1
                        : item.status == VocabularyHighlightsState::Status::Learning ? 2
                                                                                     : 3;
-  sortPopup.show("Word actions", item.label.c_str(), choices, count, selected,
-                 [this, id, wasHidden, readonly](const int choice) {
+  sortPopup.show(source == Source::Vocabulary ? "Word actions" : "Highlight actions", item.label.c_str(), choices,
+                 count, selected, [this, id, wasHidden, readonly](const int choice) {
                    if (choice == 0) {
                      pendingSortDialog = true;
                      return;
@@ -525,7 +554,7 @@ void VocabularyHighlightsActivity::showEntryOptions(const int index) {
                      }
                      return;
                    }
-                   if (choice >= 1 && choice <= 3) {
+                   if (source == Source::Vocabulary && choice >= 1 && choice <= 3) {
                      const auto status = choice == 1   ? VocabularyHighlightsState::Status::New
                                          : choice == 2 ? VocabularyHighlightsState::Status::Learning
                                                        : VocabularyHighlightsState::Status::Mastered;
@@ -536,7 +565,7 @@ void VocabularyHighlightsActivity::showEntryOptions(const int index) {
                      scanEntries();
                      nav.reset();
                      requestUpdate();
-                   } else if (choice == 4) {
+                   } else if (choice == (source == Source::Vocabulary ? 4 : 1)) {
                      pendingDeleteId = id;
                    }
                  });
@@ -544,23 +573,24 @@ void VocabularyHighlightsActivity::showEntryOptions(const int index) {
 }
 
 void VocabularyHighlightsActivity::showDeleteConfirmation(const std::string& id) {
-  static constexpr const char* choices[] = {"Cancel", "Hide word"};
-  sortPopup.showMessage("Delete from list?", "The original Vocabulary.txt record will not be deleted.", choices, 2, 0,
-                        [this, id](const int choice) {
-                          if (choice != 1) return;
-                          if (!learningState.setHidden(id, true)) {
-                            pendingErrorDialog = true;
-                            return;
-                          }
-                          scanEntries();
-                          nav.reset();
-                          requestUpdate();
-                        });
+  const char* const choices[] = {"Cancel", source == Source::Vocabulary ? "Hide word" : "Hide highlight"};
+  const char* sourceNotice = source == Source::Vocabulary ? "The original Vocabulary.txt record will not be deleted."
+                                                          : "The original My Clippings.txt record will not be deleted.";
+  sortPopup.showMessage("Delete from list?", sourceNotice, choices, 2, 0, [this, id](const int choice) {
+    if (choice != 1) return;
+    if (!learningState.setHidden(id, true)) {
+      pendingErrorDialog = true;
+      return;
+    }
+    scanEntries();
+    nav.reset();
+    requestUpdate();
+  });
   requestUpdate();
 }
 
 void VocabularyHighlightsActivity::onRowLongPress(const int index) {
-  if (screen == Screen::Entries && source == Source::Vocabulary) {
+  if (screen == Screen::Entries) {
     showEntryOptions(index);
     return;
   }
@@ -593,7 +623,7 @@ bool VocabularyHighlightsActivity::handleCustomInput() {
 bool VocabularyHighlightsActivity::handleButtons() {
   if (sortPopup.isActive()) return false;
   if (screen != Screen::Sections && mappedInput.wasLongPressed(MappedInputManager::Button::Confirm, 700)) {
-    if (screen == Screen::Entries && source == Source::Vocabulary) {
+    if (screen == Screen::Entries) {
       showEntryOptions(nav.selected);
       return true;
     }
@@ -630,10 +660,10 @@ void VocabularyHighlightsActivity::refreshWindow(int start) {
       subtitle = entry.chapter;
       if (!subtitle.empty()) subtitle += " - ";
       subtitle += "Page " + std::to_string(entry.page);
-      if (source == Source::Vocabulary) {
-        if (entry.hidden)
-          subtitle += " - Deleted";
-        else if (entry.status == VocabularyHighlightsState::Status::Learning)
+      if (entry.hidden)
+        subtitle += " - Deleted";
+      else if (source == Source::Vocabulary) {
+        if (entry.status == VocabularyHighlightsState::Status::Learning)
           subtitle += " - Learning";
         else if (entry.status == VocabularyHighlightsState::Status::Mastered)
           subtitle += " - Mastered";
