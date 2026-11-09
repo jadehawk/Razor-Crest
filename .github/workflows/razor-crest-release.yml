@@ -195,6 +195,8 @@ jobs:
         run: ctest --test-dir build/test --output-on-failure -j
       - name: Validate nightly feed generator
         run: python3 test/nightly_manifest_test.py
+      - name: Validate release notes generator
+        run: python3 test/release_notes_test.py
 
   build:
     name: Build Razor-Crest ${{ matrix.device }}
@@ -300,6 +302,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
       - name: Download firmware assets
         uses: actions/download-artifact@v4
         with:
@@ -361,28 +367,10 @@ jobs:
           )
           PY
 
-          short_sha="${SOURCE_SHA:0:7}"
-          cat > release-notes.md <<EOF
-          Public Razor-Crest firmware based on CrossPoint ${BASE_VERSION}.
-
-          **Razor-Crest version:** ${RAZOR_VERSION}  
-          **Source commit:** \`${short_sha}\`
-
-          ### Firmware downloads
-
-          | Device | Asset |
-          | --- | --- |
-          | X3 / X4 | \`razor-crest-${RAZOR_VERSION}-x3-x4.bin\` |
-          | Seeed reTerminal Sticky | \`razor-crest-${RAZOR_VERSION}-sticky.bin\` |
-          | X4 Pro | \`razor-crest-${RAZOR_VERSION}-x4pro.bin\` |
-          | X4 Classic | \`razor-crest-${RAZOR_VERSION}-x4c.bin\` |
-          | Paper Mono | \`razor-crest-${RAZOR_VERSION}-papermono.bin\` |
-          | MetalIO EInk4 | \`razor-crest-${RAZOR_VERSION}-metalio-eink4.bin\` |
-          | EEGO A4 | \`razor-crest-${RAZOR_VERSION}-eego-a4.bin\` |
-          | BOOX Picco | \`razor-crest-${RAZOR_VERSION}-picco.bin\` |
-
-          Use the firmware file that matches your device. `SHA256SUMS.txt` contains checksums for every binary, and `release-manifest.json` provides the same release information in machine-readable form.
-          EOF
+          python3 scripts/release_notes.py \
+            --channel stable --version "$RAZOR_VERSION" --tag "$RAZOR_TAG" \
+            --source "$SOURCE_SHA" --repository "$GITHUB_REPOSITORY" \
+            --base-version "$BASE_VERSION" --dist dist --output release-notes.md
 
       - name: Create or update GitHub Release
         env:
@@ -429,6 +417,8 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Download validated firmware artifacts
         uses: actions/download-artifact@v4
@@ -439,6 +429,7 @@ jobs:
 
       - name: Validate all eight binaries and prepare feed
         env:
+          BASE_VERSION: ${{ needs.prepare.outputs.base_version }}
           RAZOR_VERSION: ${{ needs.prepare.outputs.version }}
           RAZOR_TAG: ${{ needs.prepare.outputs.tag }}
           SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
@@ -449,6 +440,13 @@ jobs:
             --tag "$RAZOR_TAG" --version "$RAZOR_VERSION" \
             --commit "$SOURCE_SHA" --output dist/latest-nightly.json
           (cd dist && sha256sum razor-crest-*.bin | sort -k2 > SHA256SUMS.txt)
+          previous="$(curl --silent --show-error --location --fail --max-time 15 \
+            'https://jadehawk.github.io/Razor-Crest/latest-nightly.json' | jq -r '.source_commit // empty' || true)"
+          python3 scripts/release_notes.py \
+            --channel nightly --version "$RAZOR_VERSION" --tag "$RAZOR_TAG" \
+            --source "$SOURCE_SHA" --repository "$GITHUB_REPOSITORY" \
+            --base-version "$BASE_VERSION" --dist dist --output release-notes.md \
+            --previous "$previous"
           mkdir -p site
           cp dist/latest-nightly.json site/latest-nightly.json
           cat > site/index.html <<'HTML'
@@ -479,7 +477,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --target "$SOURCE_SHA" \
             --title "Razor-Crest Nightly ${RAZOR_TAG#rn-v}" \
-            --notes "Development build from ${SOURCE_SHA:0:7}. Not a stable release." \
+            --notes-file release-notes.md \
             --prerelease
 
       - uses: actions/configure-pages@v5

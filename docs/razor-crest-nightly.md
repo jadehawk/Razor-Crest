@@ -36,6 +36,11 @@ The combined X3/X4 image uses `x3-x4`. Picco builds are published on both
 Stable and Nightly channels for USB installation. Picco's stock layout has
 only one application slot, so it cannot install updates on-device via OTA or SD.
 
+Both release channels publish an eight-device download table and a changelog.
+Stable changelogs compare the new source with the preceding Stable tag;
+Nightly changelogs compare the new source with the preceding Nightly commit.
+Release notes include the exact source commit and a full GitHub comparison link.
+
 ## Device update flow
 
 Choose **Check for updates → Stable / Nightly / Cancel**. Only the selected
