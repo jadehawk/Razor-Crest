@@ -53,9 +53,26 @@ TEST(SleepScreenSource, OtherModesNeverShowCustomSource) {
     for (const bool fromReader : {false, true}) {
       for (const bool coverFallback : {false, true}) {
         EXPECT_FALSE(sleepscreen::showsCustomSource(mode, fromReader, coverFallback))
-            << "mode=" << static_cast<int>(mode) << " fromReader=" << fromReader
-            << " coverFallback=" << coverFallback;
+            << "mode=" << static_cast<int>(mode) << " fromReader=" << fromReader << " coverFallback=" << coverFallback;
       }
     }
   }
+}
+
+TEST(SleepScreenSource, SleepImageDestinations) {
+  EXPECT_TRUE(sleepscreen::isSleepImageDestination("/sleep.bmp"));
+  EXPECT_TRUE(sleepscreen::isSleepImageDestination("/.sleep/wallpaper.bmp"));
+  EXPECT_TRUE(sleepscreen::isSleepImageDestination("/sleep/scan.bmp"));
+  EXPECT_TRUE(sleepscreen::isSleepImageDestination("/.sleep/{event.id}.bmp"));
+  EXPECT_TRUE(sleepscreen::isSleepImageDestination("/SLEEP.BMP"));
+
+  EXPECT_FALSE(sleepscreen::isSleepImageDestination(nullptr));
+  EXPECT_FALSE(sleepscreen::isSleepImageDestination(""));
+  EXPECT_FALSE(sleepscreen::isSleepImageDestination("sleep.bmp"));
+  EXPECT_FALSE(sleepscreen::isSleepImageDestination("/sleep.bmp.part"));
+  EXPECT_FALSE(sleepscreen::isSleepImageDestination("/books/sleep.bmp"));
+  EXPECT_FALSE(sleepscreen::isSleepImageDestination("/.sleep-overlay/frame.bmp"));
+  EXPECT_FALSE(sleepscreen::isSleepImageDestination("/sleeping.bmp"));
+  EXPECT_FALSE(sleepscreen::isSleepImageDestination("/sleepx/a.bmp"));
+  EXPECT_FALSE(sleepscreen::isSleepImageDestination("{cfg.dest}"));
 }
