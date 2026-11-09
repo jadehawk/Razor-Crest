@@ -8,7 +8,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-DEVICES = ("x3-x4", "sticky", "x4pro", "x4c", "papermono", "metalio-eink4", "eego-a4")
+DEVICES = ("x3-x4", "sticky", "x4pro", "x4c", "papermono", "metalio-eink4", "eego-a4", "picco")
 MAX_FIRMWARE_BYTES = 32 * 1024 * 1024
 VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+n-[0-9a-f]{7}$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")

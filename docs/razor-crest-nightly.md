@@ -17,8 +17,8 @@ hosts the JSON update feed, while the Pages root redirects to
 ## Publication
 
 The existing `.github/workflows/razor-crest-release.yml` handles both channels
-with the same host test suite, seven-board firmware build matrix, pinned
-PlatformIO setup, and binary naming. Nightlies run at midnight
+with the same host test suite, eight firmware targets for both channels,
+pinned PlatformIO setup, and binary naming. Nightlies run at midnight
 `America/New_York` (EST/EDT); GitHub Actions may queue a scheduled run.
 The workflow can also run manually with channel **Nightly**, including an
 option to force a rebuild of an unchanged commit.
@@ -32,8 +32,9 @@ filenames, sizes, and download URLs. The first successful commit-based
 Nightly retires the old date-numbered prereleases. The latest seven
 commit-based Nightlies are retained.
 
-The combined X3/X4 image uses `x3-x4`. Picco does not support OTA on the
-current stock layout and is not in the Nightly matrix.
+The combined X3/X4 image uses `x3-x4`. Picco builds are published on both
+Stable and Nightly channels for USB installation. Picco's stock layout has
+only one application slot, so it cannot install updates on-device via OTA or SD.
 
 ## Device update flow
 

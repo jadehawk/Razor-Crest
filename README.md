@@ -149,7 +149,7 @@ Themes can customize supported headers, home screens, settings/library presentat
 3. Select the **correct device** and use **Custom .bin** to flash the downloaded Razor-Crest binary. Do not choose an official upstream release when intending to install this fork.
 4. After flashing, enable **Settings → Connectivity → Plugins** if you want plugins and Plugin Hub. New installations default to disabled; existing plugin setups are preserved on upgrade.
 
-The fork's release workflow covers the upstream release device matrix, including X3/X4, X4 Pro, X4 Classic, Seeed reTerminal Sticky, Paper Mono, MetalIO EInk4, and EEGO A4. **Check the individual release assets** for actual availability and device naming; a listed build target is not a claim that every extension has been hardware-validated on that model. Use the firmware file built for your board only.
+The fork's release workflow covers the upstream release device matrix, including X3/X4, X4 Pro, X4 Classic, Seeed reTerminal Sticky, Paper Mono, MetalIO EInk4, EEGO A4, and BOOX Picco. **Check the individual release assets** for actual availability and device naming; a listed build target is not a claim that every extension has been hardware-validated on that model. Use the firmware file built for your board only.
 
 ### USB-locked Xteink devices
 

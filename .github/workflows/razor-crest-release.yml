@@ -50,6 +50,7 @@ jobs:
       source_sha: ${{ steps.release.outputs.source_sha }}
       channel: ${{ steps.release.outputs.channel }}
       skip: ${{ steps.release.outputs.skip }}
+      build_matrix: ${{ steps.release.outputs.build_matrix }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -141,6 +142,20 @@ jobs:
           echo "base_version=$base_version" >> "$GITHUB_OUTPUT"
           echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
 
+          # Publish the same eight board images for Stable and Nightly.
+          # Picco uses USB app-only flashing; its stock layout cannot self-update.
+          build_matrix='[
+            {"pio_env":"gh_release","device":"x3-x4","label":"X3 / X4"},
+            {"pio_env":"sticky-gh_release","device":"sticky","label":"Seeed reTerminal Sticky"},
+            {"pio_env":"x4pro-gh_release","device":"x4pro","label":"X4 Pro"},
+            {"pio_env":"x4c-gh_release","device":"x4c","label":"X4 Classic"},
+            {"pio_env":"papermono-gh_release","device":"papermono","label":"Paper Mono"},
+            {"pio_env":"metalio_eink4-gh_release","device":"metalio-eink4","label":"MetalIO EInk4"},
+            {"pio_env":"eego_a4-gh_release","device":"eego-a4","label":"EEGO A4"},
+            {"pio_env":"picco-gh_release","device":"picco","label":"BOOX Picco"}
+          ]'
+          echo "build_matrix=$(jq -c . <<< "$build_matrix")" >> "$GITHUB_OUTPUT"
+
           {
             echo '## Razor-Crest release source'
             echo "- Version: $version"
@@ -189,28 +204,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - pio_env: gh_release
-            device: x3-x4
-            label: X3 / X4
-          - pio_env: sticky-gh_release
-            device: sticky
-            label: Seeed reTerminal Sticky
-          - pio_env: x4pro-gh_release
-            device: x4pro
-            label: X4 Pro
-          - pio_env: x4c-gh_release
-            device: x4c
-            label: X4 Classic
-          - pio_env: papermono-gh_release
-            device: papermono
-            label: Paper Mono
-          - pio_env: metalio_eink4-gh_release
-            device: metalio-eink4
-            label: MetalIO EInk4
-          - pio_env: eego_a4-gh_release
-            device: eego-a4
-            label: EEGO A4
+        include: ${{ fromJSON(needs.prepare.outputs.build_matrix) }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -322,10 +316,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          for device in x3-x4 sticky x4pro x4c papermono metalio-eink4 eego-a4; do
+          for device in x3-x4 sticky x4pro x4c papermono metalio-eink4 eego-a4 picco; do
             test -f "dist/razor-crest-${RAZOR_VERSION}-${device}.bin"
           done
-          test "$(find dist -maxdepth 1 -type f -name 'razor-crest-*.bin' | wc -l)" -eq 7
+          test "$(find dist -maxdepth 1 -type f -name 'razor-crest-*.bin' | wc -l)" -eq 8
 
           (cd dist && sha256sum razor-crest-*.bin | sort -k2 > SHA256SUMS.txt)
 
@@ -344,6 +338,7 @@ jobs:
               'papermono': 'Paper Mono',
               'metalio-eink4': 'MetalIO EInk4',
               'eego-a4': 'EEGO A4',
+              'picco': 'BOOX Picco',
           }
           payload = {
               'firmware': 'Razor-Crest',
@@ -384,6 +379,7 @@ jobs:
           | Paper Mono | \`razor-crest-${RAZOR_VERSION}-papermono.bin\` |
           | MetalIO EInk4 | \`razor-crest-${RAZOR_VERSION}-metalio-eink4.bin\` |
           | EEGO A4 | \`razor-crest-${RAZOR_VERSION}-eego-a4.bin\` |
+          | BOOX Picco | \`razor-crest-${RAZOR_VERSION}-picco.bin\` |
 
           Use the firmware file that matches your device. `SHA256SUMS.txt` contains checksums for every binary, and `release-manifest.json` provides the same release information in machine-readable form.
           EOF
@@ -441,7 +437,7 @@ jobs:
           pattern: razor-crest-*.bin
           merge-multiple: true
 
-      - name: Validate all seven binaries and prepare feed
+      - name: Validate all eight binaries and prepare feed
         env:
           RAZOR_VERSION: ${{ needs.prepare.outputs.version }}
           RAZOR_TAG: ${{ needs.prepare.outputs.tag }}
