@@ -544,10 +544,13 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
     LOG_DBG("FONT", "Free heap after SD font cache release: %d bytes", ESP.getFreeHeap());
   }
 
+  // Font assets switch to plain HTTP after the GitHub release redirect, so
+  // use the upstream font-transfer floor instead of the stricter shared TLS floor.
   // Check before touching the family directory so a failed update leaves the
   // installed family unchanged.
-  if (ESP.getFreeHeap() < HttpDownloader::MIN_TLS_FREE_HEAP ||
-      ESP.getMaxAllocHeap() < HttpDownloader::MIN_TLS_MAX_ALLOC) {
+  constexpr uint32_t MIN_FONT_FREE_HEAP = 40000;
+  constexpr uint32_t MIN_FONT_MAX_ALLOC = 20000;
+  if (ESP.getFreeHeap() < MIN_FONT_FREE_HEAP || ESP.getMaxAllocHeap() < MIN_FONT_MAX_ALLOC) {
     LOG_ERR("FONT", "Low heap for download (%u free, %u max block)", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
     RenderLock lock(*this);
     state_ = ERROR;
