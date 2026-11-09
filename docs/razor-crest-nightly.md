@@ -23,8 +23,8 @@ PlatformIO setup, and binary naming. Nightlies run at midnight
 The workflow can also run manually with channel **Nightly**, including an
 option to force a rebuild of an unchanged commit.
 
-Successful Nightlies use the version `RC.<base>n-<7-char commit SHA>`, for
-example `RC.2.0.0n-a1b2c3d`, with GitHub prerelease tag `rn-v<version>`.
+Successful Nightlies use the version `<base>n-<7-char commit SHA>`, for
+example `2.0.0n-a1b2c3d`, with GitHub prerelease tag `rn-v<version>`.
 A new commit produces a new Nightly version; unchanged commits are skipped.
 Firmware is published only when every board and the host tests pass. A JSON
 feed and checksums identify the exact version, source commit, firmware
@@ -44,8 +44,8 @@ confirmation popup shows **Release: Stable** or **Release: Nightly** and keeps
 validation, OTA partition writer, progress bar, and reboot path are shared.
 
 A Nightly-to-Nightly update compares seven-character commit identities.
-Installed date-numbered Nightlies can upgrade to the first commit-based
-Nightly; a legacy feed cannot replace a commit-based Nightly. Switching
+Installed date-numbered and `RC.`-prefixed Nightlies can upgrade to unprefixed commit-based
+Nightlies; a date-numbered feed cannot replace a commit-based Nightly. Switching
 from Nightly to Stable is an explicit channel change; the
 confirmation warns that Stable may be older. Ordinary Stable-to-Stable checks
 retain existing revision-based comparisons.

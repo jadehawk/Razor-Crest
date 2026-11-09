@@ -7,7 +7,7 @@
 
 namespace {
 
-// Preserve the RC. prefix for commit-based Nightly asset names.
+// Keep recognizing the original RC.-prefixed Nightlies during migration.
 const char* versionStart(const char* value) {
   if (value == nullptr) return "";
   if (strncmp(value, "rn-vRC.", 7) == 0) return value + 4;
@@ -32,14 +32,15 @@ Parsed parse(const char* value) {
   if (value == nullptr) return out;
 
   const char* taggedVersion = versionStart(value);
-  const bool commitNightly = strncmp(taggedVersion, "RC.", 3) == 0;
-  const char* base = commitNightly ? taggedVersion + 3 : taggedVersion;
+  const bool legacyPrefixedNightly = strncmp(taggedVersion, "RC.", 3) == 0;
+  const char* base = legacyPrefixedNightly ? taggedVersion + 3 : taggedVersion;
   int consumed = 0;
   if (base[0] == '\0' || sscanf(base, "%d.%d.%d%n", &out.major, &out.minor, &out.patch, &consumed) != 3) return out;
 
   out.valid = true;
   out.revision = parseRevision(base);
   const char* suffix = base + consumed;
+  const bool commitNightly = legacyPrefixedNightly || strncmp(suffix, "n-", 2) == 0;
   out.releaseCandidate =
       (suffix[0] == 'r' && suffix[1] == 'c') || (suffix[0] == '-' && suffix[1] == 'r' && suffix[2] == 'c');
   out.development = strstr(base, "-dev") != nullptr;

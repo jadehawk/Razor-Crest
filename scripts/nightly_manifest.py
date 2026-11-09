@@ -10,13 +10,13 @@ from pathlib import Path
 
 DEVICES = ("x3-x4", "sticky", "x4pro", "x4c", "papermono", "metalio-eink4", "eego-a4")
 MAX_FIRMWARE_BYTES = 32 * 1024 * 1024
-VERSION_PATTERN = re.compile(r"^RC\.[0-9]+\.[0-9]+\.[0-9]+n-[0-9a-f]{7}$")
+VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+n-[0-9a-f]{7}$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
 def make_manifest(directory: Path, repo: str, tag: str, version: str, commit: str):
     if not VERSION_PATTERN.fullmatch(version) or tag != f"rn-v{version}":
-        raise ValueError("Nightly tag/version must follow rn-vRC.<base>n-<7-char SHA>")
+        raise ValueError("Nightly tag/version must follow rn-v<base>n-<7-char SHA>")
     if not COMMIT_PATTERN.fullmatch(commit):
         raise ValueError("Nightly source commit must be a full SHA-1")
     if not version.endswith(f"n-{commit[:7]}"):
