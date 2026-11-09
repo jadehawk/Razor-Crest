@@ -17,6 +17,10 @@ class HalFrontlight {
   void setWarmth(uint8_t warmPercent);
   void setOn(bool on);
 
+  // Park the PWM outputs at the LED's inactive level and latch them before
+  // deep sleep. The SDK releases the hold in begin() on the next boot.
+  void prepareForDeepSleep();
+
   uint8_t brightness() const { return lastBrightness; }
   uint8_t warmth() const { return manager.colorTemperature(); }
   bool isOn() const { return lit; }

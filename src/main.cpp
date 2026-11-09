@@ -795,18 +795,6 @@ void setup() {
   trustedtime::init();
   bleturner::begin(pageturner::host, SETTINGS.ble);
 
-  // Brightness and warmth are always restored. A normal wake starts with the
-  // light off unless Restore Light on Wake is enabled; silent maintenance
-  // reboots replay the live state captured at restart, so they neither go dark
-  // nor light up against the user's wake preference. A slide switch bound to
-  // the light decides it from its position instead.
-  const bool restoreLightOn = wakeupReason == HalGPIO::WakeupReason::Timer ? false
-                              : isSilentReboot                             ? silentRebootLightOn
-                              : slideSwitchOwnsLight()
-                                  ? gpio.isToggleSwitchOn()
-                                  : (SETTINGS.frontlightOn != 0 && SETTINGS.frontlightRestoreOnWake != 0);
-  Frontlight.begin(SETTINGS.frontlightBrightness, SETTINGS.frontlightWarmth, restoreLightOn);
-
   switch (wakeupReason) {
     case HalGPIO::WakeupReason::Timer: {
       restartForTimerPower();
@@ -868,6 +856,20 @@ void setup() {
     default:
       break;
   }
+
+  // Brightness and warmth are always restored, but only once this boot is going
+  // to stay awake: a released short press that fails the wake-hold check above
+  // must not light the panel on its way back to sleep, and timer/USB
+  // maintenance boots never reach this point. A normal wake starts with the
+  // light off unless Restore Light on Wake is enabled; silent maintenance
+  // reboots replay the live state captured at restart, so they neither go dark
+  // nor light up against the user's wake preference. A slide switch bound to
+  // the light decides it from its position instead.
+  const bool restoreLightOn = isSilentReboot ? silentRebootLightOn
+                              : slideSwitchOwnsLight()
+                                  ? gpio.isToggleSwitchOn()
+                                  : (SETTINGS.frontlightOn != 0 && SETTINGS.frontlightRestoreOnWake != 0);
+  Frontlight.begin(SETTINGS.frontlightBrightness, SETTINGS.frontlightWarmth, restoreLightOn);
 
   LOG_DBG("MAIN", "Starting CrossPoint version " CROSSPOINT_VERSION);
 
