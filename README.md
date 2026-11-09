@@ -151,8 +151,18 @@ Themes can customize supported headers, home screens, settings/library presentat
 
 The fork's release workflow covers the upstream release device matrix, including X3/X4, X4 Pro, X4 Classic, Seeed reTerminal Sticky, Paper Mono, MetalIO EInk4, and EEGO A4. **Check the individual release assets** for actual availability and device naming; a listed build target is not a claim that every extension has been hardware-validated on that model. Use the firmware file built for your board only.
 
+### USB-locked Xteink devices
+
 > [!CAUTION]
-> Some USB-locked Xteink devices have special recovery restrictions. The upstream [Xteink Unlocker](https://crosspointreader.com/#unlock-tool) officially supports **CrossPoint and CrossInk**, not arbitrary forks. Flashing an unsupported image to a device that is re-locked can make it unrecoverable. Understand your device's unlock/recovery state before attempting to install Razor-Crest.
+> **Razor-Crest has not been tested on USB-locked Xteink devices.**
+>
+> Some Xteink devices, particularly units from third-party sellers, restrict USB firmware flashing. The upstream [Xteink Unlocker](https://crosspointreader.com/#unlock-tool) officially supports **CrossPoint and CrossInk only**; Razor-Crest is an unofficial fork and is not supported by that tool.
+>
+> **SD-card firmware updates:** Razor-Crest retains CrossPoint's **SD Card Firmware Update** feature and uses the same underlying flashing implementation. Updating from an existing CrossPoint installation through the SD card is technically expected to work, but **has not been verified on USB-locked hardware**. This requires firmware that already provides the SD update feature; it is not a first-install method for factory firmware without that capability.
+>
+> **Recovery risk:** If the device cannot boot or its installed firmware can no longer perform SD-card or OTA updates, USB flashing restrictions can prevent ordinary recovery. Restoring a working device may require invasive hardware procedures.
+>
+> **Recommendation:** For a validated installation path on USB-locked hardware, use officially supported CrossPoint firmware. Installing Razor-Crest on locked hardware remains at your own risk until the installation and recovery process has been tested.
 
 ### Install plugins, themes, and wallpaper packs
 
