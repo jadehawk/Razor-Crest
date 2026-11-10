@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 
 #include "AboutActivity.h"
 #include "BleSettingsActivity.h"
@@ -135,10 +136,8 @@ void SettingsActivity::rebuildSettings() {
           StrId::STR_UI_THEME, {},
           [externalIds, count = builtins.size()]() -> uint8_t {
             if (SETTINGS.sdThemeId[0] != '\0') {
-              for (size_t i = count; i < externalIds.size(); ++i) {
-                if (externalIds[i] == SETTINGS.sdThemeId) return static_cast<uint8_t>(i);
-              }
-              return 0;  // Unavailable external theme renders as Classic.
+              const auto match = std::find(externalIds.begin() + count, externalIds.end(), SETTINGS.sdThemeId);
+              return match != externalIds.end() ? static_cast<uint8_t>(match - externalIds.begin()) : 0;
             }
             return SETTINGS.uiTheme < count ? SETTINGS.uiTheme : 0;
           },
@@ -431,41 +430,43 @@ void SettingsActivity::toggleSelectedSetting() {
     const auto enumLabels = setting.enumLabels();
     if (enumLabels.size() > 2) {
       const auto valuePtr = setting.valuePtr;
-      optionPopup.show(
-          setting.nameId, enumLabels.data(), static_cast<int>(enumLabels.size()), currentValue,
-          [this, valuePtr, sleepScreenChanged, quickResumeTimeoutChanged](int idx) {
-            const auto board = BoardConfig::ACTIVE.board;
-            const bool x3 = board == BoardConfig::Board::XteinkX3 || board == BoardConfig::Board::XteinkX3Uc8279;
-            if (valuePtr == &CrossPointSettings::timedSleepScreenRefresh && x3 && idx > 0 &&
-                idx != SETTINGS.timedSleepScreenRefresh &&
-                idx < static_cast<int>(sizeof(X3_TIMED_SLEEP_ESTIMATED_DAYS))) {
-              const auto intervalLabels = settings[selectedSettingIndex()].enumLabels();
-              char message[256];
-              std::snprintf(message, sizeof(message), I18N.get(StrId::STR_X3_TIMED_WARNING_BODY),
-                            static_cast<unsigned>(X3_TIMED_SLEEP_ESTIMATED_DAYS[idx]), I18N.get(intervalLabels[idx]));
-              auto warning = makeUniqueNoThrow<ConfirmationActivity>(renderer, mappedInput,
-                                                                     I18N.get(StrId::STR_X3_TIMED_WARNING_TITLE),
-                                                                     message, std::string{}, std::string{}, true);
-              if (!warning) {
-                LOG_ERR("SETTINGS", "OOM: X3 timed sleep battery confirmation");
-                return;
-              }
-              startActivityForResult(std::move(warning), [this, idx](const ActivityResult& result) {
-                if (!result.isCancelled) {
-                  SETTINGS.timedSleepScreenRefresh = static_cast<uint8_t>(idx);
-                  SETTINGS.saveToFile();
-                  rebuildSettings();
-                }
-                requestUpdate();
-              });
-              return;
-            }
-            SETTINGS.*valuePtr = idx;
-            syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
-            SETTINGS.saveToFile();
-            rebuildSettings();
-            applyUiSettingChange(valuePtr);
-          });
+      optionPopup.show(setting.nameId, enumLabels.data(), static_cast<int>(enumLabels.size()), currentValue,
+                       [this, valuePtr, sleepScreenChanged, quickResumeTimeoutChanged](int idx) {
+                         const auto board = BoardConfig::ACTIVE.board;
+                         const bool x3 =
+                             board == BoardConfig::Board::XteinkX3 || board == BoardConfig::Board::XteinkX3Uc8279;
+                         if (valuePtr == &CrossPointSettings::timedSleepScreenRefresh && x3 && idx > 0 &&
+                             idx != SETTINGS.timedSleepScreenRefresh &&
+                             idx < static_cast<int>(std::size(X3_TIMED_SLEEP_ESTIMATED_DAYS))) {
+                           const size_t index = static_cast<size_t>(idx);
+                           const auto intervalLabels = settings[selectedSettingIndex()].enumLabels();
+                           char message[256];
+                           std::snprintf(message, sizeof(message), I18N.get(StrId::STR_X3_TIMED_WARNING_BODY),
+                                         static_cast<unsigned>(X3_TIMED_SLEEP_ESTIMATED_DAYS[index]),
+                                         I18N.get(intervalLabels[index]));
+                           auto warning = makeUniqueNoThrow<ConfirmationActivity>(
+                               renderer, mappedInput, I18N.get(StrId::STR_X3_TIMED_WARNING_TITLE), message,
+                               std::string{}, std::string{}, true);
+                           if (!warning) {
+                             LOG_ERR("SETTINGS", "OOM: X3 timed sleep battery confirmation");
+                             return;
+                           }
+                           startActivityForResult(std::move(warning), [this, idx](const ActivityResult& result) {
+                             if (!result.isCancelled) {
+                               SETTINGS.timedSleepScreenRefresh = static_cast<uint8_t>(idx);
+                               SETTINGS.saveToFile();
+                               rebuildSettings();
+                             }
+                             requestUpdate();
+                           });
+                           return;
+                         }
+                         SETTINGS.*valuePtr = idx;
+                         syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
+                         SETTINGS.saveToFile();
+                         rebuildSettings();
+                         applyUiSettingChange(valuePtr);
+                       });
       requestUpdate();
       return;
     }

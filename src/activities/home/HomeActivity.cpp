@@ -381,11 +381,9 @@ void HomeActivity::onEnter() {
                        : initialMenuItem == HomeMenuItem::OPDS_BROWSER  ? (hasPlugins ? "plugins" : "opds")
                        : initialMenuItem == HomeMenuItem::FILE_TRANSFER ? "transfer"
                                                                         : "settings";
-      for (size_t i = 0; i < homeButtons.size(); ++i)
-        if (homeButtons[i].id == id) {
-          selectorIndex = base + static_cast<int>(i);
-          break;
-        }
+      const auto match =
+          std::find_if(homeButtons.begin(), homeButtons.end(), [id](const auto& button) { return button.id == id; });
+      if (match != homeButtons.end()) selectorIndex = base + static_cast<int>(match - homeButtons.begin());
     }
   }
 

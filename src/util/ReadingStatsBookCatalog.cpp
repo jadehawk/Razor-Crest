@@ -125,10 +125,19 @@ bool removeIndexedBook(const uint64_t hash) {
   }
   bool found = false, ok = true;
   for (uint32_t i = 0; i < count; ++i) {
-    BookEntry record{};
-    if (!readIndexEntry(src, i, record)) { ok = false; break; }
-    if (record.hash() == hash) { found = true; continue; }
-    if (dst.write(&record, sizeof(record)) != sizeof(record)) { ok = false; break; }
+    BookEntry entry{};
+    if (!readIndexEntry(src, i, entry)) {
+      ok = false;
+      break;
+    }
+    if (entry.hash() == hash) {
+      found = true;
+      continue;
+    }
+    if (dst.write(&entry, sizeof(entry)) != sizeof(entry)) {
+      ok = false;
+      break;
+    }
   }
   dst.flush();
   const bool dstClosed = dst.close();
