@@ -1,303 +1,40 @@
-name: Build Razor-Crest Release / Nightly
+name: Build Razor-Crest Stable Release
 
-# Public Razor-Crest firmware releases. Tags must point at a Razor-Crest commit
-# and follow: razor-crest-v<upstream-version>-r<revision>
-# Example: razor-crest-v2.0.0-r1
-# The full release workflow runs from the fork's default razor-crest branch.
+# Stable releases run on Razor-Crest tags or explicit manual requests.
 on:
   push:
     tags:
       - 'razor-crest-v*'
-  schedule:
-    - cron: '17 1 * * *'
-      timezone: America/New_York
   workflow_dispatch:
     inputs:
-      channel:
-        description: 'Firmware channel'
-        required: true
-        type: choice
-        default: stable
-        options: [stable, nightly]
       version:
-        description: 'Stable only: optional version; blank picks next base-rN'
+        description: 'Optional version; blank picks next base-rN'
         required: false
         type: string
-      force:
-        description: 'Nightly only: build even if source has not changed'
-        type: boolean
-        default: false
 
 permissions:
   contents: read
 
-# Nightly and manual releases cannot publish over each other's builds.
 concurrency:
-  group: ${{ (github.event_name == 'schedule' || inputs.channel == 'nightly') && 'razor-crest-nightly' || (github.event_name == 'push' && github.ref || 'razor-crest-manual-release') }}
+  group: ${{ github.event_name == 'push' && github.ref || 'razor-crest-manual-release' }}
   cancel-in-progress: false
 
 jobs:
-  prepare:
-    name: Validate Razor-Crest release
-    runs-on: ubuntu-latest
+  firmware:
+    name: Build and test stable firmware
+    uses: ./.github/workflows/razor-crest-build.yml
     permissions:
       contents: read
       pages: read
-    outputs:
-      version: ${{ steps.release.outputs.version }}
-      tag: ${{ steps.release.outputs.tag }}
-      base_version: ${{ steps.release.outputs.base_version }}
-      source_sha: ${{ steps.release.outputs.source_sha }}
-      channel: ${{ steps.release.outputs.channel }}
-      skip: ${{ steps.release.outputs.skip }}
-      build_matrix: ${{ steps.release.outputs.build_matrix }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          submodules: recursive
-
-      - name: Validate release source and version
-        id: release
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          DISPATCH_CHANNEL: ${{ inputs.channel }}
-          DISPATCH_VERSION: ${{ inputs.version }}
-          FORCE_NIGHTLY: ${{ inputs.force || false }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-
-          base_version="$(sed -n 's/^version = //p' platformio.ini | head -n1)"
-          if [ -z "$base_version" ]; then
-            echo 'Unable to read [crosspoint] version from platformio.ini' >&2
-            exit 1
-          fi
-
-          channel=stable
-          if [ "$EVENT_NAME" = 'schedule' ] || [ "$DISPATCH_CHANNEL" = 'nightly' ]; then
-            channel=nightly
-            pages_source="$(gh api "repos/$GITHUB_REPOSITORY/pages" --jq '.build_type' 2>/dev/null || true)"
-            if [ "$pages_source" != 'workflow' ]; then
-              echo '::error::Enable GitHub Pages with GitHub Actions as publishing source before Nightly builds.'
-              exit 1
-            fi
-            source_sha="$(git rev-parse HEAD)"
-            if [ "$FORCE_NIGHTLY" != "true" ]; then
-              feed="$(curl --silent --show-error --location --fail --max-time 15 \
-                'https://jadehawk.github.io/Razor-Crest/latest-nightly.json' || true)"
-              published="$(printf '%s' "$feed" | jq -r '.source_commit // empty' 2>/dev/null || true)"
-              if [ "$published" = "$source_sha" ]; then
-                echo "skip=true" >> "$GITHUB_OUTPUT"
-                echo "Nightly is already published for $source_sha" >> "$GITHUB_STEP_SUMMARY"
-                exit 0
-              fi
-            fi
-            version="${base_version}n-${source_sha:0:7}"
-            tag="rn-v${version}"
-          elif [ "$EVENT_NAME" = 'push' ]; then
-            tag="$GITHUB_REF_NAME"
-            version="${tag#razor-crest-v}"
-            if [ "$version" = "$tag" ]; then
-              echo "Unexpected Razor-Crest tag: $tag" >&2
-              exit 1
-            fi
-          elif [ -n "$DISPATCH_VERSION" ]; then
-            version="$DISPATCH_VERSION"
-          else
-            # Follow the firmware's current base version and numeric tag suffix.
-            prefix="refs/tags/razor-crest-v${base_version}-r"
-            latest=0
-            # Never treat a failed lookup as an empty tag list: r1 may exist.
-            tag_refs="$(git ls-remote --refs --tags origin "${prefix}*")"
-            while read -r object ref; do
-              [[ "$ref" == "$prefix"* ]] || continue
-              revision="${ref#"$prefix"}"
-              [[ "$revision" =~ ^[0-9]+$ ]] || continue
-              current=$((10#$revision))
-              if (( current > latest )); then latest="$current"; fi
-            done <<< "$tag_refs"
-            version="${base_version}-r$((latest + 1))"
-          fi
-          if [ "$channel" = 'stable' ]; then
-            if [ "$EVENT_NAME" != 'push' ]; then
-              tag="razor-crest-v${version}"
-            fi
-            escaped_base="${base_version//./\\.}"
-            if ! printf '%s\n' "$version" | grep -Eq "^${escaped_base}-r[1-9][0-9]*$"; then
-              echo "Version must match ${base_version}-rN (N >= 1); got: $version" >&2
-              exit 1
-            fi
-          fi
-
-          if ! grep -Fq '#define CROSSPOINT_FIRMWARE_ID "Razor-Crest"' src/util/FirmwareIdentity.h; then
-            echo 'This source revision does not identify itself as Razor-Crest.' >&2
-            exit 1
-          fi
-
-          source_sha="$(git rev-parse HEAD)"
-          echo "skip=false" >> "$GITHUB_OUTPUT"
-          echo "channel=$channel" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "base_version=$base_version" >> "$GITHUB_OUTPUT"
-          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
-
-          # Publish the same eight board images for Stable and Nightly.
-          # Picco uses USB app-only flashing; its stock layout cannot self-update.
-          build_matrix='[
-            {"pio_env":"gh_release","device":"x3-x4","label":"X3 / X4"},
-            {"pio_env":"sticky-gh_release","device":"sticky","label":"Seeed reTerminal Sticky"},
-            {"pio_env":"x4pro-gh_release","device":"x4pro","label":"X4 Pro"},
-            {"pio_env":"x4c-gh_release","device":"x4c","label":"X4 Classic"},
-            {"pio_env":"papermono-gh_release","device":"papermono","label":"Paper Mono"},
-            {"pio_env":"metalio_eink4-gh_release","device":"metalio-eink4","label":"MetalIO EInk4"},
-            {"pio_env":"eego_a4-gh_release","device":"eego-a4","label":"EEGO A4"},
-            {"pio_env":"picco-gh_release","device":"picco","label":"BOOX Picco"}
-          ]'
-          echo "build_matrix=$(jq -c . <<< "$build_matrix")" >> "$GITHUB_OUTPUT"
-
-          {
-            echo '## Razor-Crest release source'
-            echo "- Version: $version"
-            echo "- Upstream baseline: $base_version"
-            echo "- Tag: $tag"
-            echo "- Source: $source_sha"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  unit-tests:
-    name: Unit tests
-    needs: prepare
-    if: needs.prepare.outputs.skip != 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          submodules: recursive
-
-      - name: Install build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build
-
-      - name: Cache googletest source
-        uses: actions/cache@v4
-        with:
-          path: build/test/_deps/googletest-src
-          key: ${{ runner.os }}-googletest-${{ hashFiles('test/CMakeLists.txt') }}
-
-      - name: Configure
-        run: cmake -S test -B build/test -G Ninja -DCMAKE_BUILD_TYPE=Release
-
-      - name: Build
-        run: cmake --build build/test
-
-      - name: Run tests
-        run: ctest --test-dir build/test --output-on-failure -j
-      - name: Validate nightly feed generator
-        run: python3 test/nightly_manifest_test.py
-      - name: Validate release notes generator
-        run: python3 test/release_notes_test.py
-
-  build:
-    name: Build Razor-Crest ${{ matrix.device }}
-    needs: prepare
-    if: needs.prepare.outputs.skip != 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.prepare.outputs.build_matrix) }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          submodules: recursive
-
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.13'
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          version: latest
-          enable-cache: false
-
-      - name: Install PlatformIO Core
-        run: |
-          uv pip install --system -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip
-          uv pip install --system -U "littlefs-python>=0.16.0" "fatfs-ng>=0.1.14" "pyyaml>=6.0.2" \
-            "rich-click>=1.8.6" "zopfli>=0.2.2" "intelhex>=2.3.0" "rich>=14.0.0" "urllib3<2" \
-            "cryptography>=45.0.3" "certifi>=2025.8.3" "ecdsa>=0.19.1" "bitstring>=4.3.1" \
-            "reedsolo>=1.5.3,<1.8" "esp-idf-size>=2.0.0" "esp-coredump>=1.14.0"
-
-      - name: Cache PlatformIO packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.platformio
-          key: razor-crest-pio-${{ runner.os }}-${{ matrix.pio_env }}-${{ hashFiles('platformio.ini') }}
-          restore-keys: razor-crest-pio-${{ runner.os }}-${{ matrix.pio_env }}-
-
-      - name: Set Razor-Crest firmware version
-        env:
-          RAZOR_VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          cat > platformio.local.ini <<EOF
-          [crosspoint]
-          version = ${RAZOR_VERSION}
-          EOF
-          echo "Building Razor-Crest ${RAZOR_VERSION} for ${{ matrix.label }}"
-
-      - name: Pin pioarduino core inside the platform penv
-        run: |
-          set -euo pipefail
-          pio pkg install -e "${{ matrix.pio_env }}"
-          uv pip install --python ~/.platformio/penv/bin/python "pioarduino==6.1.19"
-          ~/.platformio/penv/bin/pio --version
-
-      - name: Build firmware
-        env:
-          RAZOR_CREST_LCP_RELEASE_KEY: ${{ secrets.RAZOR_CREST_LCP_RELEASE_KEY }}
-        run: |
-          set -euo pipefail
-          if [ -n "$RAZOR_CREST_LCP_RELEASE_KEY" ]; then
-            export PLATFORMIO_BUILD_FLAGS="-DRAZOR_CREST_LCP_RELEASE_KEY=\\\"$RAZOR_CREST_LCP_RELEASE_KEY\\\""
-          fi
-          pio run -e "${{ matrix.pio_env }}" -j1 | tee pio.log
-
-      - name: Prepare firmware asset
-        id: asset
-        env:
-          RAZOR_VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          set -euo pipefail
-          asset="razor-crest-${RAZOR_VERSION}-${{ matrix.device }}.bin"
-          cp ".pio/build/${{ matrix.pio_env }}/firmware.bin" "$asset"
-          echo "name=$asset" >> "$GITHUB_OUTPUT"
-
-          ram_line="$(grep -E 'RAM:\\s' -m1 pio.log || true)"
-          flash_line="$(grep -E 'Flash:\\s' -m1 pio.log || true)"
-          {
-            echo "## ${{ matrix.label }}"
-            if [ -n "$ram_line" ]; then echo "- ${ram_line}"; fi
-            if [ -n "$flash_line" ]; then echo "- ${flash_line}"; fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload firmware artifact
-        uses: actions/upload-artifact@v6
-        with:
-          name: ${{ steps.asset.outputs.name }}
-          path: ${{ steps.asset.outputs.name }}
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 0
+    with:
+      channel: stable
+      version: ${{ inputs.version || '' }}
+    secrets: inherit
 
   publish:
     name: Publish Razor-Crest stable release
-    needs:
-      - prepare
-      - unit-tests
-      - build
-    if: needs.prepare.outputs.channel == 'stable'
+    needs: firmware
+    if: needs.firmware.outputs.skip != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -315,10 +52,10 @@ jobs:
 
       - name: Verify assets and generate metadata
         env:
-          RAZOR_VERSION: ${{ needs.prepare.outputs.version }}
-          RAZOR_TAG: ${{ needs.prepare.outputs.tag }}
-          BASE_VERSION: ${{ needs.prepare.outputs.base_version }}
-          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+          RAZOR_VERSION: ${{ needs.firmware.outputs.version }}
+          RAZOR_TAG: ${{ needs.firmware.outputs.tag }}
+          BASE_VERSION: ${{ needs.firmware.outputs.base_version }}
+          SOURCE_SHA: ${{ needs.firmware.outputs.source_sha }}
         run: |
           set -euo pipefail
 
@@ -375,9 +112,9 @@ jobs:
       - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          RAZOR_VERSION: ${{ needs.prepare.outputs.version }}
-          RAZOR_TAG: ${{ needs.prepare.outputs.tag }}
-          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+          RAZOR_VERSION: ${{ needs.firmware.outputs.version }}
+          RAZOR_TAG: ${{ needs.firmware.outputs.tag }}
+          SOURCE_SHA: ${{ needs.firmware.outputs.source_sha }}
         run: |
           set -euo pipefail
           if gh release view "$RAZOR_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
@@ -399,109 +136,3 @@ jobs:
             dist/release-manifest.json \
             --repo "$GITHUB_REPOSITORY" \
             --clobber
-
-  publish-nightly:
-    name: Publish complete Razor-Crest Nightly
-    needs:
-      - prepare
-      - unit-tests
-      - build
-    if: needs.prepare.outputs.channel == 'nightly'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Download validated firmware artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-          pattern: razor-crest-*.bin
-          merge-multiple: true
-
-      - name: Validate all eight binaries and prepare feed
-        env:
-          BASE_VERSION: ${{ needs.prepare.outputs.base_version }}
-          RAZOR_VERSION: ${{ needs.prepare.outputs.version }}
-          RAZOR_TAG: ${{ needs.prepare.outputs.tag }}
-          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
-        run: |
-          set -euo pipefail
-          python3 scripts/nightly_manifest.py \
-            --dist dist --repository "$GITHUB_REPOSITORY" \
-            --tag "$RAZOR_TAG" --version "$RAZOR_VERSION" \
-            --commit "$SOURCE_SHA" --output dist/latest-nightly.json
-          (cd dist && sha256sum razor-crest-*.bin | sort -k2 > SHA256SUMS.txt)
-          previous="$(curl --silent --show-error --location --fail --max-time 15 \
-            'https://jadehawk.github.io/Razor-Crest/latest-nightly.json' | jq -r '.source_commit // empty' || true)"
-          python3 scripts/release_notes.py \
-            --channel nightly --version "$RAZOR_VERSION" --tag "$RAZOR_TAG" \
-            --source "$SOURCE_SHA" --repository "$GITHUB_REPOSITORY" \
-            --base-version "$BASE_VERSION" --dist dist --output release-notes.md \
-            --previous "$previous"
-          mkdir -p site
-          cp dist/latest-nightly.json site/latest-nightly.json
-          cat > site/index.html <<'HTML'
-          <!doctype html>
-          <html lang="en">
-          <head>
-            <meta charset="utf-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1">
-            <meta http-equiv="refresh" content="0;url=https://flasher.razor-crest.com/">
-            <link rel="canonical" href="https://flasher.razor-crest.com/">
-            <title>Razor-Crest Firmware Flasher</title>
-          </head>
-          <body>
-            <p>Continue to the <a href="https://flasher.razor-crest.com/">Razor-Crest Firmware Flasher</a>.</p>
-          </body>
-          </html>
-          HTML
-
-      - name: Create Razor-Crest prerelease
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RAZOR_TAG: ${{ needs.prepare.outputs.tag }}
-          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
-        run: |
-          set -euo pipefail
-          gh release create "$RAZOR_TAG" \
-            dist/razor-crest-*.bin dist/SHA256SUMS.txt dist/latest-nightly.json \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "$SOURCE_SHA" \
-            --title "Razor-Crest Nightly ${RAZOR_TAG#rn-v}" \
-            --notes-file release-notes.md \
-            --prerelease
-
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: site
-      - uses: actions/deploy-pages@v4
-        id: deploy
-
-      - name: Retire old numbering and retain seven Nightlies
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-            --jq '[.[] | select(.prerelease and (.tag_name | startswith("rn-v"))) | .tag_name] | .[]' |
-            while IFS= read -r tag; do
-              if [[ "$tag" =~ ^rn-v([0-9]+\.[0-9]+\.[0-9]+-n[0-9]{8}\.[0-9]+|RC\.[0-9]+\.[0-9]+\.[0-9]+n-[0-9a-f]{7})$ ]]; then
-                gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
-              fi
-            done
-          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-            --jq '[.[] | select(.prerelease and (.tag_name | test("^rn-v[0-9]+\\.[0-9]+\\.[0-9]+n-[0-9a-f]{7}$"))) | .tag_name][7:] | .[]' |
-            while IFS= read -r tag; do
-              [ -n "$tag" ] || continue
-              gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
-            done

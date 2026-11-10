@@ -1,0 +1,30 @@
+name: Guard Razor-Crest Release Workflows
+
+# Upstream syncs must not restore CrossPoint's publication jobs in this fork.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+  push:
+    branches:
+      - razor-crest
+    paths:
+      - '.github/workflows/**'
+
+permissions:
+  contents: read
+
+jobs:
+  check-release-workflows:
+    name: Reject obsolete CrossPoint publication workflows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Require Razor-Crest-only release automation
+        run: |
+          for workflow in release.yml release_candidate.yml; do
+            if test -e ".github/workflows/$workflow"; then
+              echo "::error::Remove .github/workflows/$workflow; Razor-Crest owns stable and nightly releases."
+              exit 1
+            fi
+          done
