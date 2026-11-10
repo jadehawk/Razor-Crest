@@ -79,6 +79,13 @@ bool requestShutdown(bool (*shouldAbort)(void*) = nullptr, void* context = nullp
 }
 }  // namespace m5pm1
 }  // namespace freeink
+struct FrontlightStub {
+  void setOn(bool on) {
+    assert(!on);
+    trace.push_back("light-off");
+  }
+  void prepareForDeepSleep() { trace.push_back("light-park"); }
+} Frontlight;
 #include "SleepSource.inc"
 
 int main() {
@@ -90,7 +97,7 @@ int main() {
   } catch (const PoweredOff&) {
   }
   assert(requested == 60000000);
-  assert((trace == std::vector<std::string>{"serial-end", "rails-off", "arm", "shutdown"}));
+  assert((trace == std::vector<std::string>{"light-off", "light-park", "serial-end", "rails-off", "arm", "shutdown"}));
   for (bool result : {false, true}) {
     trace.clear();
     removePower = false;
@@ -101,9 +108,10 @@ int main() {
     } catch (const Restarted&) {
     }
     const std::vector<std::string> expected =
-        result ? std::vector<std::string>{"serial-end", "rails-off", "arm",   "shutdown",
-                                          "settle",     "cancel",    "error", "restart"}
-               : std::vector<std::string>{"serial-end", "rails-off", "arm", "shutdown", "cancel", "error", "restart"};
+        result ? std::vector<std::string>{"light-off", "light-park", "serial-end", "rails-off", "arm",
+                                          "shutdown",  "settle",     "cancel",     "error",     "restart"}
+               : std::vector<std::string>{"light-off", "light-park", "serial-end", "rails-off", "arm",
+                                          "shutdown",  "cancel",     "error",      "restart"};
     assert(trace == expected);
   }
   trace.clear();
@@ -115,7 +123,8 @@ int main() {
     assert(false);
   } catch (const PoweredOff&) {
   }
-  assert((trace == std::vector<std::string>{"serial-end", "rails-off", "arm", "error", "cancel", "shutdown"}));
+  assert((trace == std::vector<std::string>{"light-off", "light-park", "serial-end", "rails-off", "arm", "error",
+                                            "cancel", "shutdown"}));
   trace.clear();
   cancelOk = false;
   try {
@@ -123,7 +132,8 @@ int main() {
     assert(false);
   } catch (const Restarted&) {
   }
-  assert((trace == std::vector<std::string>{"serial-end", "rails-off", "arm", "error", "cancel", "error", "restart"}));
+  assert((trace == std::vector<std::string>{"light-off", "light-park", "serial-end", "rails-off", "arm", "error",
+                                            "cancel", "error", "restart"}));
   trace.clear();
   armOk = true;
   cancelOk = true;
@@ -134,7 +144,7 @@ int main() {
   } catch (const PoweredOff&) {
   }
   assert(requested == 0);
-  assert((trace == std::vector<std::string>{"serial-end", "rails-off", "arm", "shutdown"}));
+  assert((trace == std::vector<std::string>{"light-off", "light-park", "serial-end", "rails-off", "arm", "shutdown"}));
   trace.clear();
   HalGPIO::request = HalGPIO::PowerWakeRequest::Verified;
   power.startDeepSleep(gpio, 60000000, true);
@@ -142,7 +152,7 @@ int main() {
   HalGPIO::request = HalGPIO::PowerWakeRequest::None;
   pressDuringArm = true;
   power.startDeepSleep(gpio, 60000000, true);
-  assert((trace == std::vector<std::string>{"serial-end", "rails-off", "arm", "cancel"}));
+  assert((trace == std::vector<std::string>{"light-off", "light-park", "serial-end", "rails-off", "arm", "cancel"}));
   trace.clear();
   HalGPIO::request = HalGPIO::PowerWakeRequest::None;
   pressDuringArm = false;
@@ -150,12 +160,14 @@ int main() {
   shutdownOk = false;
   pressDuringShutdown = true;
   power.startDeepSleep(gpio, 60000000, true);
-  assert((trace == std::vector<std::string>{"serial-end", "rails-off", "arm", "shutdown", "cancel"}));
+  assert((trace ==
+          std::vector<std::string>{"light-off", "light-park", "serial-end", "rails-off", "arm", "shutdown", "cancel"}));
   trace.clear();
   HalGPIO::request = HalGPIO::PowerWakeRequest::None;
   pressDuringShutdown = false;
   pressDuringSettle = true;
   removePower = true;
   power.startDeepSleep(gpio, 60000000, true);
-  assert((trace == std::vector<std::string>{"serial-end", "rails-off", "arm", "abort", "cancel"}));
+  assert((trace ==
+          std::vector<std::string>{"light-off", "light-park", "serial-end", "rails-off", "arm", "abort", "cancel"}));
 }

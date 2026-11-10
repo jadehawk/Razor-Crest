@@ -110,6 +110,13 @@ struct PowerManager {
   }
 };
 }  // namespace freeink
+struct FrontlightStub {
+  void setOn(bool on) {
+    assert(!on);
+    trace.push_back("light-off");
+  }
+  void prepareForDeepSleep() { trace.push_back("light-park"); }
+} Frontlight;
 #include "SleepSource.inc"
 
 static void reset() {
@@ -146,12 +153,12 @@ int main(int argc, char**) {
   reset();
   timerArmed = true;
   assert(sleep(0) && armCalls == 0 && clearCalls == 1 && !timerArmed && errors.empty());
-  assert(trace == std::vector<std::string>({"clear", "serial-end", "rails-down", "sleep"}));
+  assert(trace == std::vector<std::string>({"clear", "light-off", "light-park", "serial-end", "rails-down", "sleep"}));
   assert(latchWrites == (SOC_PM_SUPPORT_EXT1_WAKEUP ? 0 : 1));
   assert(SOC_PM_SUPPORT_EXT1_WAKEUP || latchLevel == LOW);
   reset();
   assert(sleep(60000000) && timerArmed && armCalls == 1 && clearCalls == 0 && errors.empty());
-  assert(trace == std::vector<std::string>({"arm", "serial-end", "rails-down", "sleep"}));
+  assert(trace == std::vector<std::string>({"arm", "light-off", "light-park", "serial-end", "rails-down", "sleep"}));
   assert(latchWrites == (SOC_PM_SUPPORT_EXT1_WAKEUP ? 0 : 1));
   assert(SOC_PM_SUPPORT_EXT1_WAKEUP || latchLevel == HIGH);
   reset();
@@ -177,7 +184,8 @@ int main(int argc, char**) {
   assert(latchWrites == (SOC_PM_SUPPORT_EXT1_WAKEUP ? 0 : 1));
   assert(SOC_PM_SUPPORT_EXT1_WAKEUP || latchLevel == LOW);
   assert(rejectedRequest());
-  assert(trace == std::vector<std::string>({"arm", "error", "clear", "serial-end", "rails-down", "sleep"}));
+  assert(trace == std::vector<std::string>(
+                      {"arm", "error", "clear", "light-off", "light-park", "serial-end", "rails-down", "sleep"}));
   reset();
   armResult = ESP_ERR_INVALID_ARG;
   clearResult = ESP_ERR_INVALID_STATE;
