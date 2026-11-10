@@ -9,7 +9,7 @@ on:
     tags:
       - 'razor-crest-v*'
   schedule:
-    - cron: '0 0 * * *'
+    - cron: '17 1 * * *'
       timezone: America/New_York
   workflow_dispatch:
     inputs:
