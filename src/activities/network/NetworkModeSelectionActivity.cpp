@@ -81,7 +81,7 @@ void NetworkModeSelectionActivity::activateIndex(const int index) {
                         ? NetworkMode::LOCAL_SEND
                         : static_cast<NetworkMode>(sourceIndex);
 
-#if FREEINK_CAP_USB_MSC && FREEINK_DEVICE_X4PRO
+#if FREEINK_CAP_USB_MSC && (FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_PICCO)
   if (mode == NetworkMode::USB_DRIVE && UITheme::getInstance().activeExternalScene()) {
     // Keep the picker on screen with the USB row selected. Draw the
     // confirmation in the same frame so there is no premature mode switch.
@@ -96,7 +96,7 @@ void NetworkModeSelectionActivity::activateIndex(const int index) {
   onModeSelected(mode);
 }
 
-#if FREEINK_CAP_USB_MSC && FREEINK_DEVICE_X4PRO
+#if FREEINK_CAP_USB_MSC && (FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_PICCO)
 bool NetworkModeSelectionActivity::handleCustomInput() {
   if (!usbConfirmation_.isActive()) return false;
   const bool handled = usbConfirmation_.handleInput(mappedInput, [this] { requestUpdate(); });
