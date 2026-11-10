@@ -630,6 +630,60 @@ class ChapterBlockDecorationTest : public ChapterHtmlSlimParserTest {
   }
 };
 
+TEST_F(ChapterBlockDecorationTest, CenteredDisplayParagraphsKeepBookAlignmentWithLeftReadingPreference) {
+  parser.paragraphAlignment = static_cast<uint8_t>(CssTextAlign::Left);
+  parser.beginParse();
+
+  open("p", "text-align: center");
+  EXPECT_EQ(parser.currentTextBlock->getBlockStyle().alignment, CssTextAlign::Center);
+  text("Book title");
+  close("p");
+
+  open("p", "text-align: justify");
+  EXPECT_EQ(parser.currentTextBlock->getBlockStyle().alignment, CssTextAlign::Left);
+  text("Story text");
+  close("p");
+
+  open("p", "text-align: right");
+  EXPECT_EQ(parser.currentTextBlock->getBlockStyle().alignment, CssTextAlign::Left);
+  text("Right-styled paragraph");
+  close("p");
+
+  open("h2", "text-align: right");
+  EXPECT_EQ(parser.currentTextBlock->getBlockStyle().alignment, CssTextAlign::Right);
+  close("h2");
+}
+
+TEST_F(ChapterBlockDecorationTest, CenteredRtlTitleDoesNotChangeTextDirectionOrBodyPreference) {
+  parser.paragraphAlignment = static_cast<uint8_t>(CssTextAlign::Left);
+  parser.beginParse();
+
+  open("p", "direction: rtl; text-align: center");
+  EXPECT_TRUE(parser.currentTextBlock->getBlockStyle().isRtl);
+  EXPECT_EQ(parser.currentTextBlock->getBlockStyle().alignment, CssTextAlign::Center);
+  text("Title");
+  close("p");
+
+  open("p", "direction: rtl; text-align: justify");
+  EXPECT_TRUE(parser.currentTextBlock->getBlockStyle().isRtl);
+  EXPECT_EQ(parser.currentTextBlock->getBlockStyle().alignment, CssTextAlign::Left);
+  close("p");
+}
+
+TEST_F(ChapterBlockDecorationTest, BookStyleAndDisabledEmbeddedStyleRetainTheirAlignmentRules) {
+  parser.paragraphAlignment = static_cast<uint8_t>(CssTextAlign::None);
+  parser.beginParse();
+  open("p", "text-align: right");
+  EXPECT_EQ(parser.currentTextBlock->getBlockStyle().alignment, CssTextAlign::Right);
+  close("p");
+
+  parser.embeddedStyle = false;
+  parser.paragraphAlignment = static_cast<uint8_t>(CssTextAlign::Left);
+  open("p", "text-align: center");
+  EXPECT_EQ(parser.currentTextBlock->getBlockStyle().alignment, CssTextAlign::Left);
+  close("p");
+}
+
 // 90% of a 25 px font spaces lines 23 px apart, less than the font's 34 px line height.
 class ChapterTightSpacingTest : public ChapterBlockDecorationTest {
  protected:
