@@ -1,0 +1,147 @@
+name: Build Razor-Crest Nightly
+
+# Primary run at 1:17 AM Eastern. Backup at 3:17 AM skips unchanged releases.
+on:
+  schedule:
+    - cron: '17 1 * * *'
+      timezone: America/New_York
+    - cron: '17 3 * * *'
+      timezone: America/New_York
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Build even if the current source is already published'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: razor-crest-nightly
+  cancel-in-progress: false
+
+jobs:
+  firmware:
+    name: Build and test nightly firmware
+    uses: ./.github/workflows/razor-crest-build.yml
+    permissions:
+      contents: read
+      pages: read
+    with:
+      channel: nightly
+      force: ${{ inputs.force || false }}
+    secrets: inherit
+
+  publish-nightly:
+    name: Publish complete Razor-Crest Nightly
+    needs: firmware
+    if: needs.firmware.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Download validated firmware artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: razor-crest-*.bin
+          merge-multiple: true
+
+      - name: Validate all eight binaries and prepare feed
+        env:
+          BASE_VERSION: ${{ needs.firmware.outputs.base_version }}
+          RAZOR_VERSION: ${{ needs.firmware.outputs.version }}
+          RAZOR_TAG: ${{ needs.firmware.outputs.tag }}
+          SOURCE_SHA: ${{ needs.firmware.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/nightly_manifest.py \
+            --dist dist --repository "$GITHUB_REPOSITORY" \
+            --tag "$RAZOR_TAG" --version "$RAZOR_VERSION" \
+            --commit "$SOURCE_SHA" --output dist/latest-nightly.json
+          (cd dist && sha256sum razor-crest-*.bin | sort -k2 > SHA256SUMS.txt)
+          previous="$(curl --silent --show-error --location --fail --max-time 15 \
+            'https://jadehawk.github.io/Razor-Crest/latest-nightly.json' | jq -r '.source_commit // empty' || true)"
+          python3 scripts/release_notes.py \
+            --channel nightly --version "$RAZOR_VERSION" --tag "$RAZOR_TAG" \
+            --source "$SOURCE_SHA" --repository "$GITHUB_REPOSITORY" \
+            --base-version "$BASE_VERSION" --dist dist --output release-notes.md \
+            --previous "$previous"
+          mkdir -p site
+          cp dist/latest-nightly.json site/latest-nightly.json
+          cat > site/index.html <<'HTML'
+          <!doctype html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <meta http-equiv="refresh" content="0;url=https://flasher.razor-crest.com/">
+            <link rel="canonical" href="https://flasher.razor-crest.com/">
+            <title>Razor-Crest Firmware Flasher</title>
+          </head>
+          <body>
+            <p>Continue to the <a href="https://flasher.razor-crest.com/">Razor-Crest Firmware Flasher</a>.</p>
+          </body>
+          </html>
+          HTML
+
+      - name: Create Razor-Crest prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RAZOR_TAG: ${{ needs.firmware.outputs.tag }}
+          SOURCE_SHA: ${{ needs.firmware.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RAZOR_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$RAZOR_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Razor-Crest Nightly ${RAZOR_TAG#rn-v}" \
+              --notes-file release-notes.md --prerelease
+            gh release upload "$RAZOR_TAG" \
+              dist/razor-crest-*.bin dist/SHA256SUMS.txt dist/latest-nightly.json \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$RAZOR_TAG" \
+              dist/razor-crest-*.bin dist/SHA256SUMS.txt dist/latest-nightly.json \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$SOURCE_SHA" \
+              --title "Razor-Crest Nightly ${RAZOR_TAG#rn-v}" \
+              --notes-file release-notes.md \
+              --prerelease
+          fi
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - uses: actions/deploy-pages@v4
+        id: deploy
+
+      - name: Retire old numbering and retain seven Nightlies
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '[.[] | select(.prerelease and (.tag_name | startswith("rn-v"))) | .tag_name] | .[]' |
+            while IFS= read -r tag; do
+              if [[ "$tag" =~ ^rn-v([0-9]+\.[0-9]+\.[0-9]+-n[0-9]{8}\.[0-9]+|RC\.[0-9]+\.[0-9]+\.[0-9]+n-[0-9a-f]{7})$ ]]; then
+                gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+              fi
+            done
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '[.[] | select(.prerelease and (.tag_name | test("^rn-v[0-9]+\\.[0-9]+\\.[0-9]+n-[0-9a-f]{7}$"))) | .tag_name][7:] | .[]' |
+            while IFS= read -r tag; do
+              [ -n "$tag" ] || continue
+              gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+            done
