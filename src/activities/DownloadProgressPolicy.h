@@ -12,10 +12,9 @@ struct Policy {
 constexpr Policy kDefault{5, 5000};
 constexpr Policy kExtensionZip{20, 15000};
 
-inline bool shouldRefresh(const int percent, const int lastShownPercent,
-                          const unsigned long elapsedSinceRefreshMs, const Policy& policy) {
-  return percent >= 100 || lastShownPercent < 0 ||
-         percent >= lastShownPercent + policy.percentStep ||
+inline bool shouldRefresh(const int percent, const int lastShownPercent, const unsigned long elapsedSinceRefreshMs,
+                          const Policy& policy) {
+  return percent >= 100 || lastShownPercent < 0 || percent >= lastShownPercent + policy.percentStep ||
          elapsedSinceRefreshMs >= policy.maxRefreshIntervalMs;
 }
 }  // namespace catalogprogress

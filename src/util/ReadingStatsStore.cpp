@@ -9,8 +9,8 @@
 #include <new>
 #include <string>
 
-#include "ReadingStatsLegacyMerge.h"
 #include "ReadingStatsBookMedia.h"
+#include "ReadingStatsLegacyMerge.h"
 
 namespace readingstats {
 namespace {

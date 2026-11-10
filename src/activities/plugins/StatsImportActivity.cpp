@@ -35,7 +35,7 @@ void StatsImportActivity::refreshRows() {
       values_[i] = "Unsupported or damaged source";
     else {
       char value[98];
-      snprintf(value, sizeof(value), "%lluh %lum, %lu sessions",
+      snprintf(value, sizeof(value), "%lluh %llum, %lu sessions",
                static_cast<unsigned long long>(preview.totals.totalSeconds / 3600),
                static_cast<unsigned long long>((preview.totals.totalSeconds / 60) % 60),
                static_cast<unsigned long>(preview.totals.sessions));

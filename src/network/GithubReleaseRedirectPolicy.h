@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <string>
 #include <string_view>
 
@@ -14,11 +15,12 @@ inline bool githubReleasePath(std::string_view url, std::string& path) {
       (url.find(".crosspoint-theme.zip") == std::string_view::npos &&
        url.find(".crosspoint-wallpaper.zip") == std::string_view::npos))
     return false;
-  for (char c : url.substr(origin.size())) {
-    if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-          (c >= '0' && c <= '9') || c == '-' || c == '_' ||
-          c == '.' || c == '/')) return false;
-  }
+  const auto suffix = url.substr(origin.size());
+  if (!std::all_of(suffix.begin(), suffix.end(), [](char c) {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+               c == '.' || c == '/';
+      }))
+    return false;
   path.assign(url.substr(origin.size()));
   return true;
 }
@@ -37,11 +39,9 @@ inline bool signedAssetUrl(std::string_view url) {
       (url.substr(0, domain1.size()) != domain1 && url.substr(0, domain2.size()) != domain2))
     return false;
   if (url.find('?') == std::string_view::npos) return false;
-  for (char c : url) {
-    if (static_cast<unsigned char>(c) < 0x20 || static_cast<unsigned char>(c) > 0x7e ||
-        c == '#' || c == '\\') return false;
-  }
-  return true;
+  return std::all_of(url.begin(), url.end(), [](char c) {
+    return static_cast<unsigned char>(c) >= 0x20 && static_cast<unsigned char>(c) <= 0x7e && c != '#' && c != '\\';
+  });
 }
 
 // Parse a header line without buffering the body or relying on a successful

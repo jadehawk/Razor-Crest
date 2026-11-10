@@ -4,7 +4,10 @@
 
 #include "../../src/util/ExtensionRequiredFiles.h"
 
-#define CHECK(test) do { if (!(test)) return __LINE__; } while (false)
+#define CHECK(test)               \
+  do {                            \
+    if (!(test)) return __LINE__; \
+  } while (false)
 
 int main() {
   using namespace extensionrequiredfiles;
@@ -17,8 +20,8 @@ int main() {
     theme.insert(theme.begin() + static_cast<std::ptrdiff_t>(i), missing);
   }
 
-  std::vector<std::string> wallpaper = {"manifest.json", "README.md", "DETAILS.md",
-                                        "wallpapers/one.bmp", "wallpapers/two.bmp"};
+  std::vector<std::string> wallpaper = {"manifest.json", "README.md", "DETAILS.md", "wallpapers/one.bmp",
+                                        "wallpapers/two.bmp"};
   CHECK(wallpaperCountMatches(wallpaper, 2));
   CHECK(!wallpaperCountMatches(wallpaper, 1));
   CHECK(!wallpaperCountMatches(wallpaper, 3));

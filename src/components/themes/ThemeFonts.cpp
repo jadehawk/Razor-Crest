@@ -29,8 +29,10 @@ void ThemeFonts::deactivate(GfxRenderer& renderer) {
 bool ThemeFonts::activate(GfxRenderer& renderer, const std::array<std::string, 4>& paths, const bool onDemandVariants) {
   // One 'ui' role shares one loaded font and glyph cache across every UI id.
   // Four explicit roles remain supported for older theme packs.
-  const bool shared = !paths[0].empty() && paths[1].empty() && paths[2].empty() && paths[3].empty();
-  if (paths[0].empty() || (!shared && (paths[1].empty() || paths[2].empty() || paths[3].empty()))) return false;
+  if (paths[0].empty()) return false;
+  const bool shared = paths[1].empty() && paths[2].empty() && paths[3].empty();
+  const bool hasVariants = !paths[1].empty() && !paths[2].empty() && !paths[3].empty();
+  if (!shared && !hasVariants) return false;
 
   std::array<std::unique_ptr<SdCardFont>, 4> loaded;
   const int sourceCount = shared ? 1 : 4;

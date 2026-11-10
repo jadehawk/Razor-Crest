@@ -69,8 +69,7 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::st
         answeredBySameOrigin = sameOrigin;
         if (extensionZip) {
           const unsigned long now = millis();
-          LOG_INF("EXT", "HTTP request %u: preceding request/redirect=%lu ms",
-                  ++attempts, now - previousAttemptStart);
+          LOG_INF("EXT", "HTTP request %u: preceding request/redirect=%lu ms", ++attempts, now - previousAttemptStart);
           previousAttemptStart = now;
         }
         applyCommonClientSetup(http);
@@ -86,9 +85,8 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::st
       sink, [cancelFlag] { return cancelFlag && *cancelFlag; });
   if (bytesOut) *bytesOut = result.bytes;
   if (extensionZip) {
-    LOG_INF("EXT", "HTTP final status=%d bytes=%u complete=%d requests=%u duration=%lu ms",
-            result.status, static_cast<unsigned>(result.bytes), result.complete, attempts,
-            millis() - fetchStart);
+    LOG_INF("EXT", "HTTP final status=%d bytes=%u complete=%d requests=%u duration=%lu ms", result.status,
+            static_cast<unsigned>(result.bytes), result.complete, attempts, millis() - fetchStart);
   }
   // FetchResult::status is -1 when no response arrived (bad URL, DNS, connect, TLS).
   g_lastStatus = result.status < 0 ? 0 : result.status;

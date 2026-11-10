@@ -2,7 +2,10 @@
 
 #include "../../src/activities/DownloadProgressPolicy.h"
 
-#define CHECK(condition) do { if (!(condition)) return __LINE__; } while (false)
+#define CHECK(condition)               \
+  do {                                 \
+    if (!(condition)) return __LINE__; \
+  } while (false)
 
 int main() {
   using namespace catalogprogress;

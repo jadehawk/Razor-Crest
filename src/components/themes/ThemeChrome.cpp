@@ -68,8 +68,8 @@ void coloredIcon(const GfxRenderer& r, const uint8_t* image, int x, int y, bool 
 }
 
 std::string uppercase(std::string input) {
-  for (char& c : input)
-    if (c >= 'a' && c <= 'z') c = c - ('a' - 'A');
+  std::transform(input.begin(), input.end(), input.begin(),
+                 [](char c) { return c >= 'a' && c <= 'z' ? c - ('a' - 'A') : c; });
   return input;
 }
 }  // namespace
