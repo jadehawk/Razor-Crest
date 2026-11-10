@@ -1,6 +1,7 @@
 #include "HalPowerManager.h"
 
 #include <BoardConfig.h>
+#include <HalFrontlight.h>
 #include <Logging.h>
 #include <PowerManager.h>
 #include <WiFi.h>
@@ -11,10 +12,6 @@
 #include <cassert>
 
 #include "HalGPIO.h"
-
-#if FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_PICCO
-#include <HalFrontlight.h>
-#endif
 
 #if FREEINK_DEVICE_PICCO
 #include <driver/gpio.h>
@@ -107,10 +104,14 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio, uint64_t timerWakeUs, bool f
     clearTimer();
   }
 #endif
-#if FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_PICCO
-  // The frontlight driver and touch share I2C; turn the light off before touch
-  // releases the bus. On Picco this also puts the TMA525C to sleep.
+  // Turn the frontlight off before GPIO isolation and park its PWM outputs at
+  // the LED's inactive level. A floating PWM pad can flash the light as sleep
+  // begins and can leave a boost-gated LED biased through deep sleep.
   Frontlight.setOn(false);
+  Frontlight.prepareForDeepSleep();
+#if FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_PICCO
+  // The frontlight driver and touch share I2C; the light is already off before
+  // touch releases the bus. On Picco this also puts the TMA525C to sleep.
   gpio.prepareForDeepSleep();
 #endif
 #ifdef ENABLE_SERIAL_LOG

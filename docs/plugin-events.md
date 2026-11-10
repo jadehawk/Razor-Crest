@@ -33,9 +33,11 @@ full folder path (root included) within 63 bytes; a plugin past either limit
 is logged and not subscribed.
 
 `sleep.enter` gets special timing: it exists to act before the chip powers
-down (a fresh sleep image, a pre-sleep progress push), so the sleep path
-actively brings WiFi up to deliver it at sleep entry instead of waiting for
-the next online session. See "sleep.enter delivery" below.
+down (a fresh sleep image, a pre-sleep progress push), so the sleep path may
+bring WiFi up at sleep entry instead of waiting for the next online session.
+Delivery is split around painting the sleep screen: downloads that write a
+sleep-screen source run first, and everything else runs after the screen is on
+the panel. See "sleep.enter delivery" below.
 
 ## The event whitelist
 
@@ -63,7 +65,7 @@ visible page as read. `end_percent` is not related to `reader.session`'s
 
 `sleep.enter` carries the reader snapshot because sleeping straight out of a
 book is the common flow, and the reader's own `reader.exit` fires after the
-sleep-time drain: binding a progress-sync handler to both events means the
+sleep-image drain: binding a progress-sync handler to both events means the
 current position is pushed on the sleep connection, not the next one.
 
 ### `reader.session` contract
@@ -140,12 +142,13 @@ One handler per event. A handler is either:
 - **`download`** — `url`, `method` (default `GET`), `headers`, `dest`. The
   response streams straight to `dest` on the SD card (1MB cap, never buffered
   in RAM). `dest` must be an absolute path without `..`. The example above
-  fetches a fresh sleep image: the sleep-entry drain runs before the sleep
-  screen renders, and the CUSTOM sleep mode reads `/sleep.bmp` first, so the
-  fetched image appears on that very sleep. Downloading a book file (`.epub`,
-  `.txt`, `.md`, `.xtc`) also marks the Library index stale, so the book
-  appears the next time the Library opens. Hidden files and folders don't
-  mark it.
+  fetches a fresh sleep image: when the current sleep mode paints the custom
+  source, its sleep-entry download runs before the sleep screen renders and the
+  CUSTOM mode reads `/sleep.bmp` first, so the fetched image appears on that
+  very sleep. A download to any other path does not affect the screen and runs
+  after it paints. Downloading a book file (`.epub`, `.txt`, `.md`, `.xtc`)
+  also marks the Library index stale, so the book appears the next time the
+  Library opens. Hidden files and folders don't mark it.
 
 Optional per handler:
 
@@ -165,7 +168,9 @@ Optional per handler:
   online. `"connect": true` opts a handler into WiFi bring-up at **sleep entry
   only**. Subscribing to `sleep.enter` sets that opt-in for you, so a
   `sleep.enter` handler never needs the key (it is still accepted, and ignored
-  as redundant). Other events must declare it explicitly.
+  as redundant). Other events must declare it explicitly. The drain still runs
+  after the sleep screen paints, unless the handler writes a sleep-screen
+  source (see "sleep.enter delivery").
 
 ## sleep.enter delivery
 
@@ -174,15 +179,29 @@ something queued, not only handlers subscribed to `sleep.enter`. So a
 `reader.session` handler that declares `"connect": true` is delivered on the same
 sleep that ends the reading turn.
 
-If WiFi is not already up, the device brings it up for the drain: with battery at
-least 20% and a saved credential for the last-connected network, it shows a
-popup, joins with a 10-second deadline, drains, and proceeds to sleep. Sleep is
+The sleep path splits the drain around painting the sleep screen:
+
+1. **Sleep-image downloads first.** A queued `download` whose `dest` is
+   `/sleep.bmp`, `/.sleep/...`, or `/sleep/...` runs only when the selected
+   sleep mode paints the custom source (not Quick Resume, a cover,
+   `COVER_CUSTOM` out of a book, or a wallpaper pack / Reading Statistics
+   screen). The device may join WiFi here and shows the "Loading" popup; the
+   sleep screen paints over it, so it cannot remain on the panel. If the sleep
+   mode does not paint the custom source, the download stays queued.
+2. **Everything else after the paint.** Requests and downloads to other paths
+   run once the sleep screen is on the panel, with no renderer: no popup or
+   toast can overwrite the retained frame. A queued `reader.exit` is part of
+   this phase. It can still take time before the chip powers down, but the
+   user already sees the sleep screen.
+
+If WiFi is not already up, the device brings it up per phase when a handler
+opted into `connect`: with battery at least 20% and a saved credential for the
+last-connected network, it joins with a 10-second deadline and drains. Sleep is
 never blocked on the network — a failed join, low battery, or a mid-drain failure
-just sleeps with the previous image, and the queued events retry on the next
-drain like any other (at-least-once; a handler whose action only made sense for
-that particular sleep should tolerate or ignore the late retry, e.g. by checking
-`{event.ts}`). Other events already queued for the same plugin (`reader.exit` and
-friends) ride along in the sleep-time drain.
+just sleeps with the image already painted, and the queued events retry on the
+next drain like any other (at-least-once; a handler whose action only made sense
+for that particular sleep should tolerate or ignore the late retry, e.g. by
+checking `{event.ts}`).
 
 Auth reuses the catalog vocabulary from the same `device.json`: `{token}` is
 read from the declared token file, and on a 401/403 a `"password"`-type auth
@@ -247,9 +266,11 @@ belongs on the service's server, keyed by the id in the sidecar.
 
 ## Delivery semantics and limits
 
-- At-least-once, in order per plugin. The drain stops at the first failed
-  delivery so a later event never overtakes an earlier one; delivered events
-  are removed, the rest wait for the next drain.
+- At-least-once, in order per plugin within one drain kind. A drain stops at
+  the first failed delivery for that plugin so a later event never overtakes
+  an earlier one; delivered events are removed, the rest wait for the next
+  drain. The sleep-entry split (sleep-image downloads before the paint,
+  everything else after it) is the one exception to cross-kind order.
 - A corrupt queue line, or a line whose event no longer has a handler, counts
   as delivered — a manifest edit cannot wedge the queue.
 - The subscription table is rebuilt at boot. A plugin installed mid-session
@@ -270,8 +291,8 @@ belongs on the service's server, keyed by the id in the sidecar.
 A sync plugin writes a service id to the sidecar when it fetches a book, and
 binds a request to `reader.session` with `"connect": true`. The user reads
 offline for a week and
-presses sleep: the device queues the event with the current percent, joins the
-saved network for a few seconds, POSTs
-the compact active-session summary to the plugin's server, shows
-"Synced", and goes to sleep. Nothing was tapped, no browser was involved, and
-the firmware contains no mention of the service.
+presses sleep: the device queues the event with the current percent, paints the
+sleep screen, then joins the saved network for a few seconds and POSTs the
+compact active-session summary to the plugin's server before the chip powers
+down. No plugin popup is drawn over the sleep image. Nothing was tapped, no
+browser was involved, and the firmware contains no mention of the service.

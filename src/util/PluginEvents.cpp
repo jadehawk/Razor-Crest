@@ -14,6 +14,7 @@
 
 #include "PluginHttp.h"
 #include "PluginLocations.h"
+#include "SleepScreenSource.h"
 #include "components/UITheme.h"
 #include "network/ProtectedPaths.h"
 
@@ -39,10 +40,11 @@ constexpr size_t MAX_EVENT_RESPONSE = 8 * 1024;
 // plugin list screen, not a marketplace.
 constexpr size_t MAX_EVENT_PLUGINS = 8;
 struct Subscriber {
-  char name[24] = {0};      // plugin folder name; "" = empty slot
-  char dir[64] = {0};       // "<root>/<name>"
-  uint8_t mask = 0;         // bit per Event
-  uint8_t connectMask = 0;  // events whose handler declares "connect": true
+  char name[24] = {0};         // plugin folder name; "" = empty slot
+  char dir[64] = {0};          // "<root>/<name>"
+  uint8_t mask = 0;            // bit per Event
+  uint8_t connectMask = 0;     // events whose handler declares "connect": true
+  uint8_t sleepImageMask = 0;  // events whose handler downloads a sleep-screen source
   // Hash of each handler's "require_meta" key, 0 = unfiltered. A hash keeps
   // emit() free of manifest reads; a collision only queues an extra event.
   uint32_t metaKeyHash[static_cast<size_t>(pluginevents::Event::COUNT)] = {};
@@ -103,6 +105,7 @@ void refreshSubscriptions() {
     if (deserializeJson(doc, raw, DeserializationOption::Filter(filter)) != DeserializationError::Ok) continue;
     uint8_t mask = 0;
     uint8_t connectMask = 0;
+    uint8_t sleepImageMask = 0;
     uint32_t metaHashes[static_cast<size_t>(Event::COUNT)] = {};
     for (JsonPairConst kv : doc["events"].as<JsonObjectConst>()) {
       const int e = eventFromName(kv.key().c_str());
@@ -118,6 +121,9 @@ void refreshSubscriptions() {
       }
       mask |= static_cast<uint8_t>(1u << e);
       if (kv.value()["connect"] | false) connectMask |= static_cast<uint8_t>(1u << e);
+      JsonVariantConst download = kv.value()["download"];
+      if (download["url"].as<const char*>() && sleepscreen::isSleepImageDestination(download["dest"] | ""))
+        sleepImageMask |= static_cast<uint8_t>(1u << e);
       const char* requiredMeta = requireMeta | "";
       if (requiredMeta[0] != '\0') metaHashes[e] = metaKeyHash(requiredMeta);
     }
@@ -132,6 +138,7 @@ void refreshSubscriptions() {
     strncpy(sub.dir, entry.dir.c_str(), sizeof(sub.dir) - 1);
     sub.mask = mask;
     sub.connectMask = connectMask;
+    sub.sleepImageMask = sleepImageMask;
     memcpy(sub.metaKeyHash, metaHashes, sizeof(metaHashes));
     LOG_DBG("PEVT", "%s subscribes mask=0x%02x", sub.name, sub.mask);
   }
@@ -151,13 +158,16 @@ uint8_t subscriptionMask(const char* plugin) {
   return 0;
 }
 
-bool wantsConnectAny() {
+bool wantsConnect(const DrainKind kind) {
   for (const auto& sub : subscribers) {
     if (sub.name[0] == '\0' || sub.connectMask == 0) continue;
     std::string raw;
     if (!Storage.readFileToString("PEVT", outboxPath(sub), MAX_OUTBOX_BYTES + MAX_EVENT_LINE, raw)) continue;
     for (size_t i = 0; i < static_cast<size_t>(Event::COUNT); i++) {
-      if (!(sub.connectMask & eventBit(static_cast<Event>(i)))) continue;
+      const uint8_t bit = eventBit(static_cast<Event>(i));
+      if (!(sub.connectMask & bit)) continue;
+      if (kind == DrainKind::SleepImage && !(sub.sleepImageMask & bit)) continue;
+      if (kind == DrainKind::Deferred && (sub.sleepImageMask & bit)) continue;
       char eventField[48];
       snprintf(eventField, sizeof(eventField), "\"e\":\"%s\"", EVENT_NAMES[i]);
       if (raw.find(eventField) != std::string::npos) return true;
@@ -328,15 +338,18 @@ std::string drainSubstituted(std::string tpl, const std::string& token, const pl
   return tpl;
 }
 
-// Replays one queued line. True = delivered (drop the line); false = transport
-// or auth failure (keep it for the next drain). A line with no matching
-// handler counts as delivered so a manifest edit can't wedge the queue.
-// `token` is shared across the drain: a 401-minted refresh persists to the
-// remaining lines instead of re-minting per line.
-bool deliverLine(const DrainManifest& mf, const std::string& lineText, std::string& token,
-                 const pluginhttp::Headers& config, GfxRenderer* renderer) {
+enum class Delivery : uint8_t { Delivered, Retry, Skipped };
+
+// Replays one queued line. Delivered = drop it; Retry = transport or auth
+// failure (keep it and stop this subscriber's run); Skipped = the handler is
+// outside the requested DrainKind (keep it untouched and continue). A line with
+// no matching handler counts as delivered so a manifest edit can't wedge the
+// queue. `token` is shared across the drain: a 401-minted refresh persists to
+// the remaining lines instead of re-minting per line.
+Delivery deliverLine(const DrainManifest& mf, const std::string& lineText, std::string& token,
+                     const pluginhttp::Headers& config, GfxRenderer* renderer, const DrainKind kind) {
   JsonDocument doc;
-  if (deserializeJson(doc, lineText) != DeserializationError::Ok) return true;  // corrupt line: drop
+  if (deserializeJson(doc, lineText) != DeserializationError::Ok) return Delivery::Delivered;  // corrupt line: drop
   const int e = eventFromName(doc["e"] | "");
   const DrainManifest::Handler* handler = nullptr;
   for (const auto& h : mf.handlers) {
@@ -345,7 +358,11 @@ bool deliverLine(const DrainManifest& mf, const std::string& lineText, std::stri
       break;
     }
   }
-  if (!handler) return true;
+  if (!handler) return Delivery::Delivered;
+
+  const bool writesSleepImage = handler->isDownload() && sleepscreen::isSleepImageDestination(handler->dest.c_str());
+  if ((kind == DrainKind::SleepImage && !writesSleepImage) || (kind == DrainKind::Deferred && writesSleepImage))
+    return Delivery::Skipped;
 
   JsonVariantConst vars = doc["vars"];
   const long long ts = doc["ts"] | 0LL;
@@ -437,17 +454,17 @@ bool deliverLine(const DrainManifest& mf, const std::string& lineText, std::stri
       status = run(token);
     }
   }
-  if (status < 200 || status >= 300) return false;
+  if (status < 200 || status >= 300) return Delivery::Retry;
 
   if (renderer && !handler->toast.empty()) {
     GUI.drawPopup(*renderer, drainSubstituted(handler->toast, token, config, meta, vars, ts, id).c_str());
   }
-  return true;
+  return Delivery::Delivered;
 }
 
 }  // namespace
 
-void drain(GfxRenderer* renderer, const size_t maxEvents) {
+void drain(GfxRenderer* renderer, const DrainKind kind, const size_t maxEvents) {
   size_t budget = maxEvents;
   for (const auto& sub : subscribers) {
     if (budget == 0) break;
@@ -475,35 +492,49 @@ void drain(GfxRenderer* renderer, const size_t maxEvents) {
     // Pre-build the substitution patterns (see drainSubstituted).
     for (auto& kv : config) kv.first = "{cfg." + kv.first + "}";
 
-    // Walk lines; stop at the first failure so order is preserved.
+    // Walk lines, keeping handlers this kind skips (and the tail after a failure
+    // or the event budget) so the next drain sees them in order. A failure
+    // still stops this subscriber so a later event never overtakes it.
+    std::string kept;
     size_t pos = 0;
     bool stalled = false;
+    bool changed = false;
     while (pos < raw.size() && budget > 0 && !stalled) {
-      size_t nl = raw.find('\n', pos);
-      if (nl == std::string::npos) nl = raw.size();
-      const std::string lineText = raw.substr(pos, nl - pos);
-      if (!lineText.empty()) {
-        if (deliverLine(mf, lineText, token, config, renderer)) {
+      const size_t nl = raw.find('\n', pos);
+      const size_t lineEnd = nl == std::string::npos ? raw.size() : nl;
+      const std::string lineText = raw.substr(pos, lineEnd - pos);
+      pos = nl == std::string::npos ? raw.size() : nl + 1;
+      if (lineText.empty()) continue;
+      switch (deliverLine(mf, lineText, token, config, renderer, kind)) {
+        case Delivery::Delivered:
           budget--;
-        } else {
+          changed = true;
+          break;
+        case Delivery::Skipped:
+          kept += lineText;
+          kept += '\n';
+          break;
+        case Delivery::Retry:
+          kept += lineText;
+          kept += '\n';
           stalled = true;
           break;
-        }
       }
-      pos = nl + 1;
     }
+    if (pos < raw.size()) kept.append(raw, pos, std::string::npos);
 
-    if (pos >= raw.size() && !stalled) {
-      Storage.remove(path.c_str());
-    } else if (pos > 0) {
-      // Rewrite the unprocessed tail so delivered events are not replayed.
-      // writeFile keeps the old outbox if the rewrite fails: replaying delivered
-      // events beats losing undelivered ones.
-      if (!Storage.writeFile(path.c_str(), String(raw.c_str() + pos))) {
+    // A split drain that only skips handlers leaves the queue untouched
+    // instead of rewriting the file.
+    if (changed) {
+      if (kept.empty()) {
+        Storage.remove(path.c_str());
+      } else if (!Storage.writeFile(path.c_str(), String(kept.c_str()))) {
+        // writeFile keeps the old outbox if the rewrite fails: replaying
+        // delivered events beats losing undelivered ones.
         LOG_ERR("PEVT", "%s: outbox rewrite failed", sub.name);
       }
     }
-    LOG_DBG("PEVT", "%s: drained (stalled=%d)", sub.name, stalled);
+    LOG_DBG("PEVT", "%s: drained (kind=%d stalled=%d)", sub.name, static_cast<int>(kind), stalled);
   }
 }
 

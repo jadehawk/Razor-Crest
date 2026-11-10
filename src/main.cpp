@@ -369,25 +369,14 @@ static bool loadSleepFrameBuffer() {
   return true;
 }
 
-// Plugin-event delivery on the way into deep sleep. sleep.enter is delivered
-// now — over the live connection, or by bringing WiFi up when a plugin
-// subscribes (e.g. fetching a fresh /sleep.bmp so THIS sleep shows it — the
-// drain runs before goToSleep() renders the sleep screen). The connect path
-// is bounded (join deadline + drain event budget), skipped on low battery,
-// and sleep is never blocked on the network: a failed join or delivery just
-// sleeps with the previous image and the queued events retry on the next
-// drain (at-least-once). The caller's WiFi shutdown tears the radio down
-// either way. Deferrable events already queued (reader.exit) ride along in
-// the same drain.
-static void deliverSleepPluginEvents(const bool allowNetwork) {
-  // Activity-owned state must be queued before sleep.enter and before this
-  // same-sleep drain. The hook is idempotent with ordinary activity teardown.
+// sleep.enter must be queued before the sleep screen replaces the reader
+// activity: the event carries the reader snapshot, and activity teardown fires
+// reader.exit later. Network delivery is split around the paint below.
+static void emitSleepPluginEvents() {
+  // Activity-owned state must be queued before sleep.enter and before the
+  // same-sleep drains. The hook is idempotent with ordinary activity teardown.
   activityManager.prepareForSleep();
 
-  // Sleeping straight out of a book is the common flow, but the reader's own
-  // reader.exit only fires later, inside goToSleep() — after this drain. Carry
-  // the book and progress on sleep.enter itself so a sync handler bound to it
-  // pushes current progress on THIS connection, not the next one.
   pluginevents::Var vars[3];
   size_t varCount = 0;
   char percent[8];
@@ -401,34 +390,59 @@ static void deliverSleepPluginEvents(const bool allowNetwork) {
     vars[varCount++] = {"end_percent", endPercent};
   }
   pluginevents::emit(pluginevents::Event::SleepEnter, vars, varCount);
-  if (!allowNetwork) return;
-  if (WiFi.status() == WL_CONNECTED) {
-    pluginevents::drain(&renderer);
-    return;
-  }
-  // Any connect-flagged queued event justifies the join, not only
-  // sleep.enter: reader.session is queued while reading and delivered on this
-  // same sleep, and a progress-sync plugin usually subscribes to it alone.
-  if (!pluginevents::wantsConnectAny()) return;
-  if (powerManager.getBatteryPercentage() < 20) return;
+}
+
+// True when this sleep paints the custom source a plugin download can replace.
+// Covers, Quick Resume, wallpaper packs and the Reading Statistics dashboard
+// never read /sleep.bmp, so a sleep-image download would be invisible.
+static bool showsPluginSleepImage(const bool quickResume) {
+  if (quickResume) return false;
+  // A selected wallpaper pack or Reading Statistics replaces the /sleep.bmp +
+  // wallpaper-pool source, so plugin images are ignored.
+  if (SETTINGS.wallpaperPackId[0] != '\0') return false;
+  return sleepscreen::showsCustomSource(SETTINGS.sleepScreen, APP_STATE.lastSleepFromReader,
+                                        /*coverFallback=*/false);
+}
+
+// Brings WiFi up for a sleep drain when a handler opted into "connect".
+// `showPopup` is only used for the pre-paint sleep-image fetch: that popup is
+// painted over by the sleep screen, so it cannot become the retained frame.
+static bool joinSleepWifi(const bool showPopup) {
+  if (powerManager.getBatteryPercentage() < 20) return false;
   // Sleep can be the first WiFi use since boot or deep-sleep wake.
   WIFI_STORE.loadFromFile();
   const auto cred = WIFI_STORE.findCredential(WIFI_STORE.getLastConnectedSsid());
-  if (!cred) return;
+  if (!cred) return false;
 
-  GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
+  if (showPopup) GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
   WiFi.mode(WIFI_STA);
   WiFi.begin(cred->ssid.c_str(), cred->password.c_str());
   const unsigned long joinDeadline = millis() + 10000;
   while (WiFi.status() != WL_CONNECTED && millis() < joinDeadline) {
     delay(100);
   }
-  if (WiFi.status() == WL_CONNECTED) {
+  return WiFi.status() == WL_CONNECTED;
+}
+
+// Runs one half of the sleep-entry drain. SleepImage must run before the sleep
+// screen paints so a fetched image appears on this sleep; Deferred runs after
+// the paint with no renderer, so plugin toasts cannot overwrite the retained
+// frame. Sleep never blocks on the network: one sleep makes at most one join
+// attempt (joinFailed), and a failure leaves the events queued for the next
+// online drain (at-least-once).
+static void drainSleepPlugins(const pluginevents::DrainKind kind, const bool showPopup, bool& joinFailed) {
+  const bool alreadyOnline = WiFi.status() == WL_CONNECTED;
+  if (!alreadyOnline && !pluginevents::wantsConnect(kind)) return;
+  if (!alreadyOnline) {
+    if (joinFailed) return;
+    if (!joinSleepWifi(showPopup)) {
+      joinFailed = true;
+      LOG_DBG("MAIN", "Sleep-event WiFi join timed out; deferring delivery");
+      return;
+    }
     trustedtime::startSync();  // snap the clock floor while the network is up
-    pluginevents::drain(&renderer);
-  } else {
-    LOG_DBG("MAIN", "Sleep-event WiFi join timed out; deferring delivery");
   }
+  pluginevents::drain(nullptr, kind);
 }
 
 uint64_t timedSleepScreenRefreshUs() {
@@ -508,12 +522,19 @@ void enterDeepSleep(bool fromTimeout = false) {
   deepSleepInProgress = true;
   const bool bluetoothStopped = bleturner::beforeSleep(2000);
   if (!bluetoothStopped) LOG_ERR("SLP", "Bluetooth did not stop; deferring sleep-event delivery");
-  deliverSleepPluginEvents(bluetoothStopped);
-
   const bool isQuickResumeSleep =
       SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::QUICK_RESUME ||
       (fromTimeout &&
        SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT);
+
+  emitSleepPluginEvents();
+  bool sleepWifiJoinFailed = false;
+  if (bluetoothStopped && showsPluginSleepImage(isQuickResumeSleep)) {
+    // Only a sleep image this mode actually paints is worth joining for; the
+    // popup is painted over by goToSleep() below.
+    drainSleepPlugins(pluginevents::DrainKind::SleepImage, /*showPopup=*/true, sleepWifiJoinFailed);
+  }
+
   // Every sleep mode leaves a complete retained frame on the e-ink panel. Keep
   // it visible until the first useful reader or home paint replaces it.
   APP_STATE.showBootScreen = false;
@@ -530,6 +551,13 @@ void enterDeepSleep(bool fromTimeout = false) {
   } else if (Storage.exists(SLEEP_FRAME_FILE)) {
     // A stale Quick Resume frame must not replace the selected sleep screen during wake.
     Storage.remove(SLEEP_FRAME_FILE);
+  }
+
+  // The sleep screen is on the panel now, so deferred plugin actions cannot
+  // disturb it: drain() gets no renderer (no toasts), and requests plus
+  // non-image downloads run here instead of delaying the paint.
+  if (bluetoothStopped) {
+    drainSleepPlugins(pluginevents::DrainKind::Deferred, /*showPopup=*/false, sleepWifiJoinFailed);
   }
 
   // Tear down WiFi so the modem power domain isn't held alive across deep sleep.
@@ -767,18 +795,6 @@ void setup() {
   trustedtime::init();
   bleturner::begin(pageturner::host, SETTINGS.ble);
 
-  // Brightness and warmth are always restored. A normal wake starts with the
-  // light off unless Restore Light on Wake is enabled; silent maintenance
-  // reboots replay the live state captured at restart, so they neither go dark
-  // nor light up against the user's wake preference. A slide switch bound to
-  // the light decides it from its position instead.
-  const bool restoreLightOn = wakeupReason == HalGPIO::WakeupReason::Timer ? false
-                              : isSilentReboot                             ? silentRebootLightOn
-                              : slideSwitchOwnsLight()
-                                  ? gpio.isToggleSwitchOn()
-                                  : (SETTINGS.frontlightOn != 0 && SETTINGS.frontlightRestoreOnWake != 0);
-  Frontlight.begin(SETTINGS.frontlightBrightness, SETTINGS.frontlightWarmth, restoreLightOn);
-
   switch (wakeupReason) {
     case HalGPIO::WakeupReason::Timer: {
       restartForTimerPower();
@@ -840,6 +856,20 @@ void setup() {
     default:
       break;
   }
+
+  // Brightness and warmth are always restored, but only once this boot is going
+  // to stay awake: a released short press that fails the wake-hold check above
+  // must not light the panel on its way back to sleep, and timer/USB
+  // maintenance boots never reach this point. A normal wake starts with the
+  // light off unless Restore Light on Wake is enabled; silent maintenance
+  // reboots replay the live state captured at restart, so they neither go dark
+  // nor light up against the user's wake preference. A slide switch bound to
+  // the light decides it from its position instead.
+  const bool restoreLightOn = isSilentReboot ? silentRebootLightOn
+                              : slideSwitchOwnsLight()
+                                  ? gpio.isToggleSwitchOn()
+                                  : (SETTINGS.frontlightOn != 0 && SETTINGS.frontlightRestoreOnWake != 0);
+  Frontlight.begin(SETTINGS.frontlightBrightness, SETTINGS.frontlightWarmth, restoreLightOn);
 
   LOG_DBG("MAIN", "Starting CrossPoint version " CROSSPOINT_VERSION);
 

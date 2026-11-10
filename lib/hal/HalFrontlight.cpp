@@ -35,3 +35,5 @@ void HalFrontlight::setOn(const bool on) {
   lit = on;
   manager.setBrightness(lit ? lastBrightness : 0);
 }
+
+void HalFrontlight::prepareForDeepSleep() { manager.prepareForDeepSleep(); }
