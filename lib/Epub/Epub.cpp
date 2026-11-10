@@ -1045,8 +1045,8 @@ bool Epub::generateThumbBmpForCover(int height, const std::string& coverImageHre
     }
     int THUMB_TARGET_WIDTH = height * 0.6;
     int THUMB_TARGET_HEIGHT = height;
-    const bool success =
-        PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(coverPng, thumbBmp, THUMB_TARGET_WIDTH, THUMB_TARGET_HEIGHT, true);
+    const bool success = PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(coverPng, thumbBmp, THUMB_TARGET_WIDTH,
+                                                                           THUMB_TARGET_HEIGHT, true);
     // Explicitly close() files before calling Storage.remove()
     coverPng.close();
     thumbBmp.close();

@@ -19,6 +19,6 @@ int main() {
     const uint32_t day = fourWeekMonday(29) + static_cast<uint32_t>(i);
     assert(mondayWeekday(day) == i % 7);
   }
-  assert(fourWeekMonday(31) == 4);  // Sunday stays in that final row.
-  assert(fourWeekMonday(32) == 11); // Next Monday advances the display week.
+  assert(fourWeekMonday(31) == 4);   // Sunday stays in that final row.
+  assert(fourWeekMonday(32) == 11);  // Next Monday advances the display week.
 }

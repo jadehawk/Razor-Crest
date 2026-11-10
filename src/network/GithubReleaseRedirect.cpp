@@ -39,9 +39,9 @@ bool resolveAssetUrl(const std::string& githubReleaseUrl, std::string& assetUrl,
     LOG_INF("EXT", "GitHub redirect preflight: TLS/connect unavailable (%lu ms)", millis() - started);
     return false;
   }
-  const std::string request =
-      "GET " + path + " HTTP/1.1\r\nHost: github.com\r\nUser-Agent: CrossPoint-ESP32-" CROSSPOINT_VERSION
-      "\r\nAccept: */*\r\nConnection: close\r\n\r\n";
+  const std::string request = "GET " + path +
+                              " HTTP/1.1\r\nHost: github.com\r\nUser-Agent: CrossPoint-ESP32-" CROSSPOINT_VERSION
+                              "\r\nAccept: */*\r\nConnection: close\r\n\r\n";
   if (client.write(reinterpret_cast<const uint8_t*>(request.data()), request.size()) != request.size()) {
     client.stop();
     return false;

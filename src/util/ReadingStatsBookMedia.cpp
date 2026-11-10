@@ -27,8 +27,7 @@ bool ensureDir() {
 }
 std::string pathFor(uint64_t hash, const char* ext) {
   char path[100];
-  snprintf(path, sizeof(path), "%s/%016llx.%s", kDir,
-           static_cast<unsigned long long>(hash), ext);
+  snprintf(path, sizeof(path), "%s/%016llx.%s", kDir, static_cast<unsigned long long>(hash), ext);
   return path;
 }
 const RecentBook* findRecent(const BookEntry& entry) {
@@ -38,8 +37,7 @@ const RecentBook* findRecent(const BookEntry& entry) {
   for (const auto& book : RECENT_BOOKS.getBooks()) {
     if (!Storage.exists(book.path.c_str())) continue;
     if (entry.path[0] && book.path == entry.path) return &book;
-    if (!entry.title[0] || book.title != entry.title ||
-        (entry.author[0] && book.author != entry.author)) continue;
+    if (!entry.title[0] || book.title != entry.title || (entry.author[0] && book.author != entry.author)) continue;
     if (found) return nullptr;  // Ambiguous title: never borrow another book's media.
     found = &book;
   }
@@ -71,8 +69,7 @@ bool validBmp(const std::string& path) {
   HalFile file;
   if (!Storage.openFileForRead("RST", path, file)) return false;
   Bitmap bitmap(file);
-  const bool valid = bitmap.parseHeaders() == BmpReaderError::Ok &&
-                     bitmap.getWidth() > 0 && bitmap.getHeight() > 0;
+  const bool valid = bitmap.parseHeaders() == BmpReaderError::Ok && bitmap.getWidth() > 0 && bitmap.getHeight() > 0;
   file.close();
   return valid;
 }
@@ -187,15 +184,13 @@ bool ensureCover(const BookEntry& entry, int height) {
     if (!book) return false;
     thumb = book->getThumbBmpPath(height);
     fallback = existingThumb(book->getCachePath());
-    if (!Storage.exists(thumb.c_str()) && !book->generateThumbBmpFromSource(height))
-      thumb = fallback;
+    if (!Storage.exists(thumb.c_str()) && !book->generateThumbBmpFromSource(height)) thumb = fallback;
   } else if (FsHelpers::hasXtcExtension(source)) {
     auto book = makeUniqueNoThrow<Xtc>(source, "/.crosspoint");
     if (!book) return false;
     thumb = book->getThumbBmpPath(height);
     fallback = existingThumb(book->getCachePath());
-    if (!Storage.exists(thumb.c_str()) && (!book->load() || !book->generateThumbBmp(height)))
-      thumb = fallback;
+    if (!Storage.exists(thumb.c_str()) && (!book->load() || !book->generateThumbBmp(height))) thumb = fallback;
   } else {
     return false;
   }

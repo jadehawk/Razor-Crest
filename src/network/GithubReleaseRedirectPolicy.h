@@ -15,9 +15,9 @@ inline bool githubReleasePath(std::string_view url, std::string& path) {
        url.find(".crosspoint-wallpaper.zip") == std::string_view::npos))
     return false;
   for (char c : url.substr(origin.size())) {
-    if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-          (c >= '0' && c <= '9') || c == '-' || c == '_' ||
-          c == '.' || c == '/')) return false;
+    if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+          c == '.' || c == '/'))
+      return false;
   }
   path.assign(url.substr(origin.size()));
   return true;
@@ -38,8 +38,8 @@ inline bool signedAssetUrl(std::string_view url) {
     return false;
   if (url.find('?') == std::string_view::npos) return false;
   for (char c : url) {
-    if (static_cast<unsigned char>(c) < 0x20 || static_cast<unsigned char>(c) > 0x7e ||
-        c == '#' || c == '\\') return false;
+    if (static_cast<unsigned char>(c) < 0x20 || static_cast<unsigned char>(c) > 0x7e || c == '#' || c == '\\')
+      return false;
   }
   return true;
 }

@@ -751,7 +751,7 @@ void SleepActivity::onEnter() {
     case (CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM):
       // Cover wins when sleeping out of a book; otherwise use the custom source.
       if (!sleepscreen::showsCustomSource(SETTINGS.sleepScreen, APP_STATE.lastSleepFromReader,
-                                         APP_STATE.lastSleepCoverFallback))
+                                          APP_STATE.lastSleepCoverFallback))
         return renderCoverSleepScreen();
       return renderCustomSleepScreen();
     default:
@@ -764,7 +764,7 @@ bool SleepActivity::renderTimedSleepScreen() const {
   // at sleep entry must survive timed refreshes; arming already skips this
   // case, so this also guards against settings/state changed between sleeps.
   if (!sleepscreen::showsCustomSource(SETTINGS.sleepScreen, APP_STATE.lastSleepFromReader,
-                                     APP_STATE.lastSleepCoverFallback))
+                                      APP_STATE.lastSleepCoverFallback))
     return false;
 
   // On a timer wake, dispatch to the selected live screen source before the

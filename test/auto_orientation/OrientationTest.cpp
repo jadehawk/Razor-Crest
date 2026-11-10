@@ -3,8 +3,8 @@
 
 #include "AutoOrientationDetector.h"
 
-static void expectStableRotation(AutoOrientationDetector& detector, float ax, float ay, float az,
-                                 uint8_t from, int8_t to, uint32_t start) {
+static void expectStableRotation(AutoOrientationDetector& detector, float ax, float ay, float az, uint8_t from,
+                                 int8_t to, uint32_t start) {
   detector.reset();
   assert(detector.update(ax, ay, az, from, start) == -1);
   assert(detector.update(ax, ay, az, from, start + AutoOrientationDetector::STABLE_MS - 1) == -1);
@@ -52,7 +52,7 @@ int main() {
   // Reading in bed: a 60-69 degree tilt must not switch to landscape, even
   // after the entire stabilization period. An intentional 71-degree turn does.
   detector.reset();
-  assert(detector.update(-0.5f, 0.8660254f, 0, 0, 11000) == -1);       // 60 degrees CW
+  assert(detector.update(-0.5f, 0.8660254f, 0, 0, 11000) == -1);  // 60 degrees CW
   assert(detector.update(-0.5f, 0.8660254f, 0, 0, 12000) == -1);
   assert(detector.update(-0.358368f, 0.933580f, 0, 0, 13000) == -1);  // 69 degrees CW
   assert(detector.update(-0.358368f, 0.933580f, 0, 0, 14000) == -1);

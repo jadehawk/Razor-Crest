@@ -437,7 +437,7 @@ uint64_t timedSleepScreenRefreshUs() {
   // In Cover + Custom only the custom-source sleeps are worth waking for: a
   // cover painted at sleep entry must stay untouched and must not cause wakes.
   if (!sleepscreen::showsCustomSource(SETTINGS.sleepScreen, APP_STATE.lastSleepFromReader,
-                                     APP_STATE.lastSleepCoverFallback))
+                                      APP_STATE.lastSleepCoverFallback))
     return 0;
   return SETTINGS.getTimedSleepScreenRefreshUs();
 }

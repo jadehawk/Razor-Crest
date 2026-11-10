@@ -54,7 +54,10 @@ struct FakeHalStorage {
   std::set<std::string> directories;
   std::string failRenameTo;
   bool exists(const char* p) const { return files.count(p) || directories.count(p); }
-  bool mkdir(const char* p) { directories.insert(p); return true; }
+  bool mkdir(const char* p) {
+    directories.insert(p);
+    return true;
+  }
   bool openFileForRead(const char*, const std::string& p, HalFile& out) {
     const auto it = files.find(p);
     if (it == files.end()) return false;
