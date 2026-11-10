@@ -3,7 +3,9 @@
 #include <GfxRenderer.h>
 #include <Logging.h>
 
+#include <algorithm>
 #include <cstring>
+#include <iterator>
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
@@ -23,9 +25,9 @@ void WallpaperCollectionActivity::onEnter() {
   choices.reserve(registry.choices().size() + 2);
   // Empty ID is the original shared /.sleep + /sleep pool.
   choices.push_back({"", "All wallpapers (/.sleep + /sleep)"});
-  if (readingstatssleep::available())
-    choices.push_back({readingstatssleep::kId, readingstatssleep::kLabel});
-  for (const auto& choice : registry.choices()) choices.push_back({choice.id, choice.label});
+  if (readingstatssleep::available()) choices.push_back({readingstatssleep::kId, readingstatssleep::kLabel});
+  std::transform(registry.choices().begin(), registry.choices().end(), std::back_inserter(choices),
+                 [](const auto& choice) { return Choice{choice.id, choice.label}; });
 
   items.clear();
   items.reserve(choices.size());

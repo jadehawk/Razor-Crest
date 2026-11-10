@@ -67,18 +67,17 @@ bool validManifest(const char* id, const std::string& base, JsonDocument& doc, b
   const char* description = doc["description"] | "";
   if (*description && strlen(description) > 180) return false;
   if (images.isNull() || files.isNull() || images.size() == 0 || images.size() > MAX_IMAGES ||
-      (files.size() != images.size() + 2 && files.size() != images.size() + 3) ||
-       files.size() > MAX_FILES || !declared(files, "manifest.json") ||
-      !declared(files, "README.md") ||
-       (files.size() == images.size() + 3 && !declared(files, "DETAILS.md")))
+      (files.size() != images.size() + 2 && files.size() != images.size() + 3) || files.size() > MAX_FILES ||
+      !declared(files, "manifest.json") || !declared(files, "README.md") ||
+      (files.size() == images.size() + 3 && !declared(files, "DETAILS.md")))
     return false;
   // Enforce a complete, explicit file list. No executable files, traversal,
   // external paths, nested collections, or arbitrary SD-file references.
   for (size_t i = 0; i < files.size(); ++i) {
     const char* path = files[i].as<const char*>();
     if (!path) return false;
-    if (!imagePath(path) && strcmp(path, "manifest.json") && strcmp(path, "README.md") &&
-        strcmp(path, "DETAILS.md")) return false;
+    if (!imagePath(path) && strcmp(path, "manifest.json") && strcmp(path, "README.md") && strcmp(path, "DETAILS.md"))
+      return false;
     for (size_t j = 0; j < i; ++j) {
       const char* prior = files[j].as<const char*>();
       if (prior && strcmp(path, prior) == 0) return false;

@@ -6,6 +6,7 @@
 #endif
 #include <Logging.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -101,9 +102,11 @@ bool importCrossInk(ImportReport& report) {
   }
   // The recent-books store is shared between CrossInk and CrossPoint, and
   // preserves the exact path needed to resolve CrossInk's hashed cache name.
-  for (const auto& book : RECENT_BOOKS.getBooks()) {
-    if (!tryCrossInkBook(book.path.c_str(), book.title.c_str(), book.author.c_str(), hasGlobal, report)) return false;
-  }
+  const auto& recentBooks = RECENT_BOOKS.getBooks();
+  if (!std::all_of(recentBooks.begin(), recentBooks.end(), [&](const auto& book) {
+        return tryCrossInkBook(book.path.c_str(), book.title.c_str(), book.author.c_str(), hasGlobal, report);
+      }))
+    return false;
   // Also revisit the native BIN index; it can contain books no longer recent.
   for (uint32_t i = 0, count = readingstats::bookCount(); i < count; ++i) {
     BookEntry book{};

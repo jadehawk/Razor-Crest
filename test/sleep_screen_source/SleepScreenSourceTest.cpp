@@ -53,8 +53,7 @@ TEST(SleepScreenSource, OtherModesNeverShowCustomSource) {
     for (const bool fromReader : {false, true}) {
       for (const bool coverFallback : {false, true}) {
         EXPECT_FALSE(sleepscreen::showsCustomSource(mode, fromReader, coverFallback))
-            << "mode=" << static_cast<int>(mode) << " fromReader=" << fromReader
-            << " coverFallback=" << coverFallback;
+            << "mode=" << static_cast<int>(mode) << " fromReader=" << fromReader << " coverFallback=" << coverFallback;
       }
     }
   }

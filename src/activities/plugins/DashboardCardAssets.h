@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -24,10 +25,8 @@ struct Icon {
 
 inline bool validIconName(std::string_view name) {
   if (name.empty() || name.size() > 32) return false;
-  for (char c : name) {
-    if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_')) return false;
-  }
-  return true;
+  return std::all_of(name.begin(), name.end(),
+                     [](char c) { return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_'; });
 }
 
 inline bool decodePbm(std::string_view source, Icon& output) {
@@ -42,10 +41,14 @@ inline bool decodePbm(std::string_view source, Icon& output) {
 
 enum class Border : uint8_t { Square, Rounded, Chamfered };
 inline bool parseBorder(std::string_view value, Border& result) {
-  if (value.empty() || value == "square") result = Border::Square;
-  else if (value == "rounded") result = Border::Rounded;
-  else if (value == "chamfered") result = Border::Chamfered;
-  else return false;
+  if (value.empty() || value == "square")
+    result = Border::Square;
+  else if (value == "rounded")
+    result = Border::Rounded;
+  else if (value == "chamfered")
+    result = Border::Chamfered;
+  else
+    return false;
   return true;
 }
 }  // namespace dashboardcards

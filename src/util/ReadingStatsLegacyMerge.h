@@ -31,7 +31,7 @@ inline bool mergeSnapshot(Snapshot& destination, const Snapshot& delta) {
   if (latest > oldDay) {
     const uint32_t advance = latest - oldDay;
     if (advance >= kHistoryDays) {
-      for (auto& value : destination.daySeconds) value = 0;
+      std::fill_n(destination.daySeconds, kHistoryDays, 0u);
     } else {
       for (uint32_t i = 1; i <= advance; ++i) destination.daySeconds[(oldDay + i) % kHistoryDays] = 0;
     }

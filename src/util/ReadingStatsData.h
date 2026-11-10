@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 
@@ -51,7 +52,7 @@ struct Snapshot {
     } else if (localDay > latestDay) {
       const uint32_t advance = localDay - latestDay;
       if (advance >= kHistoryDays) {
-        for (auto& day : daySeconds) day = 0;
+        std::fill_n(daySeconds, kHistoryDays, 0u);
       } else {
         for (uint32_t i = 1; i <= advance; ++i) daySeconds[(latestDay + i) % kHistoryDays] = 0;
       }

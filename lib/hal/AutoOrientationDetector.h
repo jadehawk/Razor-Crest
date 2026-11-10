@@ -25,8 +25,8 @@ class AutoOrientationDetector {
     const float magnitudeSquared = ax * ax + ay * ay + az * az;
     const float dominant = x > y ? x : y;
     const float minor = x > y ? y : x;
-    if (magnitudeSquared < 0.64f || magnitudeSquared > 1.69f || z > 0.75f ||
-        dominant < 0.6f || dominant < MIN_AXIS_DOMINANCE * minor) {
+    if (magnitudeSquared < 0.64f || magnitudeSquared > 1.69f || z > 0.75f || dominant < 0.6f ||
+        dominant < MIN_AXIS_DOMINANCE * minor) {
       reset();
       return -1;
     }
