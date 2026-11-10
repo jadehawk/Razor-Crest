@@ -90,6 +90,13 @@ if (parsedSize != fileSize) {
 
 ## `section.bin`
 
+### Version 74
+
+Version 74 keeps the binary layout unchanged but rebuilds completed and partial
+sections. Explicitly centered EPUB paragraphs now retain their alignment when
+the reader uses a different paragraph alignment. Book metadata and saved reading
+progress are preserved.
+
 ### Version 73
 
 Version 73 keeps the binary layout and rebuilds completed and partial sections.

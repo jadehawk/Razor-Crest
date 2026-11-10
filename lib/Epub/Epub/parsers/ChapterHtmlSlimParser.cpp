@@ -2121,6 +2121,10 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       }
       self->currentCssStyle = cssStyle;
       auto blockStyle = userAlignmentBlockStyle;
+      // Preserve explicitly centered display text while the reader controls body alignment.
+      if (self->embeddedStyle && cssStyle.hasTextAlign() && cssStyle.textAlign == CssTextAlign::Center) {
+        blockStyle.alignment = CssTextAlign::Center;
+      }
       self->applyBlockFontScale(blockStyle, cssStyle, name);
       self->openBoxScope(blockStyle, cssStyle);
       const auto accumulated =
