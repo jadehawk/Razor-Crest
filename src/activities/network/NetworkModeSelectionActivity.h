@@ -3,7 +3,7 @@
 #include <BoardConfig.h>
 
 #include "activities/UiListActivity.h"
-#if FREEINK_CAP_USB_MSC && FREEINK_DEVICE_X4PRO
+#if FREEINK_CAP_USB_MSC && (FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_PICCO)
 #include "components/OptionPopup.h"
 #endif
 
@@ -44,7 +44,7 @@ class NetworkModeSelectionActivity final : public UiListActivity {
   void activateIndex(int index) override;
   void onBackButton() override { onCancel(); }
   const char* headerTitle() const override;
-#if FREEINK_CAP_USB_MSC && FREEINK_DEVICE_X4PRO
+#if FREEINK_CAP_USB_MSC && (FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_PICCO)
   bool handleCustomInput() override;
   void renderOverlay() override;
   OptionPopup usbConfirmation_;
