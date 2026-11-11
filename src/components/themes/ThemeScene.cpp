@@ -654,6 +654,12 @@ bool ThemeScene::selectSleepGrayscalePath(std::string& path) const {
 }
 
 bool ThemeScene::hasRegion(const Region region) const { return !regions[static_cast<size_t>(region)].empty(); }
+
+bool ThemeScene::headerBackgroundBlack() const {
+  for (const auto& op : regions[static_cast<size_t>(Region::Header)])
+    if (op.kind == Kind::Fill) return op.black;
+  return false;
+}
 bool ThemeScene::hasNativeCoverCard() const {
   for (const auto& op : regions[static_cast<size_t>(Region::Home)])
     if (op.kind == Kind::BookCard && op.data == "@native-cover") return true;
@@ -768,12 +774,17 @@ bool ThemeScene::draw(const GfxRenderer& renderer, Region region, Rect area, con
         text = "";
       else if (!op.source.empty())
         text = "0%";
-      const int font = op.font == "display" && renderer.getFontMap().count(ThemeFonts::DISPLAY_ID)
-                           ? ThemeFonts::DISPLAY_ID
-                       : op.font == "display"  ? UI_12_FONT_ID
-                       : op.font == "ui_small" ? SMALL_FONT_ID
-                       : op.font == "ui_bold"  ? UI_12_FONT_ID
-                                               : UI_10_FONT_ID;
+      int font = op.font == "display" && renderer.getFontMap().count(ThemeFonts::DISPLAY_ID) ? ThemeFonts::DISPLAY_ID
+                 : op.font == "display"                                                      ? UI_12_FONT_ID
+                 : op.font == "ui_small"                                                     ? SMALL_FONT_ID
+                 : op.font == "ui_bold"                                                      ? UI_12_FONT_ID
+                                                                                             : UI_10_FONT_ID;
+      // Short theme headers, especially X3 Home, keep the title inside the
+      // remaining band rather than clipping a large UI font or moving content.
+      if (region == Region::Header && op.source == "screen_title" && renderer.getLineHeight(font) > area.height) {
+        font = renderer.getLineHeight(UI_10_FONT_ID) <= area.height ? UI_10_FONT_ID : SMALL_FONT_ID;
+        if (renderer.getLineHeight(font) > area.height) continue;
+      }
       const auto style = op.font == "ui_bold" ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
       int limit = std::max(1, op.maxWidth > 0 ? std::min(area.width, op.maxWidth) : area.width - 24);
       // The optional arrow shifts the heading right; keep battery/status

@@ -32,9 +32,13 @@ void catalogScreenHeader(UiAppHost::UiScreen& screen, const GfxRenderer& rendere
       action.action = trailingAction;
       action.styles = fui::plainStyles(fui::Paint::solid(fui::Color::White));
       action.minTouchSize = screen.theme().minTouchSize;
+      const int top = BaseTheme::headerStatusTopY(renderer) + BaseTheme::HEADER_STATUS_HEIGHT;
+      const int height = std::max(1, metrics.topPadding + metrics.headerHeight - top);
+      const int size = std::min(48, height);
       fui::button(screen.frame(),
                   fui::Rect{static_cast<int16_t>(renderer.getScreenWidth() - 164),
-                            static_cast<int16_t>(metrics.topPadding + (metrics.headerHeight - 48) / 2), 48, 48},
+                            static_cast<int16_t>(top + (height - size) / 2), static_cast<int16_t>(size),
+                            static_cast<int16_t>(size)},
                   action);
     }
     screen.setContentMarginFromScreen(

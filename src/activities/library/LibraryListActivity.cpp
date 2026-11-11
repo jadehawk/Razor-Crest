@@ -984,14 +984,18 @@ void LibraryListActivity::buildHeader(UiScreen& screen) {
       fui::ButtonProps action;
       action.styles = fui::plainStyles(fui::Paint::solid(fui::Color::White));
       action.minTouchSize = screen.theme().minTouchSize;
-      const int16_t y = static_cast<int16_t>(metrics.topPadding + (metrics.headerHeight - 48) / 2);
+      const int top = BaseTheme::headerStatusTopY(renderer) + BaseTheme::HEADER_STATUS_HEIGHT;
+      const int height = std::max(1, metrics.topPadding + metrics.headerHeight - top);
+      const int16_t size = static_cast<int16_t>(std::min(48, height));
+      const int16_t y = static_cast<int16_t>(top + (height - size) / 2);
       action.icon = fui::bitmapFromIcon(icon_search_32);
       action.action = ACTION_SEARCH;
-      fui::button(screen.frame(), fui::Rect{static_cast<int16_t>(renderer.getScreenWidth() - 164), y, 48, 48}, action);
+      fui::button(screen.frame(), fui::Rect{static_cast<int16_t>(renderer.getScreenWidth() - 164), y, size, size},
+                  action);
       if (mappedInput.hasTouch()) {
         action.icon = fui::bitmapFromIcon(icon_refresh_cw_32);
         action.action = ACTION_REBUILD;
-        fui::button(screen.frame(), fui::Rect{static_cast<int16_t>(renderer.getScreenWidth() - 220), y, 48, 48},
+        fui::button(screen.frame(), fui::Rect{static_cast<int16_t>(renderer.getScreenWidth() - 220), y, size, size},
                     action);
       }
     }

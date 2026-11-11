@@ -22,6 +22,7 @@ class ThemeScene {
             const std::vector<RecentBook>* recentBooks = nullptr, int selectorIndex = 0,
             Phase phase = Phase::Full) const;
   bool hasRegion(Region region) const;
+  bool headerBackgroundBlack() const;
   // Native full-size book-card scene (one visual slot regardless of recent count).
   bool hasNativeCoverCard() const;
   int bookCarouselRailWidth() const { return carouselRailWidth; }

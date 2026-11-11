@@ -59,11 +59,11 @@ struct ThemeMetrics {
   int headerUnderlineSize;  // bottom rule thickness (Lyra), 0 = none
   int headerTitleAlign;     // 0 = left, 1 = center, 2 = right (fui::TextAlign order)
   int headerBatterySide;    // 0 = right edge, 1 = left edge
-  // Header clock opt-out for themes whose title layout can't spare the left
-  // reserve (RoundedRaff); the user setting still governs the themes that can.
+  // Legacy SD metrics retained for manifest compatibility. Header clock
+  // visibility and placement are firmware-owned, not theme-owned.
   bool headerShowsClock = true;
-  // Clock slot: centered on the band, or on the left after the back arrow.
-  bool headerClockCentered = true;
+  // Ignored: the clock stays in the top-left corner until a user setting exists.
+  bool headerClockCentered = false;
   int menuRowHeight;
   int menuSpacing;
 
@@ -278,8 +278,12 @@ class BaseTheme {
   // applyHeaderStatus.
   static freeink::ui::Rect headerBand(const GfxRenderer& renderer, freeink::ui::Rect rect,
                                       freeink::ui::HeaderProps& props);
-  // Edge inset drawHeader uses for the clock/battery status line (detached
-  // layouts hug the corner with a legacy 12px inset instead of the padding).
+  // Shared clock/battery positioning copied from Lyra (all themes),
+  // without changing the header or content height.
+  static constexpr int HEADER_STATUS_TOP = 10;
+  static constexpr int HEADER_STATUS_HEIGHT = 20;
+  static constexpr int HEADER_STATUS_EDGE_INSET = 22;
+  static int headerStatusTopY(const GfxRenderer& renderer);
   static int headerStatusInset();
   virtual void drawSubHeader(const GfxRenderer& renderer, Rect rect, const char* label,
                              const char* rightLabel = nullptr) const;

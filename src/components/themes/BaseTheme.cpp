@@ -322,10 +322,15 @@ void BaseTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* top
   }
 }
 
-// Slightly inside the side padding: the battery's boxed glyph and the clock
-// digits read wider than text/cover ink on the same line, so flush placement
-// looks like it overhangs the content columns.
-int BaseTheme::headerStatusInset() { return UITheme::getInstance().getMetrics().headerSidePadding + 4; }
+// Preserve the status coordinates Lyra uses, regardless of theme artwork.
+// Respect the board's visible top edge and firmware header offset.
+int BaseTheme::headerStatusTopY(const GfxRenderer& renderer) {
+  int top, right, bottom, left;
+  renderer.getOrientedViewableTRBL(&top, &right, &bottom, &left);
+  return std::max(HEADER_STATUS_TOP, top) + BoardConfig::ACTIVE.headerOffsetY;
+}
+
+int BaseTheme::headerStatusInset() { return HEADER_STATUS_EDGE_INSET; }
 
 void BaseTheme::applyHeaderStatus(const GfxRenderer& renderer, freeink::ui::HeaderProps& props) {
   const ThemeMetrics& metrics = UITheme::getInstance().getMetrics();
@@ -347,15 +352,14 @@ void BaseTheme::applyHeaderStatus(const GfxRenderer& renderer, freeink::ui::Head
     snprintf(percentText, sizeof(percentText), "%u%%", static_cast<unsigned>(percentage));
     status.battery.label = percentText;
   }
-  status.battery.glyphWidth = static_cast<int16_t>(metrics.batteryWidth);
-  status.battery.glyphHeight = static_cast<int16_t>(metrics.batteryHeight);
+  status.battery.glyphWidth = 16;
+  status.battery.glyphHeight = 12;
   status.battery.gap = batteryPercentSpacing;
-  status.batteryLeft = metrics.headerBatterySide == 1;
+  status.batteryLeft = false;
   status.edgeInset = static_cast<int16_t>(headerStatusInset());
 
-  // Header chrome geometry. Status lives on the theme's thin top strip in
-  // fixed corners — battery top-right, a corner clock (headerClockCentered =
-  // false) top-left, a centered clock top-center — and never repositions.
+  // Header chrome geometry uses Lyra's fixed status strip: battery top-right,
+  // clock top-left. Themes cannot reposition either indicator.
   // The content row (title, back arrow, trailing action buttons) centers on
   // the region between the strip and the band bottom, so its padding reads
   // as balanced under the status line rather than against the full band.
@@ -365,7 +369,7 @@ void BaseTheme::applyHeaderStatus(const GfxRenderer& renderer, freeink::ui::Head
   // the boxes are invisible and minTouchSize pads the tap target.
   constexpr int16_t headerButtonSize = 48;
   const int16_t bandHeight = static_cast<int16_t>(metrics.headerHeight);
-  const int16_t strip = static_cast<int16_t>(metrics.batteryBarHeight);
+  const int16_t strip = HEADER_STATUS_HEIGHT;
   const int titleFontId = uiScaleSpec().titleFontId;
   const int16_t opticalDrop =
       static_cast<int16_t>((renderer.getLineHeight(titleFontId) - renderer.getTextHeight(titleFontId)) / 2);
@@ -379,13 +383,11 @@ void BaseTheme::applyHeaderStatus(const GfxRenderer& renderer, freeink::ui::Head
   // half as far as the buttons; the second half keeps the title on their line.
   props.titleOffsetY = static_cast<int16_t>(strip / 2 + BoardConfig::ACTIVE.headerOffsetY / 2);
   status.stripHeight = strip;
-  status.clockCentered = metrics.headerClockCentered;
+  status.clockCentered = false;
 
-  // Header clock, opposite the battery, on every screen that draws this band
-  // (SETTINGS.clockShowInHeader). Themes whose title layout has no room for
-  // the clock's left reserve opt out via headerShowsClock.
+  // The user's setting alone controls the clock; themes cannot hide or center it.
   static char clockText[10];
-  if (metrics.headerShowsClock && SETTINGS.clockShowInHeader && halClock.isAvailable() &&
+  if (SETTINGS.clockShowInHeader && halClock.isAvailable() &&
       halClock.formatTime(clockText, sizeof(clockText), SETTINGS.clockFormat == 1)) {
     status.clockText = clockText;
   }
@@ -397,9 +399,12 @@ freeink::ui::Rect BaseTheme::headerBand(const GfxRenderer& renderer, const freei
   renderer.getOrientedViewableTRBL(&top, &right, &bottom, &left);
   const auto l = static_cast<int16_t>(left);
   const auto r = static_cast<int16_t>(right);
-  const int16_t offset = BoardConfig::ACTIVE.headerOffsetY;
+  // Move the top edge to Lyra's status clearance without moving the header's
+  // bottom edge or changing the available content area below it.
+  const int16_t shift =
+      static_cast<int16_t>(std::max(HEADER_STATUS_TOP, top) - UITheme::getInstance().getMetrics().topPadding);
+  const int16_t offset = static_cast<int16_t>(BoardConfig::ACTIVE.headerOffsetY + shift);
   props.bleed = freeink::ui::Insets{0, r, 0, l};
-  // Only the status line sits up in the rounded corners; it alone gets their clearance.
   const int corner = BoardConfig::ACTIVE.cornerRadius;
   props.status.edgeInset = static_cast<int16_t>(props.status.edgeInset + std::max(0, corner - std::min(left, right)));
   return freeink::ui::Rect{static_cast<int16_t>(rect.x + l), static_cast<int16_t>(rect.y + offset),
@@ -407,24 +412,41 @@ freeink::ui::Rect BaseTheme::headerBand(const GfxRenderer& renderer, const freei
 }
 
 bool BaseTheme::drawExternalHeaderScene(const GfxRenderer& renderer, Rect area, const char* title, bool backButton) {
-  if (!UITheme::getInstance().renderExternalScene(ThemeScene::Region::Header, renderer, area,
-                                                  title ? title : I18N.get(StrId::STR_HOME_SHORTCUT), nullptr,
-                                                  backButton && gpio.hasTouch() ? 1 : 0))
+  namespace fui = freeink::ui;
+  const ThemeScene* scene = UITheme::getInstance().activeExternalScene();
+  if (!scene || !scene->hasRegion(ThemeScene::Region::Header)) return false;
+
+  // The theme keeps its existing header height, but artwork is confined below
+  // Lyra's firmware-owned clock/battery strip. This also moves touch Back art.
+  const int statusTop = headerStatusTopY(renderer);
+  const int contentTop = statusTop + HEADER_STATUS_HEIGHT;
+  const int headerBottom = area.y + area.height;
+  if (headerBottom <= contentTop) return false;
+  const bool dark = scene->headerBackgroundBlack();
+  renderer.fillRect(area.x, area.y, area.width, contentTop - area.y, dark);
+  if (!UITheme::getInstance().renderExternalScene(
+          ThemeScene::Region::Header, renderer, Rect{area.x, contentTop, area.width, headerBottom - contentTop},
+          title ? title : I18N.get(StrId::STR_HOME_SHORTCUT), nullptr, backButton && gpio.hasTouch() ? 1 : 0))
     return false;
-  const int bx = area.x + area.width - 40;
-  const int middle = area.y + area.height / 2;
-  const int by = middle - 6;
-  renderer.drawRect(bx, by, 20, 11, false);
-  renderer.fillRect(bx + 20, by + 3, 2, 5, false);
-  const int filled = std::clamp(static_cast<int>(powerManager.getBatteryPercentage()) / 25, 0, 4);
-  for (int i = 0; i < filled; ++i) renderer.fillRect(bx + 2 + i * 4, by + 2, 3, 7, false);
-  if (SETTINGS.hideBatteryPercentage != CrossPointSettings::HIDE_BATTERY_PERCENTAGE::HIDE_ALWAYS) {
-    char percent[8];
-    snprintf(percent, sizeof(percent), "%u%%", static_cast<unsigned>(powerManager.getBatteryPercentage()));
-    const int width = renderer.getTextWidth(SMALL_FONT_ID, percent);
-    renderer.drawText(SMALL_FONT_ID, bx - 8 - width, middle - renderer.getLineHeight(SMALL_FONT_ID) / 2, percent,
-                      false);
-  }
+
+  // Reuse the stock FreeInkUI status compositor, including its charging icon,
+  // battery percentage policy, RTC clock and bezel insets. Only ink color
+  // follows the theme's black/white header background.
+  const auto spec = uiScaleSpec();
+  fui::GfxRendererFrame<1> ui(renderer, spec.smallFontId, spec.bodyFontId, spec.titleFontId);
+  ui.target.setFont(fui::GfxRendererTarget::FONT_LABEL, SMALL_FONT_ID);
+  fui::HeaderProps props;
+  applyHeaderStatus(renderer, props);
+  props.styles = fui::plainStyles();  // Preserve the scene's painted backdrop.
+  props.status.battery.color = dark ? fui::Color::White : fui::Color::Black;
+  props.status.battery.text.color = props.status.battery.color;
+  const ThemeMetrics& metrics = UITheme::getInstance().getMetrics();
+  const fui::Rect band =
+      headerBand(renderer,
+                 fui::Rect{static_cast<int16_t>(area.x), static_cast<int16_t>(metrics.topPadding),
+                           static_cast<int16_t>(area.width), static_cast<int16_t>(metrics.headerHeight)},
+                 props);
+  fui::header(ui.frame, fui::Rect{band.x, band.y, band.width, HEADER_STATUS_HEIGHT}, props);
   return true;
 }
 
