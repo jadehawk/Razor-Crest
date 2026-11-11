@@ -41,7 +41,7 @@ int HomeActivity::getMenuItemCount() const {
   if (!recentBooks.empty()) {
     count += recentBooks.size();
   }
-  if (hasLibrarySlot()) {
+  if (slotItem() != HomeMenuItem::NONE) {
     count++;
   }
   return count;
@@ -370,14 +370,19 @@ void HomeActivity::onEnter() {
   if (coverGridUi) {
     fillCoverGridFromLibrary();
     resolveGridCoverPaths();
-    coverGridUi->begin(recentBooks, hasLibrarySlot(), hasContinueReading);
+    const HomeMenuItem slot = slotItem();
+    coverGridUi->begin(recentBooks,
+                       slot == HomeMenuItem::PLUGINS        ? CoverGridHomeUi::SlotTab::PLUGINS
+                       : slot == HomeMenuItem::OPDS_BROWSER ? CoverGridHomeUi::SlotTab::OPDS
+                                                            : CoverGridHomeUi::SlotTab::NONE,
+                       hasContinueReading);
   }
 
   const auto base = recentSlots();
   selectorIndex = 0;
   if (initialMenuItem != HomeMenuItem::NONE) {
     if (coverGridUi)
-      selectorIndex = base + menuItemToIndex(initialMenuItem, hasLibrarySlot());
+      selectorIndex = base + menuItemToIndex(initialMenuItem, slotItem());
     else {
       const char* id = initialMenuItem == HomeMenuItem::FILE_BROWSER    ? "browse"
                        : initialMenuItem == HomeMenuItem::LIBRARY       ? "library"
@@ -478,15 +483,18 @@ void HomeActivity::loop() {
       }
       return;
     }
-    switch (indexToMenuItem(menuIndex, hasLibrarySlot())) {
+    switch (indexToMenuItem(menuIndex, slotItem())) {
       case HomeMenuItem::FILE_BROWSER:
         onFileBrowserOpen();
         break;
       case HomeMenuItem::LIBRARY:
         onLibraryOpen();
         break;
-      case HomeMenuItem::OPDS_BROWSER:  // the library slot
-        hasPlugins ? onPluginsOpen() : onOpdsBrowserOpen();
+      case HomeMenuItem::PLUGINS:
+        onPluginsOpen();
+        break;
+      case HomeMenuItem::OPDS_BROWSER:
+        onOpdsBrowserOpen();
         break;
       case HomeMenuItem::FILE_TRANSFER:
         onFileTransferOpen();
@@ -822,4 +830,4 @@ void HomeActivity::onFileTransferOpen() { activityManager.goToFileTransfer(); }
 
 void HomeActivity::onOpdsBrowserOpen() { activityManager.goToBrowser(); }
 
-void HomeActivity::onPluginsOpen() { activityManager.goToPlugins(hasOpdsServers); }
+void HomeActivity::onPluginsOpen() { activityManager.goToPlugins(); }

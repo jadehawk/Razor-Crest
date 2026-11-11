@@ -875,10 +875,8 @@ std::string PluginCatalogActivity::downloadDir() const {
 }
 
 PluginCatalogActivity::PluginCatalogActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                             const bool showOpds, const bool rootMode)
-    : CatalogActivity("PluginCatalog", renderer, mappedInput, /*wantsTouchLongPress=*/true),
-      showOpds(showOpds),
-      rootMode(rootMode) {}
+                                             const bool rootMode)
+    : CatalogActivity("PluginCatalog", renderer, mappedInput, /*wantsTouchLongPress=*/true), rootMode(rootMode) {}
 
 PluginCatalogActivity::~PluginCatalogActivity() = default;
 
@@ -899,18 +897,18 @@ int PluginCatalogActivity::pinnedPluginCount() const {
 }
 
 int PluginCatalogActivity::pluginPickerStart() const {
-  const int prefix = (showOpds ? 1 : 0) + (showPluginHubInstallRow ? 1 : 0);
+  const int prefix = showPluginHubInstallRow ? 1 : 0;
   const int pinned = pinnedPluginCount();
   return prefix + pinned + (static_cast<int>(installedPlugins.size()) > pinned ? 1 : 0);
 }
 
 int PluginCatalogActivity::pickerRowForPlugin(const int index) const {
-  const int prefix = (showOpds ? 1 : 0) + (showPluginHubInstallRow ? 1 : 0);
+  const int prefix = showPluginHubInstallRow ? 1 : 0;
   return index < pinnedPluginCount() ? prefix + index : pluginPickerStart() + index - pinnedPluginCount();
 }
 
 int PluginCatalogActivity::pickerPluginForRow(const int row) const {
-  const int prefix = (showOpds ? 1 : 0) + (showPluginHubInstallRow ? 1 : 0);
+  const int prefix = showPluginHubInstallRow ? 1 : 0;
   const int pinned = pinnedPluginCount();
   if (row >= prefix && row < prefix + pinned) return row - prefix;
   if (row < pluginPickerStart() || row >= extensionPickerStart()) return -1;
@@ -4677,13 +4675,7 @@ void PluginCatalogActivity::activateIndex(const int index) {
   }
   if (state == State::PLUGIN_PICKER) {
     if (index < 0 || index >= rowCount()) return;
-    if (showOpds && index == 0) {
-      app.clearTapFlash();            // the row leaves this screen
-      activityManager.goToBrowser();  // replaces this screen with the OPDS browser
-      return;
-    }
-    const int pluginStart = showOpds ? 1 : 0;
-    if (showPluginHubInstallRow && index == pluginStart) {
+    if (showPluginHubInstallRow && index == 0) {
       static constexpr StrId OPTIONS[] = {StrId::STR_INSTALL, StrId::STR_HIDE, StrId::STR_CANCEL};
       pluginHubPopup.show(StrId::STR_PLUGIN_HUB, OPTIONS, 3, 0, [this](const int selected) {
         if (selected == 0) {
@@ -5497,10 +5489,9 @@ void PluginCatalogActivity::rebuildRowItems() {
     addRow(tr(STR_PLUGIN_CACHE_CLEAR), nullptr, ">");
   };
   if (state == State::PLUGIN_PICKER) {
-    if (showOpds) addRow(tr(STR_OPDS_BROWSER), tr(STR_OPDS_SERVERS));
     if (showPluginHubInstallRow) addRow(tr(STR_PLUGIN_HUB), tr(STR_PLUGIN_HUB_DESCRIPTION), ">");
     const auto addPluginRow = [&](const PluginRef& plugin) {
-      // Keep Plugin Hub pinned above the Plugins divider alongside OPDS.
+      // Keep Plugin Hub pinned above the Plugins divider.
       const char* subtitle = plugin.description.empty() ? nullptr : plugin.description.c_str();
       const char* version = plugin.version.empty() ? nullptr : plugin.version.c_str();
       switch (plugin.deviceKind) {

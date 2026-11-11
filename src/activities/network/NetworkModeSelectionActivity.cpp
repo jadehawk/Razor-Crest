@@ -13,78 +13,59 @@
 namespace fui = freeink::ui;
 
 namespace {
-constexpr StrId menuItems[NetworkModeSelectionActivity::MENU_ITEM_COUNT] = {
-    StrId::STR_JOIN_NETWORK,   StrId::STR_CALIBRE_WIRELESS, StrId::STR_CREATE_HOTSPOT,
-#if FREEINK_CAP_USB_MSC
-    StrId::STR_USB_DRIVE,
-#endif
+struct ModeRow {
+  NetworkMode mode;
+  StrId label;
+  StrId desc;
+  UIIcon icon;
+};
+
+// Present LocalSend directly after Join Network when its plugin is available.
+// Explicit modes avoid coupling selection indices to enum values.
+constexpr ModeRow MODE_ROWS[] = {
+    {NetworkMode::JOIN_NETWORK, StrId::STR_JOIN_NETWORK, StrId::STR_JOIN_DESC, UIIcon::Wifi},
 #if defined(CROSSPOINT_LOCALSEND) && CROSSPOINT_LOCALSEND
-    StrId::STR_LOCALSEND_MENU,
+    {NetworkMode::LOCAL_SEND, StrId::STR_LOCALSEND_MENU, StrId::STR_LOCALSEND_MENU_DESC, UIIcon::Wifi},
+#endif
+    {NetworkMode::CONNECT_CALIBRE, StrId::STR_CALIBRE_WIRELESS, StrId::STR_CALIBRE_DESC, UIIcon::Library},
+    {NetworkMode::CREATE_HOTSPOT, StrId::STR_CREATE_HOTSPOT, StrId::STR_HOTSPOT_DESC, UIIcon::Hotspot},
+    {NetworkMode::OPDS_BROWSER, StrId::STR_OPDS_BROWSER, StrId::STR_OPDS_DESC, UIIcon::Book},
+#if FREEINK_CAP_USB_MSC
+    {NetworkMode::USB_DRIVE, StrId::STR_USB_DRIVE, StrId::STR_USB_DRIVE_DESC, UIIcon::Usb},
 #endif
 };
-constexpr StrId menuDescs[NetworkModeSelectionActivity::MENU_ITEM_COUNT] = {
-    StrId::STR_JOIN_DESC,           StrId::STR_CALIBRE_DESC, StrId::STR_HOTSPOT_DESC,
-#if FREEINK_CAP_USB_MSC
-    StrId::STR_USB_DRIVE_DESC,
-#endif
-#if defined(CROSSPOINT_LOCALSEND) && CROSSPOINT_LOCALSEND
-    StrId::STR_LOCALSEND_MENU_DESC,
-#endif
-};
-constexpr UIIcon menuIcons[NetworkModeSelectionActivity::MENU_ITEM_COUNT] = {
-    UIIcon::Wifi, UIIcon::Library, UIIcon::Hotspot,
-#if FREEINK_CAP_USB_MSC
-    UIIcon::Usb,
-#endif
-#if defined(CROSSPOINT_LOCALSEND) && CROSSPOINT_LOCALSEND
-    UIIcon::Wifi,
-#endif
-};
+static_assert(sizeof(MODE_ROWS) / sizeof(MODE_ROWS[0]) == NetworkModeSelectionActivity::MAX_ITEM_COUNT);
 }  // namespace
 
 NetworkModeSelectionActivity::NetworkModeSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
     : UiListActivity("NetworkModeSelection", renderer, mappedInput) {
+  for (const ModeRow& row : MODE_ROWS) {
 #if defined(CROSSPOINT_LOCALSEND) && CROSSPOINT_LOCALSEND
-  if (!LocalSendPluginActivity::isAvailable()) visibleItems_ = BASE_MENU_ITEM_COUNT;
-#endif
-  for (int i = 0; i < visibleItems_; i++) {
-    // Display Local Send directly after Join Network, without changing the
-    // underlying NetworkMode values or the existing menus when unavailable.
-    int sourceIndex = i;
-#if defined(CROSSPOINT_LOCALSEND) && CROSSPOINT_LOCALSEND
-    if (visibleItems_ == MENU_ITEM_COUNT && i > 0) sourceIndex = i == 1 ? BASE_MENU_ITEM_COUNT : i - 1;
+    if (row.mode == NetworkMode::LOCAL_SEND && !LocalSendPluginActivity::isAvailable()) continue;
 #endif
     fui::ListItem item;
-    item.label = I18N.get(menuItems[sourceIndex]);
-    item.subtitle = I18N.get(menuDescs[sourceIndex]);
-    item.icon = listIconFor(menuIcons[sourceIndex], 32);  // subtitle rows carry the larger icon
-    item.actionValue = static_cast<int16_t>(i);
-    rowItems_[i] = item;
+    item.label = I18N.get(row.label);
+    item.subtitle = I18N.get(row.desc);
+    item.icon = listIconFor(row.icon, 32);
+    item.actionValue = static_cast<int16_t>(rowCount_);
+    rowModes_[rowCount_] = row.mode;
+    rowItems_[rowCount_++] = item;
   }
 }
 
-int NetworkModeSelectionActivity::listCount() const { return visibleItems_; }
+int NetworkModeSelectionActivity::listCount() const { return rowCount_; }
 
 const char* NetworkModeSelectionActivity::headerTitle() const { return tr(STR_FILE_TRANSFER); }
 
 void NetworkModeSelectionActivity::activateIndex(const int index) {
-  if (index < 0 || index >= visibleItems_) return;
-  // Clear transient tap flash; keep the USB row selected behind the popup.
-  // Selection focus is retained by nav.selected until confirmation.
+  if (index < 0 || index >= rowCount_) return;
+  // Keep the current row selected behind the USB confirmation popup.
   app.clearTapFlash();
   nav.selected = index;
-  int sourceIndex = index;
-#if defined(CROSSPOINT_LOCALSEND) && CROSSPOINT_LOCALSEND
-  if (visibleItems_ == MENU_ITEM_COUNT && index > 0) sourceIndex = index == 1 ? BASE_MENU_ITEM_COUNT : index - 1;
-#endif
-  const auto mode = sourceIndex == BASE_MENU_ITEM_COUNT && visibleItems_ > BASE_MENU_ITEM_COUNT
-                        ? NetworkMode::LOCAL_SEND
-                        : static_cast<NetworkMode>(sourceIndex);
+  const NetworkMode mode = rowModes_[index];
 
 #if FREEINK_CAP_USB_MSC && (FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_PICCO)
   if (mode == NetworkMode::USB_DRIVE && UITheme::getInstance().activeExternalScene()) {
-    // Keep the picker on screen with the USB row selected. Draw the
-    // confirmation in the same frame so there is no premature mode switch.
     usbConfirmed_ = false;
     const char* choices[] = {I18N.get(StrId::STR_CANCEL), I18N.get(StrId::STR_CONFIRM)};
     usbConfirmation_.showMessage(I18N.get(StrId::STR_USB_DRIVE), I18N.get(StrId::STR_USB_DRIVE_CONNECT_DELAY), choices,
@@ -126,7 +107,7 @@ void NetworkModeSelectionActivity::buildScreen(UiScreen& screen) {
   // repaint.
   fui::ListProps props;
   props.items = rowItems_;
-  props.count = static_cast<uint16_t>(visibleItems_);
+  props.count = static_cast<uint16_t>(rowCount_);
   props.action = ACTION_ROW;
   props.inputMask = fui::InputTouch;  // physical buttons stay in loop()
   props.subtitleText = screen.theme().smallText;

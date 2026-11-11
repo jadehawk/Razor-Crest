@@ -7,13 +7,17 @@
 #include "components/OptionPopup.h"
 #endif
 
-enum class NetworkMode { JOIN_NETWORK, CONNECT_CALIBRE, CREATE_HOTSPOT, USB_DRIVE, LOCAL_SEND };
+enum class NetworkMode { JOIN_NETWORK, CONNECT_CALIBRE, CREATE_HOTSPOT, USB_DRIVE, LOCAL_SEND, OPDS_BROWSER };
 
 /**
  * NetworkModeSelectionActivity presents the user with a choice:
  * - "Join a Network" - Connect to an existing WiFi network (STA mode)
- * - "Connect to Calibre" - Use Calibre wireless device transfers
+ * - "Calibre Wireless" - Use Calibre wireless device transfers
  * - "Create Hotspot" - Create an Access Point that others can connect to (AP mode)
+ * - "OPDS Browser" - Browse OPDS catalogs, or add a server when none is configured.
+ *   Always accessible here; a customized Home screen may also offer a shortcut.
+ * - "USB Drive" - Expose the SD card over USB (boards with USB mass storage)
+ * - "Local Send" - Receive files when the optional LocalSend plugin is available.
  *
  * The onModeSelected callback is called with the user's choice.
  * The onCancel callback is called if the user presses back.
@@ -30,9 +34,9 @@ class NetworkModeSelectionActivity final : public UiListActivity {
   static constexpr int BASE_MENU_ITEM_COUNT = 3;
 #endif
 #if defined(CROSSPOINT_LOCALSEND) && CROSSPOINT_LOCALSEND
-  static constexpr int MENU_ITEM_COUNT = BASE_MENU_ITEM_COUNT + 1;
+  static constexpr int MAX_ITEM_COUNT = BASE_MENU_ITEM_COUNT + 2;
 #else
-  static constexpr int MENU_ITEM_COUNT = BASE_MENU_ITEM_COUNT;
+  static constexpr int MAX_ITEM_COUNT = BASE_MENU_ITEM_COUNT + 1;
 #endif
 
   void onModeSelected(NetworkMode mode);
@@ -51,9 +55,9 @@ class NetworkModeSelectionActivity final : public UiListActivity {
   bool usbConfirmed_ = false;
 #endif
 
-  // Row storage: entirely static (label/subtitle/icon never change), so it's
-  // built once in the constructor instead of every buildScreen() call, into
-  // fixed-capacity storage that avoids any heap allocation for the row list.
-  freeink::ui::ListItem rowItems_[MENU_ITEM_COUNT]{};
-  int visibleItems_ = MENU_ITEM_COUNT;
+  // Built once in the constructor. Explicit row-to-mode mapping keeps
+  // LocalSend and OPDS independent of their display positions.
+  freeink::ui::ListItem rowItems_[MAX_ITEM_COUNT]{};
+  NetworkMode rowModes_[MAX_ITEM_COUNT]{};
+  int rowCount_ = 0;
 };
