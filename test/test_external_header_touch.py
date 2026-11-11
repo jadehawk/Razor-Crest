@@ -17,8 +17,14 @@ scene = base.split("bool BaseTheme::drawExternalHeaderScene(", 1)[1].split("void
 header = base.split("void BaseTheme::drawHeader(", 1)[1].split("namespace fui = freeink::ui;", 1)[0]
 
 # No device-type gate: both touch and non-touch use the same scene and status.
-assert "renderExternalScene(ThemeScene::Region::Header" in scene
-assert "renderer.drawText(SMALL_FONT_ID" in scene
+assert re.search(r"renderExternalScene\(\s*ThemeScene::Region::Header", scene)
+assert "fui::header(ui.frame" in scene
+assert "applyHeaderStatus(renderer, props);" in scene
+assert "props.status.battery.text.color = props.status.battery.color;" in scene
+assert "Rect{area.x, contentTop, area.width, headerBottom - contentTop}" in scene
+assert "const int contentTop = statusTop + HEADER_STATUS_HEIGHT;" in scene
+assert 'renderer.getLineHeight(font) > area.height' in read('src/components/themes/ThemeScene.cpp')
+assert 'font = renderer.getLineHeight(UI_10_FONT_ID) <= area.height ? UI_10_FONT_ID : SMALL_FONT_ID;' in read('src/components/themes/ThemeScene.cpp')
 assert "drawExternalHeaderScene(renderer, sceneArea, title, backButton)" in header
 assert "backButton && gpio.hasTouch() ? 1 : 0" in scene
 scene_renderer = read("src/components/themes/ThemeScene.cpp")
@@ -28,6 +34,40 @@ assert "if (gpio.hasTouch() && backButton && title)" in header
 assert "HeaderBackTapTarget::set(0, 0, 58, sceneArea.height)" in header
 assert "HeaderBackTapTarget::clear();" in header
 assert "(!gpio.hasTouch() || !backButton)" not in header
+
+# All built-ins and SD themes retain Lyra's top/side status clearance.
+metrics_header = read("src/components/themes/BaseTheme.h")
+assert "HEADER_STATUS_TOP = 10;" in metrics_header
+assert "HEADER_STATUS_HEIGHT = 20;" in metrics_header
+assert "HEADER_STATUS_EDGE_INSET = 22;" in metrics_header
+assert "status.batteryLeft = false;" in base
+assert "status.clockCentered = false;" in base
+assert "if (SETTINGS.clockShowInHeader &&" in base
+assert "metrics.headerShowsClock &&" not in base
+assert "std::max(HEADER_STATUS_TOP, top)" in base
+assert "static_cast<int16_t>(rect.height - offset)" in base
+assert "renderer.fillRect(area.x, area.y, area.width, contentTop - area.y, dark);" in scene
+assert "props.status.battery.color = dark ? fui::Color::White : fui::Color::Black;" in scene
+
+# Native trailing actions fit below the status strip without adding any height.
+assert "BaseTheme::headerStatusTopY(renderer) + BaseTheme::HEADER_STATUS_HEIGHT" in catalog
+assert "BaseTheme::headerStatusTopY(renderer) + BaseTheme::HEADER_STATUS_HEIGHT" in library
+
+# RoundedRaff uses the same native status row even with a null Home title.
+rounded = read("src/components/themes/roundedraff/RoundedRaffTheme.cpp")
+rounded_header = rounded.split("void RoundedRaffTheme::drawHeader(", 1)[1].split(
+    "void RoundedRaffTheme::drawRecentBookCover(", 1
+)[0]
+assert "BaseTheme::drawHeader(renderer, rect, title, subtitle, backButton);" in rounded_header
+assert "if (title == nullptr)" not in rounded_header
+
+# Bottom edges remain unchanged; nothing pushes X3 content down.
+for theme_top, normal_height, home_bottom in [(5, 84, 40), (10, 84, 56),
+                                               (13, 84, 64), (0, 62, 56),
+                                               (0, 76, 76)]:
+    status_y = max(10, 0)
+    assert theme_top + normal_height > status_y + 20
+    assert home_bottom > status_y + 20
 
 # The Home header still has no Back hit target.
 assert re.search(
