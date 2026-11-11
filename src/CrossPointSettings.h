@@ -186,7 +186,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     PWR_BOOKMARK = 7,
     PWR_SYNC = 8,
     PWR_READER_MENU = 9,
-    PWR_DICTIONARY = 10,
+    PWR_DICTIONARY = 10,  // Keep existing Razor-Crest persisted value stable.
+    PWR_FRONTLIGHT = 11,  // Separate upstream shortcut from Dictionary.
     SHORT_PWRBTN_COUNT
   };
 
@@ -320,9 +321,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t textAntiAliasing = 1;
   // Short power button click behaviour
   uint8_t shortPwrBtn = IGNORE;
-  // X4 Pro: double-click power toggles the frontlight. Disabling frees the
-  // power button for shortPwrBtn actions without the double-click wait.
-  uint8_t doubleClickPwrLight = 1;
+  // X4 Pro double click; Ignore disables the single-click delay.
+  uint8_t doublePwrBtn = PWR_FRONTLIGHT;
   uint8_t homeButtonTapAction = static_cast<uint8_t>(HomeButtonAction::Home);
   uint8_t homeButtonDoubleTapAction = static_cast<uint8_t>(HomeButtonAction::ToggleFrontlight);
   uint8_t homeButtonLongPressAction = static_cast<uint8_t>(HomeButtonAction::ReaderMenu);

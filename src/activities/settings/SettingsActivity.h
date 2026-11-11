@@ -34,6 +34,10 @@ enum class SettingAction {
   HomeButton,
   HomeMenuButtons,
   ContinueReading,
+  ControlsPower,
+  ControlsFront,
+  ControlsSide,
+  ControlsTouch,
   About,
   ExpandLibrary,
   ExpandConnectivity,
@@ -187,10 +191,13 @@ struct SettingInfo {
   }
 };
 
+enum class ControlsGroup : uint8_t { Root, Power, Front, Side, Touch };
+
 // The rows of one SettingsSection; activating a row toggles/cycles it, opens
 // its option popup, or launches its sub-screen.
 class SettingsActivity final : public UiTabListActivity {
   SettingsSection section;
+  const ControlsGroup controlsGroup;
   const bool tabbed;
   uint8_t expandedSystemGroups = 0;  // Library and Connectivity accordion bits.
   std::vector<SettingInfo> settings;
@@ -237,7 +244,8 @@ class SettingsActivity final : public UiTabListActivity {
   void drawFooter() override;
 
  public:
-  SettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, SettingsSection section);
+  SettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, SettingsSection section,
+                   ControlsGroup controlsGroup = ControlsGroup::Root);
   void onEnter() override;
   void render(RenderLock&& lock) override;
 };

@@ -71,7 +71,8 @@ bool showOnDevice(const SettingInfo& setting) {
   // Merged into the Text Settings screen.
   if (setting.category == StrId::STR_CAT_READER && setting.inTextSettings) return false;
   if (setting.valuePtr == &CrossPointSettings::pwrBtnFootnoteBack &&
-      SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::FOOTNOTES) {
+      SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::FOOTNOTES &&
+      !(BoardConfig::isX4Pro() && SETTINGS.doublePwrBtn == CrossPointSettings::FOOTNOTES)) {
     return false;
   }
   return true;
@@ -91,6 +92,34 @@ SettingsSection sectionFor(const SettingInfo& setting) {
   if (setting.category == StrId::STR_CAT_CONTROLS) return SettingsSection::Controls;
   if (setting.category == StrId::STR_CAT_SYSTEM) return SettingsSection::General;
   return SettingsSection::End;
+}
+
+// The shared long-press setting deliberately appears in both button groups.
+bool belongsToControlsGroup(const SettingInfo& setting, ControlsGroup group) {
+  const auto field = setting.valuePtr;
+  const bool power =
+      setting.key && (std::strcmp(setting.key, "shortPwrBtn") == 0 || std::strcmp(setting.key, "doublePwrBtn") == 0);
+  const bool menu = setting.key && std::strcmp(setting.key, "longPressMenuFunction") == 0;
+  const bool shared = field == &CrossPointSettings::longPressButtonBehavior;
+  switch (group) {
+    case ControlsGroup::Power:
+      return power || field == &CrossPointSettings::pwrBtnFootnoteBack;
+    case ControlsGroup::Front:
+      return shared || menu || field == &CrossPointSettings::frontButtonFollowOrientation ||
+             field == &CrossPointSettings::backShortToFileBrowser;
+    case ControlsGroup::Side:
+      return shared || field == &CrossPointSettings::sideButtonLayout ||
+             field == &CrossPointSettings::sideButtonFollowOrientation;
+    case ControlsGroup::Touch:
+      return field == &CrossPointSettings::touchReaderControls || field == &CrossPointSettings::pageTurnGesture ||
+             field == &CrossPointSettings::previousPageGesture || field == &CrossPointSettings::showReaderMenu;
+    case ControlsGroup::Root:
+      return !belongsToControlsGroup(setting, ControlsGroup::Power) &&
+             !belongsToControlsGroup(setting, ControlsGroup::Front) &&
+             !belongsToControlsGroup(setting, ControlsGroup::Side) &&
+             !belongsToControlsGroup(setting, ControlsGroup::Touch);
+  }
+  return false;
 }
 
 // Device-only action rows added per section, beyond the shared list.
@@ -168,9 +197,11 @@ void SettingsActivity::rebuildSettings() {
     wallpapers.reconcileSelection();
   }
 
-  const size_t count = std::count_if(all.begin(), all.end(), [this](const SettingInfo& setting) {
-    return sectionFor(setting) == section && showOnDevice(setting);
-  });
+  const auto include = [this](const SettingInfo& setting) {
+    return sectionFor(setting) == section && showOnDevice(setting) &&
+           (section != SettingsSection::Controls || belongsToControlsGroup(setting, controlsGroup));
+  };
+  const size_t count = std::count_if(all.begin(), all.end(), include);
   // Reserve only visible rows on X3, not every setting in collapsed groups.
   size_t subgroupRows = 0;
   if (tabbed && section == SettingsSection::General) {
@@ -201,21 +232,52 @@ void SettingsActivity::rebuildSettings() {
   addAction(SettingsSection::Reader, StrId::STR_MANAGE_FONTS, SettingAction::DownloadFonts);
   addAction(SettingsSection::Display, StrId::STR_HOME_MENU_BUTTONS, SettingAction::HomeMenuButtons);
   addAction(SettingsSection::Display, StrId::STR_CONTINUE_READING, SettingAction::ContinueReading);
-  if (BoardConfig::hasHomeKey()) {
-    addAction(SettingsSection::Controls, StrId::STR_HOME_BUTTON, SettingAction::HomeButton);
-  }
-  if (!BoardConfig::hasTouch()) {
-    addAction(SettingsSection::Controls, StrId::STR_REMAP_FRONT_BUTTONS, SettingAction::RemapFrontButtons);
+  if (section == SettingsSection::Controls) {
+    if (controlsGroup == ControlsGroup::Root) {
+      if (BoardConfig::hasHomeKey()) {
+        addAction(section, StrId::STR_HOME_BUTTON, SettingAction::HomeButton);
+      }
+      const auto addGroup = [&](ControlsGroup group, StrId title, SettingAction action) {
+        if (std::any_of(all.begin(), all.end(),
+                        [&](const SettingInfo& setting) {
+                          return sectionFor(setting) == section && showOnDevice(setting) &&
+                                 belongsToControlsGroup(setting, group);
+                        }) ||
+            (group == ControlsGroup::Front && !BoardConfig::hasTouch())) {
+          addAction(section, title, action);
+        }
+      };
+      addGroup(ControlsGroup::Power, StrId::STR_POWER_BUTTON, SettingAction::ControlsPower);
+      if (!BoardConfig::hasTouch()) {
+        addGroup(ControlsGroup::Front, StrId::STR_FRONT_BUTTONS, SettingAction::ControlsFront);
+      }
+      addGroup(ControlsGroup::Side, StrId::STR_SIDE_BUTTONS, SettingAction::ControlsSide);
+      addGroup(ControlsGroup::Touch, StrId::STR_TAPS_AND_GESTURES, SettingAction::ControlsTouch);
+    } else if (controlsGroup == ControlsGroup::Front && !BoardConfig::hasTouch()) {
+      addAction(section, StrId::STR_REMAP_FRONT_BUTTONS, SettingAction::RemapFrontButtons);
+    }
   }
 
   for (auto& setting : all) {
-    if (sectionFor(setting) != section || !showOnDevice(setting)) continue;
+    if (!include(setting)) continue;
+    if (section == SettingsSection::Controls && setting.valuePtr == &CrossPointSettings::longPressButtonBehavior) {
+      setting.nameId = StrId::STR_PAGE_TURN_LONG_PRESS;
+    }
     const bool sleepScreenRow = setting.valuePtr == &CrossPointSettings::sleepScreen;
     settings.push_back(std::move(setting));
     // Custom and Cover + Custom use the independent wallpaper pack registry.
     // Keep its picker adjacent to Sleep Screen, never at the foot of Display.
     if (section == SettingsSection::Display && sleepScreenRow && sleepscreen::usesCustomSource(SETTINGS.sleepScreen)) {
       settings.push_back(SettingInfo::Action(StrId::STR_SLEEP_SCREEN, SettingAction::WallpaperCollection));
+    }
+  }
+
+  if (section == SettingsSection::Controls && controlsGroup == ControlsGroup::Front) {
+    for (const char* key : {"longPressButtonBehavior", "longPressMenuFunction"}) {
+      const auto row = std::find_if(settings.begin(), settings.end(), [key](const SettingInfo& setting) {
+        return setting.key && std::strcmp(setting.key, key) == 0;
+      });
+      if (row != settings.end()) std::rotate(row, row + 1, settings.end());
     }
   }
 
@@ -268,10 +330,11 @@ void SettingsActivity::rebuildSettings() {
 }
 
 SettingsActivity::SettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                   const SettingsSection section)
+                                   const SettingsSection section, const ControlsGroup controlsGroup)
     : UiTabListActivity("Settings", renderer, mappedInput),
       section(section),
-      tabbed(UITheme::getInstance().useTabbedSettings()) {
+      controlsGroup(controlsGroup),
+      tabbed(controlsGroup == ControlsGroup::Root && UITheme::getInstance().useTabbedSettings()) {
   if (tabbed && (section == SettingsSection::Library || section == SettingsSection::Network)) {
     expandedSystemGroups = section == SettingsSection::Library ? 1 : 2;
     this->section = SettingsSection::General;
@@ -374,6 +437,18 @@ void SettingsActivity::rebuildRowItems() {
 }
 
 const char* SettingsActivity::headerTitle() const {
+  switch (controlsGroup) {
+    case ControlsGroup::Power:
+      return tr(STR_POWER_BUTTON);
+    case ControlsGroup::Front:
+      return tr(STR_FRONT_BUTTONS);
+    case ControlsGroup::Side:
+      return tr(STR_SIDE_BUTTONS);
+    case ControlsGroup::Touch:
+      return tr(STR_TAPS_AND_GESTURES);
+    case ControlsGroup::Root:
+      break;
+  }
   return I18N.get(SETTINGS_SECTION_TITLES[static_cast<size_t>(section)]);
 }
 
@@ -550,6 +625,36 @@ void SettingsActivity::toggleSelectedSetting() {
       case SettingAction::HomeMenuButtons: {
         auto activity = makeUniqueNoThrow<HomeMenuButtonsActivity>(renderer, mappedInput);
         if (activity) startActivityForResult(std::move(activity), [this](const ActivityResult&) { requestUpdate(); });
+        return;
+      }
+      case SettingAction::ControlsPower:
+      case SettingAction::ControlsFront:
+      case SettingAction::ControlsSide:
+      case SettingAction::ControlsTouch: {
+        ControlsGroup group = ControlsGroup::Root;
+        switch (setting.action) {
+          case SettingAction::ControlsPower:
+            group = ControlsGroup::Power;
+            break;
+          case SettingAction::ControlsFront:
+            group = ControlsGroup::Front;
+            break;
+          case SettingAction::ControlsSide:
+            group = ControlsGroup::Side;
+            break;
+          case SettingAction::ControlsTouch:
+            group = ControlsGroup::Touch;
+            break;
+          default:
+            break;  // Only the four group actions reach this branch.
+        }
+        // The activity stack owns the child until Back returns to this menu.
+        auto activity = makeUniqueNoThrow<SettingsActivity>(renderer, mappedInput, SettingsSection::Controls, group);
+        if (!activity) {
+          LOG_ERR("SET", "OOM: Controls settings (%u bytes)", static_cast<unsigned>(sizeof(SettingsActivity)));
+          return;
+        }
+        startActivityForResult(std::move(activity), [this](const ActivityResult&) { requestUpdate(); });
         return;
       }
       case SettingAction::HomeButton: {

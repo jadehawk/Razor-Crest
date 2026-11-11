@@ -90,12 +90,20 @@ if (parsedSize != fileSize) {
 
 ## `section.bin`
 
+### Version 75
+
+Version 75 keeps the binary layout but rebuilds completed and partial sections
+because Razor-Crest and upstream independently used version 74 for distinct
+layout corrections: preserving explicitly centered EPUB paragraphs regardless
+of reader alignment, and deferring runtime TrueType advance rounding until
+final pixel placement. Bitmap fonts and `.cpfont` files are unchanged.
+Book metadata and saved reading progress are preserved.
+
 ### Version 74
 
-Version 74 keeps the binary layout unchanged but rebuilds completed and partial
-sections. Explicitly centered EPUB paragraphs now retain their alignment when
-the reader uses a different paragraph alignment. Book metadata and saved reading
-progress are preserved.
+Prior Razor-Crest version 74 addressed centered EPUB paragraph alignment.
+Upstream version 74 addressed TrueType glyph-advance rounding. Version 75
+invalidates either version 74 cache so both fixes apply together.
 
 ### Version 73
 
