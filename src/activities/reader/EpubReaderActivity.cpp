@@ -1364,6 +1364,8 @@ unsigned long EpubReaderActivity::confirmLongPressThreshold() const {
 }
 
 bool EpubReaderActivity::launchKOReaderSync() {
+  const uint32_t sessionSeconds = readerSession.trackedSeconds();
+  const uint32_t sessionTurns = readerSession.qualifiedTurns();
   flushReaderSession();
 
   // Without a KOReader server the sync activity only brings the device online
@@ -1417,8 +1419,9 @@ bool EpubReaderActivity::launchKOReaderSync() {
   }
   LOG_DBG("KOSync", "Epub released (heap after: %u)", (unsigned)ESP.getFreeHeap());
 
-  activityManager.replaceActivity(std::make_unique<KOReaderSyncActivity>(
-      renderer, mappedInput, savedEpubPath, localPos, std::move(localKoPos), std::move(localChapterName)));
+  activityManager.replaceActivity(
+      std::make_unique<KOReaderSyncActivity>(renderer, mappedInput, savedEpubPath, localPos, std::move(localKoPos),
+                                             std::move(localChapterName), false, sessionSeconds, sessionTurns));
   return true;
 }
 

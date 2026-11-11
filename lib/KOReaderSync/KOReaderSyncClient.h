@@ -52,6 +52,7 @@ struct KOReaderProgress {
   std::string device;                            // Device name
   std::string deviceId;                          // Device ID
   int64_t timestamp;                             // Unix timestamp of last update
+  std::optional<uint32_t> readingTimeSeconds;    // Optional enhanced server per-book active time
   std::optional<KOReaderMetadata> metadata;      // Optional document metadata
   std::optional<KOReaderRichPosition> position;  // Optional rich position
 };

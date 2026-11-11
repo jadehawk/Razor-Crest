@@ -8,6 +8,7 @@
 #include "KOReaderSyncClient.h"
 #include "ProgressMapper.h"
 #include "activities/Activity.h"
+#include "components/OptionPopup.h"
 #include "components/UiAppHost.h"
 
 /**
@@ -24,7 +25,8 @@ class KOReaderSyncActivity final : public Activity, private UiAppHost {
  public:
   explicit KOReaderSyncActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& epubPath,
                                 CrossPointPosition localPosition, SavedProgressPosition localKoPos,
-                                std::string localChapterName, const bool pluginEventsOnly = false);
+                                std::string localChapterName, const bool pluginEventsOnly = false,
+                                uint32_t sessionSeconds = 0, uint32_t sessionForwardTurns = 0);
 
   void onEnter() override;
   void onExit() override;
@@ -49,6 +51,16 @@ class KOReaderSyncActivity final : public Activity, private UiAppHost {
   std::shared_ptr<Epub> epub;  // null until lazy-loaded after TLS in performSync()
   std::string epubPath;
   std::string localChapterName;
+  std::string seriesLabel;
+  uint32_t sessionSeconds = 0;
+  uint32_t sessionForwardTurns = 0;
+  uint64_t localBookSeconds = 0;
+
+  bool hasLocalBookStats = false;
+  bool remoteAhead = false;
+  bool localAhead = false;
+  OptionPopup confirmationPopup;
+  int pendingConfirmedOption = -1;
   CrossPointPosition localPosition;
 
   State state = WIFI_SELECTION;
@@ -65,6 +77,7 @@ class KOReaderSyncActivity final : public Activity, private UiAppHost {
 
   // Selection in result screen (0=Apply, 1=Upload)
   int selectedOption = 0;
+  bool cardFocusVisible = false;  // Show focus only after physical-button navigation on touch devices.
 
   // Timed return for successful smart-sync terminal states.
   unsigned long autoReturnAt = 0;
@@ -99,5 +112,6 @@ class KOReaderSyncActivity final : public Activity, private UiAppHost {
   static void onResultRow(const freeink::ui::ActionEvent& event, void* user);
   void buildResultScreen(UiScreen& screen);
   void chooseResultOption();
+  void requestResultConfirmation(int option);
   void startUpload();
 };

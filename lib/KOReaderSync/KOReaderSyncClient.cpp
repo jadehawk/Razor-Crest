@@ -182,6 +182,11 @@ KOReaderSyncClient::Error KOReaderSyncClient::getProgress(const std::string& doc
     outProgress.device = doc["device"].as<std::string>();
     outProgress.deviceId = doc["device_id"].as<std::string>();
     outProgress.timestamp = doc["timestamp"].as<int64_t>();
+    outProgress.readingTimeSeconds.reset();
+    if (KOREADER_STORE.supportsRichProgress()) {
+      const JsonVariantConst seconds = doc["statistics"]["read_time_seconds"];
+      if (seconds.is<uint32_t>()) outProgress.readingTimeSeconds = seconds.as<uint32_t>();
+    }
 
     outProgress.position.reset();
     if (KOREADER_STORE.supportsRichProgress()) {

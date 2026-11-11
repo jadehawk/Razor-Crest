@@ -3,6 +3,7 @@
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
+#include <LibrarySeriesFormat.h>
 #include <Logging.h>
 #include <TrustedTime.h>
 #include <WiFi.h>
@@ -11,6 +12,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <ctime>
 
 #include "Epub/Section.h"
 #include "EpubReaderUtils.h"
@@ -29,6 +31,7 @@
 #include "network/WifiPowerSaveGuard.h"
 #include "util/PluginEvents.h"
 #include "util/PluginHttp.h"
+#include "util/ReadingStatsStore.h"
 
 namespace fui = freeink::ui;
 
@@ -37,14 +40,23 @@ namespace {
 // and the upload button (NO_REMOTE_PROGRESS) never coexist, so state
 // disambiguates them in the handler.
 constexpr fui::ActionId ACTION_ROW = 1;
+constexpr fui::ActionId ACTION_CARD = 2;
 
 // Comparison-card layout adapted from Julia Nguyen's CrossInk (MIT license).
 // Source: https://github.com/uxjulia/CrossInk, commit 1b1156027.
 // CrossInk license notice: docs/attribution/crossink-koreader-sync.md.
+constexpr int CARD_BORDER_WIDTH = 2;
 constexpr int CARD_PADDING = 12;
 constexpr int CARD_GAP = 6;
 constexpr int BAR_HEIGHT = 10;
 constexpr int BADGE_PADDING = 6;
+constexpr int DETAIL_GAP = 4;
+
+struct SyncDetailRow {
+  const char* label;
+  const char* value;
+  const char* subtitle = nullptr;
+};
 
 struct SyncProgressCard {
   const char* title;
@@ -53,13 +65,84 @@ struct SyncProgressCard {
   const char* chapter;
   float percentage;
   bool ahead;
+  bool selected;
+  const SyncDetailRow* details;
+  int detailCount;
+  int visibleDetails;
 };
-
-long displayedTenths(const float percentage) { return std::lround(percentage * 1000.0f); }
 
 int syncCardHeight(const GfxRenderer& renderer) {
   return CARD_PADDING * 2 + renderer.getLineHeight(UI_10_FONT_ID) + CARD_GAP + renderer.getLineHeight(UI_12_FONT_ID) +
          CARD_GAP + BAR_HEIGHT + CARD_GAP + renderer.getLineHeight(UI_10_FONT_ID);
+}
+
+int detailRowHeight(const GfxRenderer& renderer) { return renderer.getLineHeight(SMALL_FONT_ID) + CARD_GAP; }
+
+struct SyncComparisonLayout {
+  Rect cards[2]{};
+  Rect bookTitle{};
+  int headingY = 0;
+  int seriesY = -1;
+  int authorY = -1;
+  int summaryY = -1;
+  int visibleDetails = 0;
+};
+
+SyncComparisonLayout comparisonLayout(const GfxRenderer& renderer, const Rect& area, const ThemeMetrics& metrics,
+                                      const fui::ThemeTokens& theme, const bool touch, const char* bookTitle,
+                                      const bool hasSeries, const bool hasAuthor) {
+  SyncComparisonLayout layout;
+  const int lineH = renderer.getLineHeight(UI_10_FONT_ID);
+  const int smallH = renderer.getLineHeight(SMALL_FONT_ID);
+  const int cardX = area.x + metrics.contentSidePadding;
+  const int cardWidth = std::max(1, area.width - metrics.contentSidePadding * 2);
+  layout.headingY = area.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  int y = layout.headingY + lineH + metrics.verticalSpacing;
+  if (bookTitle && bookTitle[0]) {
+    const int lines = renderer.getTextWidth(UI_10_FONT_ID, bookTitle, EpdFontFamily::BOLD) > cardWidth ? 2 : 1;
+    layout.bookTitle = Rect{cardX, y, cardWidth, lines * lineH};
+    y += lines * lineH + DETAIL_GAP;
+  }
+  if (hasSeries) {
+    layout.seriesY = y;
+    y += smallH + DETAIL_GAP;
+  }
+  if (hasAuthor) {
+    layout.authorY = y;
+    y += smallH + DETAIL_GAP;
+  }
+  const int gap = std::max(8, metrics.verticalSpacing - 4);
+  y += gap;
+
+  // On touch readers the cards themselves are the actions; only button-driven
+  // devices need room reserved for the two bottom selection rows.
+  const int actionsHeight =
+      touch ? 0 : metrics.listRowHeight * 2 + std::max(theme.listRowGap, theme.listTouchRowGap) + theme.spaceSm + 12;
+  const int available = area.y + area.height - actionsHeight - gap - y;
+  const bool portrait = area.width <= area.height;
+  const int baseHeight = syncCardHeight(renderer);
+  const int detailHeight = detailRowHeight(renderer);
+  // A two-line duration label belongs to the local card. Fit both card
+  // heights together so the added line cannot overlap the bottom actions.
+  for (int count = 1; count <= 2; ++count) {
+    const int remoteHeight = baseHeight + count * detailHeight;
+    const int localHeight = remoteHeight + smallH;
+    if ((portrait ? remoteHeight + gap + localHeight : localHeight) > available) break;
+    layout.visibleDetails = count;
+  }
+  const int remoteHeight = baseHeight + layout.visibleDetails * detailHeight;
+  const int localHeight = remoteHeight + (layout.visibleDetails > 0 ? smallH : 0);
+  if (portrait) {
+    layout.cards[0] = Rect{cardX, y, cardWidth, remoteHeight};
+    layout.cards[1] = Rect{cardX, y + remoteHeight + gap, cardWidth, localHeight};
+  } else {
+    const int half = std::max(1, (cardWidth - gap) / 2);
+    layout.cards[0] = Rect{cardX, y, half, remoteHeight};
+    layout.cards[1] = Rect{cardX + cardWidth - half, y, half, localHeight};
+  }
+  const int afterCards = portrait ? layout.cards[1].y + localHeight : y + localHeight;
+  if (afterCards + gap + smallH < area.y + area.height - actionsHeight) layout.summaryY = afterCards + gap;
+  return layout;
 }
 
 void syncBaselineText(const GfxRenderer& renderer, int font, int x, int y, int rowFont, const char* text) {
@@ -67,7 +150,8 @@ void syncBaselineText(const GfxRenderer& renderer, int font, int x, int y, int r
 }
 
 void drawSyncProgressCard(const GfxRenderer& renderer, const Rect& card, const SyncProgressCard& info) {
-  renderer.drawRect(card.x, card.y, card.width, card.height, true);
+  // The thicker focused outline identifies the card selected by hardware keys.
+  renderer.drawRect(card.x, card.y, card.width, card.height, CARD_BORDER_WIDTH + (info.selected ? 2 : 0), true);
   const int x = card.x + CARD_PADDING;
   const int contentWidth = std::max(1, card.width - CARD_PADDING * 2);
   const int right = x + contentWidth;
@@ -101,12 +185,6 @@ void drawSyncProgressCard(const GfxRenderer& renderer, const Rect& card, const S
   char percent[16];
   snprintf(percent, sizeof(percent), "%.1f%%", info.percentage * 100.0f);
   renderer.drawText(UI_12_FONT_ID, x, y, percent, true, EpdFontFamily::BOLD);
-  const int pctRight = x + renderer.getTextWidth(UI_12_FONT_ID, percent, EpdFontFamily::BOLD) + gap;
-  if (right > pctRight) {
-    const std::string page = renderer.truncatedText(UI_10_FONT_ID, info.page, right - pctRight);
-    const int pageX = right - renderer.getTextWidth(UI_10_FONT_ID, page.c_str());
-    syncBaselineText(renderer, UI_10_FONT_ID, pageX, y, UI_12_FONT_ID, page.c_str());
-  }
   y += renderer.getLineHeight(UI_12_FONT_ID) + CARD_GAP;
 
   renderer.drawRect(x, y, contentWidth, BAR_HEIGHT, true);
@@ -115,8 +193,57 @@ void drawSyncProgressCard(const GfxRenderer& renderer, const Rect& card, const S
   if (filled > 0) renderer.fillRect(x + 2, y + 2, filled, BAR_HEIGHT - 4, true);
   y += BAR_HEIGHT + CARD_GAP;
 
-  const std::string chapter = renderer.truncatedText(UI_10_FONT_ID, info.chapter, contentWidth);
-  renderer.drawText(UI_10_FONT_ID, x, y, chapter.c_str());
+  const std::string page = renderer.truncatedText(UI_10_FONT_ID, info.page, contentWidth);
+  const int pageWidth = renderer.getTextWidth(UI_10_FONT_ID, page.c_str());
+  const int chapterWidth = contentWidth - pageWidth - gap;
+  if (chapterWidth > 0) {
+    const std::string chapter = renderer.truncatedText(UI_10_FONT_ID, info.chapter, chapterWidth);
+    renderer.drawText(UI_10_FONT_ID, x, y, chapter.c_str());
+  }
+  renderer.drawText(UI_10_FONT_ID, right - pageWidth, y, page.c_str());
+  y += renderer.getLineHeight(UI_10_FONT_ID) + CARD_GAP;
+  for (int i = 0; i < std::min(info.detailCount, info.visibleDetails); ++i) {
+    const SyncDetailRow& row = info.details[i];
+    if (!row.value || !row.value[0]) continue;
+    if (row.subtitle && row.subtitle[0]) {
+      const std::string heading = renderer.truncatedText(SMALL_FONT_ID, row.label, contentWidth, EpdFontFamily::BOLD);
+      renderer.drawText(SMALL_FONT_ID, x, y, heading.c_str(), true, EpdFontFamily::BOLD);
+      y += renderer.getLineHeight(SMALL_FONT_ID);
+    }
+    const int valueWidth = renderer.getTextWidth(SMALL_FONT_ID, row.value);
+    if (valueWidth >= contentWidth) {
+      renderer.drawText(SMALL_FONT_ID, x, y, renderer.truncatedText(SMALL_FONT_ID, row.value, contentWidth).c_str());
+    } else {
+      const char* labelText = row.subtitle && row.subtitle[0] ? row.subtitle : row.label;
+      const std::string label =
+          renderer.truncatedText(SMALL_FONT_ID, labelText, std::max(1, contentWidth - valueWidth - CARD_GAP));
+      renderer.drawText(SMALL_FONT_ID, x, y, label.c_str());
+      renderer.drawText(SMALL_FONT_ID, right - valueWidth, y, row.value);
+    }
+    y += detailRowHeight(renderer);
+  }
+}
+
+void formatDuration(const uint64_t seconds, char* out, const size_t capacity) {
+  const unsigned long long hours = static_cast<unsigned long long>(seconds / 3600);
+  const unsigned long long minutes = static_cast<unsigned long long>((seconds % 3600) / 60);
+  if (hours > 0) {
+    snprintf(out, capacity, "%lluh %llum", hours, minutes);
+  } else if (minutes > 0) {
+    snprintf(out, capacity, "%llum", minutes);
+  } else {
+    snprintf(out, capacity, "%llus", static_cast<unsigned long long>(seconds));
+  }
+}
+
+bool formatUpdatedTime(const int64_t timestamp, char* out, const size_t capacity) {
+  if (timestamp < 1577836800LL || timestamp > 4102444800LL) return false;
+  const time_t value = static_cast<time_t>(timestamp);
+  struct tm local{};
+  if (!localtime_r(&value, &local)) return false;
+  snprintf(out, capacity, "%04d-%02d-%02d %02d:%02d", local.tm_year + 1900, local.tm_mon + 1, local.tm_mday,
+           local.tm_hour, local.tm_min);
+  return true;
 }
 
 std::string calculateDocumentHashForMethod(const std::string& path, const DocumentMatchMethod method) {
@@ -137,12 +264,15 @@ const char* matchMethodName(const DocumentMatchMethod method) {
 KOReaderSyncActivity::KOReaderSyncActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                            const std::string& epubPath, CrossPointPosition localPosition,
                                            SavedProgressPosition localKoPos, std::string localChapterName,
-                                           const bool pluginEventsOnly)
+                                           const bool pluginEventsOnly, const uint32_t sessionSeconds,
+                                           const uint32_t sessionForwardTurns)
     : Activity("KOReaderSync", renderer, mappedInput),
       UiAppHost(renderer),
       epubPath(epubPath),
       localChapterName(std::move(localChapterName)),
       localPosition(localPosition),
+      sessionSeconds(sessionSeconds),
+      sessionForwardTurns(sessionForwardTurns),
       remoteProgress{},
       remotePosition{},
       localProgress(std::move(localKoPos)),
@@ -395,8 +525,15 @@ void KOReaderSyncActivity::performSync() {
     }
   }
 
+  Epub::SyncMetadata bookMetadata;
+  if (epub->loadSyncMetadata(bookMetadata)) {
+    seriesLabel = library::formatSeriesLabel(bookMetadata.series, bookMetadata.seriesIndex);
+  }
+
   const ProgressComparison comparison =
       compareProgress(localPosition, localProgress.percentage, remotePosition, remoteProgress.percentage);
+  remoteAhead = comparison == ProgressComparison::RemoteAhead;
+  localAhead = comparison == ProgressComparison::LocalAhead;
   if (smartSyncEnabled()) {
     LOG_DBG("KOSync", "Smart decision: doc=%s result=%d local=%.6f remote=%.6f remoteXpath=%s mapped=%d/%d",
             primaryHash.c_str(), static_cast<int>(comparison), localProgress.percentage, remoteProgress.percentage,
@@ -531,7 +668,15 @@ void KOReaderSyncActivity::onEnter() {
   ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
 
   resetUi();
+  if (!pluginEventsOnly) {
+    readingstats::Snapshot savedStats;
+    hasLocalBookStats = readingstats::loadBook(epubPath.c_str(), savedStats);
+    if (hasLocalBookStats) {
+      localBookSeconds = savedStats.totalSeconds();
+    }
+  }
   app.on(ACTION_ROW, &KOReaderSyncActivity::onResultRow, this);
+  app.on(ACTION_CARD, &KOReaderSyncActivity::onResultRow, this);
   app.setScreen(&KOReaderSyncActivity::resultScreen, this);
 
   // Check for credentials first (plugin-events-only mode needs none).
@@ -567,6 +712,25 @@ void KOReaderSyncActivity::onExit() {
   }
 }
 
+void KOReaderSyncActivity::requestResultConfirmation(const int option) {
+  if (state != SHOWING_RESULT || (option != 0 && option != 1)) return;
+  selectedOption = option;
+  char message[144];
+  const double localPct = static_cast<double>(localProgress.percentage) * 100.0;
+  const double remotePct = static_cast<double>(remoteProgress.percentage) * 100.0;
+  if (option == 0) {
+    snprintf(message, sizeof(message), "Move from %.1f%% local to %.1f%% remote?", localPct, remotePct);
+  } else {
+    snprintf(message, sizeof(message), "Replace server progress (%.1f%%) with local (%.1f%%)?", remotePct, localPct);
+  }
+  const char* buttons[] = {tr(STR_CANCEL), tr(STR_CONFIRM)};
+  confirmationPopup.showMessage(option == 0 ? tr(STR_APPLY_REMOTE) : tr(STR_UPLOAD_LOCAL), message, buttons, 2, 0,
+                                [this, option](const int choice) {
+                                  if (choice == 1) pendingConfirmedOption = option;
+                                });
+  requestUpdate(true);
+}
+
 void KOReaderSyncActivity::chooseResultOption() {
   if (selectedOption == 0) {
     saveProgressAndReturn(remotePosition.spineIndex, remotePosition.pageNumber);
@@ -586,13 +750,12 @@ void KOReaderSyncActivity::startUpload() {
 
 void KOReaderSyncActivity::onResultRow(const fui::ActionEvent& event, void* user) {
   auto* self = static_cast<KOReaderSyncActivity*>(user);
-  // Activation leaves this screen (applies/uploads); drop the flash so it does
-  // not ghost onto the next paint.
+  // Clear tap feedback before opening the apply/upload confirmation.
   self->app.clearTapFlash();
   if (self->state == SHOWING_RESULT) {
     if (event.value < 0 || event.value > 1) return;
     self->selectedOption = event.value;
-    self->chooseResultOption();
+    self->requestResultConfirmation(self->selectedOption);
   } else if (self->state == NO_REMOTE_PROGRESS) {
     self->startUpload();
   }
@@ -604,16 +767,31 @@ void KOReaderSyncActivity::resultScreen(UiScreen& screen, void* user) {
 
 void KOReaderSyncActivity::buildResultScreen(UiScreen& screen) {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  // Side padding is 0 here (like the other FreeInkApp screens): the action list
-  // supplies its own theme side padding, and the raw comparison text is indented
-  // to line up with the list rows below (see labelIndent).
+  // The comparison cards use the theme's own side padding. Non-touch action
+  // rows retain their themed FreeInkUI layout at the bottom.
+  const int bottomHintHeight = state == SHOWING_RESULT && mappedInput.hasTouch() ? 0 : metrics.buttonHintsHeight;
   screen.setContentMarginFromScreen(fui::Insets{static_cast<int16_t>(metrics.topPadding + metrics.headerHeight), 0,
-                                                static_cast<int16_t>(metrics.buttonHintsHeight), 0});
+                                                static_cast<int16_t>(bottomHintHeight), 0});
   screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 
   if (state == SHOWING_RESULT) {
-    // Progress cards are rendered by GfxRenderer; FreeInkUI owns the
-    // actionable rows, keeping touch routing and button navigation intact.
+    if (mappedInput.hasTouch()) {
+      // The comparison cards themselves are the two touch targets. Hardware
+      // navigation still selects a card and Confirm opens the same dialog.
+      const Rect area = UITheme::getInstance().getScreenSafeArea(renderer, false, false);
+      const SyncComparisonLayout layout =
+          comparisonLayout(renderer, area, metrics, screen.theme(), true, epub->getTitle().c_str(),
+                           !seriesLabel.empty(), !epub->getAuthor().empty());
+      for (int i = 0; i < 2; ++i) {
+        const Rect& card = layout.cards[i];
+        screen.frame().hit(fui::Rect{static_cast<int16_t>(card.x), static_cast<int16_t>(card.y),
+                                     static_cast<int16_t>(card.width), static_cast<int16_t>(card.height)},
+                           ACTION_CARD, static_cast<int16_t>(i), fui::InputTouch);
+      }
+      return;
+    }
+
+    // Non-touch devices retain the existing physical-button action rows.
     fui::ListItem actions[2];
     actions[0].label = tr(STR_APPLY_REMOTE);
     actions[0].icon = fui::bitmapFromIcon(icon_download_24);
@@ -628,11 +806,8 @@ void KOReaderSyncActivity::buildResultScreen(UiScreen& screen) {
     actionProps.action = ACTION_ROW;
     actionProps.inputMask = fui::InputTouch;
     actionProps.scrollIndicator = false;
-    int16_t actionRowHeight = screen.theme().rowHeight;
-    if (!mappedInput.hasTouch()) {
-      actionRowHeight = static_cast<int16_t>(metrics.listRowHeight);
-      actionProps.rowHeight = actionRowHeight;
-    }
+    const int16_t actionRowHeight = static_cast<int16_t>(metrics.listRowHeight);
+    actionProps.rowHeight = actionRowHeight;
     const auto actionsBand =
         static_cast<int16_t>(actionRowHeight * 2 + screen.theme().listRowGap + screen.theme().spaceSm);
     screen.list(actionProps, actionsBand, fui::LayoutAnchor::Bottom);
@@ -676,9 +851,11 @@ void KOReaderSyncActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
   const auto metrics = UITheme::getInstance().getMetrics();
-  Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+  const bool showButtonHints = state != SHOWING_RESULT || !mappedInput.hasTouch();
+  Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, showButtonHints, false);
 
-  GUI.drawHeader(renderer, UITheme::getInstance().getHeaderRect(renderer, true, false), tr(STR_KOREADER_SYNC));
+  GUI.drawHeader(renderer, UITheme::getInstance().getHeaderRect(renderer, showButtonHints, false),
+                 tr(STR_KOREADER_SYNC));
 
   int top = screen.y + screen.height / 2 - 40;
   if (state == NO_CREDENTIALS) {
@@ -700,12 +877,24 @@ void KOReaderSyncActivity::render(RenderLock&&) {
   }
 
   if (state == SHOWING_RESULT) {
-    // CrossInk-inspired progress cards are informational. The actions stay in
-    // the existing FreeInkUI list so touch and mapped buttons work unchanged.
-    renderUi();  // Paint the themed action surface before drawing the cards above it.
-    int cardTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-    renderer.drawCenteredText(UI_10_FONT_ID, cardTop, tr(STR_PROGRESS_FOUND), true, EpdFontFamily::BOLD);
-    cardTop += renderer.getLineHeight(UI_10_FONT_ID) + metrics.verticalSpacing;
+    renderUi();
+    const SyncComparisonLayout layout =
+        comparisonLayout(renderer, screen, metrics, app.theme(), mappedInput.hasTouch(), epub->getTitle().c_str(),
+                         !seriesLabel.empty(), !epub->getAuthor().empty());
+    renderer.drawCenteredText(UI_10_FONT_ID, layout.headingY, tr(STR_PROGRESS_FOUND), true, EpdFontFamily::BOLD);
+    if (layout.bookTitle.height > 0) {
+      UITheme::drawCenteredWrappedText(renderer, layout.bookTitle, UI_10_FONT_ID, epub->getTitle().c_str(), 2, true,
+                                       EpdFontFamily::BOLD, UITheme::TextVerticalAlignment::TOP);
+    }
+    const int bookWidth = std::max(1, screen.width - metrics.contentSidePadding * 2);
+    if (layout.seriesY >= 0) {
+      const std::string series = renderer.truncatedText(SMALL_FONT_ID, seriesLabel.c_str(), bookWidth);
+      UITheme::drawCenteredText(renderer, screen, SMALL_FONT_ID, layout.seriesY, series.c_str());
+    }
+    if (layout.authorY >= 0) {
+      const std::string author = renderer.truncatedText(SMALL_FONT_ID, epub->getAuthor().c_str(), bookWidth);
+      UITheme::drawCenteredText(renderer, screen, SMALL_FONT_ID, layout.authorY, author.c_str());
+    }
 
     const int remoteToc = epub->getTocIndexForSpineIndex(remotePosition.spineIndex);
     const std::string remoteChapter =
@@ -720,30 +909,61 @@ void KOReaderSyncActivity::render(RenderLock&&) {
     char localPage[48];
     snprintf(localPage, sizeof(localPage), tr(STR_SYNC_PAGE_TOTAL_FORMAT), localPosition.pageNumber + 1,
              localPosition.totalPages);
-    const long remoteTenths = displayedTenths(remoteProgress.percentage);
-    const long localTenths = displayedTenths(localProgress.percentage);
-    const SyncProgressCard cards[] = {
-        {tr(STR_SYNC_REMOTE_TITLE), remoteProgress.device.c_str(), remotePage, remoteChapter.c_str(),
-         remoteProgress.percentage, remoteTenths > localTenths},
-        {tr(STR_SYNC_LOCAL_TITLE), nullptr, localPage, localChapter.c_str(), localProgress.percentage,
-         localTenths > remoteTenths},
-    };
-
-    const int cardX = screen.x + metrics.contentSidePadding;
-    const int cardWidth = std::max(1, screen.width - metrics.contentSidePadding * 2);
-    const int cardHeight = syncCardHeight(renderer);
-    const int gap = metrics.verticalSpacing;
-    if (screen.width > screen.height) {
-      const int half = std::max(1, (cardWidth - gap) / 2);
-      drawSyncProgressCard(renderer, Rect{cardX, cardTop, half, cardHeight}, cards[0]);
-      drawSyncProgressCard(renderer, Rect{cardX + cardWidth - half, cardTop, half, cardHeight}, cards[1]);
-    } else {
-      drawSyncProgressCard(renderer, Rect{cardX, cardTop, cardWidth, cardHeight}, cards[0]);
-      drawSyncProgressCard(renderer, Rect{cardX, cardTop + cardHeight + gap, cardWidth, cardHeight}, cards[1]);
+    char updated[32] = {};
+    char serverDuration[24] = {};
+    SyncDetailRow remoteDetails[2]{};
+    int remoteDetailCount = 0;
+    if (formatUpdatedTime(remoteProgress.timestamp, updated, sizeof(updated))) {
+      remoteDetails[remoteDetailCount++] = {"Updated", updated};
+    }
+    if (remoteProgress.readingTimeSeconds.has_value()) {
+      formatDuration(*remoteProgress.readingTimeSeconds, serverDuration, sizeof(serverDuration));
+      remoteDetails[remoteDetailCount++] = {"Server reading time", serverDuration};
     }
 
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    char sessionDuration[24] = {};
+    char bookDuration[24] = {};
+    char turnCount[16] = {};
+    char combinedTime[64] = {};
+    formatDuration(sessionSeconds, sessionDuration, sizeof(sessionDuration));
+    snprintf(turnCount, sizeof(turnCount), "%lu", static_cast<unsigned long>(sessionForwardTurns));
+    SyncDetailRow localDetails[2] = {
+        {"Reading Duration", sessionDuration, "This Session"},
+        {"Forward turns", turnCount},
+    };
+    if (hasLocalBookStats) {
+      formatDuration(localBookSeconds, bookDuration, sizeof(bookDuration));
+      snprintf(combinedTime, sizeof(combinedTime), "%s / %s", sessionDuration, bookDuration);
+      localDetails[0].value = combinedTime;
+      localDetails[0].subtitle = "This Session / Device Total";
+    }
+    constexpr int localDetailCount = 2;
+    const bool showCardFocus = mappedInput.hasTouch() && cardFocusVisible;
+    const SyncProgressCard cards[] = {
+        {tr(STR_SYNC_REMOTE_TITLE), remoteProgress.device.c_str(), remotePage, remoteChapter.c_str(),
+         remoteProgress.percentage, remoteAhead, showCardFocus && selectedOption == 0, remoteDetails, remoteDetailCount,
+         layout.visibleDetails},
+        {tr(STR_SYNC_LOCAL_TITLE), "This device", localPage, localChapter.c_str(), localProgress.percentage, localAhead,
+         showCardFocus && selectedOption == 1, localDetails, localDetailCount, layout.visibleDetails},
+    };
+    drawSyncProgressCard(renderer, layout.cards[0], cards[0]);
+    drawSyncProgressCard(renderer, layout.cards[1], cards[1]);
+
+    if (layout.summaryY >= 0 && (remoteAhead || localAhead) && std::isfinite(remoteProgress.percentage) &&
+        std::isfinite(localProgress.percentage)) {
+      const float difference = std::fabs(remoteProgress.percentage - localProgress.percentage) * 100.0f;
+      if (difference >= 0.05f) {
+        char summary[64];
+        snprintf(summary, sizeof(summary), "%.1f percentage points apart", static_cast<double>(difference));
+        renderer.drawCenteredText(SMALL_FONT_ID, layout.summaryY, summary);
+      }
+    }
+
+    if (confirmationPopup.processRender(renderer, mappedInput)) return;
+    if (showButtonHints) {
+      const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    }
     renderer.displayBuffer();
     return;
   }
@@ -794,8 +1014,17 @@ void KOReaderSyncActivity::loop() {
   }
 
   if (state == SHOWING_RESULT) {
-    // Touch goes through the FreeInkApp: render() registered the compare rows;
-    // route the snapshot and let onResultRow apply/upload on tap.
+    if (confirmationPopup.isActive()) {
+      confirmationPopup.handleInput(mappedInput, [this] { requestUpdate(); });
+      if (pendingConfirmedOption >= 0) {
+        selectedOption = pendingConfirmedOption;
+        pendingConfirmedOption = -1;
+        chooseResultOption();
+      }
+      return;
+    }
+    // Touch goes through the FreeInkApp's card hit targets. Hardware keys
+    // remain available to select and confirm either card.
     const auto route = routeTouch(mappedInput);
     if (route.routed && app.invalidated()) requestUpdate();
     if (route) return;  // dispatched to onResultRow
@@ -806,11 +1035,12 @@ void KOReaderSyncActivity::loop() {
         mappedInput.wasReleased(MappedInputManager::Button::Down) ||
         mappedInput.wasReleased(MappedInputManager::Button::Right)) {
       selectedOption = (selectedOption + 1) % 2;  // Wrap around among 2 options
+      if (mappedInput.hasTouch()) cardFocusVisible = true;
       requestUpdate();
     }
 
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-      chooseResultOption();
+      requestResultConfirmation(selectedOption);
     }
 
     if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
