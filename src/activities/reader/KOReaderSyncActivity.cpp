@@ -28,6 +28,7 @@
 #include "components/UITheme.h"
 #include "components/UiAppHelpers.h"  // list icons for the compare rows
 #include "fontIds.h"
+#include "network/LastUsedWifi.h"
 #include "network/WifiPowerSaveGuard.h"
 #include "util/PluginEvents.h"
 #include "util/PluginHttp.h"
@@ -265,7 +266,7 @@ KOReaderSyncActivity::KOReaderSyncActivity(GfxRenderer& renderer, MappedInputMan
                                            const std::string& epubPath, CrossPointPosition localPosition,
                                            SavedProgressPosition localKoPos, std::string localChapterName,
                                            const bool pluginEventsOnly, const uint32_t sessionSeconds,
-                                           const uint32_t sessionForwardTurns)
+                                           const uint32_t sessionForwardTurns, const bool automaticWifi)
     : Activity("KOReaderSync", renderer, mappedInput),
       UiAppHost(renderer),
       epubPath(epubPath),
@@ -276,7 +277,8 @@ KOReaderSyncActivity::KOReaderSyncActivity(GfxRenderer& renderer, MappedInputMan
       remoteProgress{},
       remotePosition{},
       localProgress(std::move(localKoPos)),
-      pluginEventsOnly(pluginEventsOnly) {}
+      pluginEventsOnly(pluginEventsOnly),
+      automaticWifi(automaticWifi) {}
 
 void KOReaderSyncActivity::ensureEpubLoaded() {
   if (!epub) {
@@ -313,7 +315,9 @@ void KOReaderSyncActivity::saveProgressAndReturn(int spineIndex, int page) {
   returnToReader();
 }
 
-void KOReaderSyncActivity::returnToReader() { activityManager.goToReader(epubPath); }
+void KOReaderSyncActivity::returnToReader() {
+  activityManager.goToReader(epubPath, /*fastRefresh=*/false, /*autoSync=*/false);
+}
 
 bool KOReaderSyncActivity::smartSyncEnabled() const {
   return KOREADER_STORE.getSyncBehavior() == KOReaderSyncBehavior::SMART;
@@ -663,6 +667,71 @@ void KOReaderSyncActivity::performUpload() {
   requestUpdate(true);
 }
 
+void KOReaderSyncActivity::syncOnSleep(const std::string& path, const CrossPointPosition& local,
+                                       const SavedProgressPosition& saved, KOReaderMetadata metadata) {
+  if (saved.xpath.empty() || !std::isfinite(saved.percentage) || saved.percentage < 0.0f || saved.percentage > 1.0f ||
+      !KOREADER_STORE.hasCredentials()) {
+    return;
+  }
+
+  constexpr uint32_t kHttpTimeoutMs = 4000;
+  const DocumentMatchMethod method = KOREADER_STORE.getMatchMethod();
+  const std::string hash = calculateDocumentHashForMethod(path, method);
+  if (hash.empty()) return;
+
+  WifiPowerSaveGuard powerSave;
+  KOReaderProgress remote{};
+  auto result = KOReaderSyncClient::getProgress(hash, remote, kHttpTimeoutMs);
+  if (result == KOReaderSyncClient::NOT_FOUND && KOREADER_STORE.getSyncBehavior() == KOReaderSyncBehavior::SMART) {
+    const std::string alternateHash = calculateDocumentHashForMethod(path, alternateMatchMethod(method));
+    if (!alternateHash.empty() && alternateHash != hash) {
+      result = KOReaderSyncClient::getProgress(alternateHash, remote, kHttpTimeoutMs);
+    }
+  }
+
+  if (result != KOReaderSyncClient::OK && result != KOReaderSyncClient::NOT_FOUND) {
+    LOG_DBG("KOSync", "Sleep sync skipped: remote read failed (%d)", static_cast<int>(result));
+    return;
+  }
+
+  if (result == KOReaderSyncClient::OK) {
+    // Sleep is upload-only: never roll back the local book. Percentage is a
+    // conservative fallback because the EPUB is released before this request.
+    if (remote.progress == saved.xpath ||
+        compareProgress({}, saved.percentage, {}, remote.percentage) != ProgressComparison::LocalAhead ||
+        (remote.position.has_value() && local.hasResolvedSpineIndex &&
+         static_cast<int>(remote.position->spineIndex) > local.spineIndex)) {
+      LOG_DBG("KOSync", "Sleep sync: remote progress is current or ahead; no upload");
+      return;
+    }
+  }
+
+  KOReaderProgress upload{};
+  upload.document = hash;
+  upload.progress = saved.xpath;
+  upload.percentage = saved.percentage;
+  if (KOREADER_STORE.supportsRichProgress()) {
+    KOReaderRichPosition rich;
+    rich.pctQ = static_cast<uint32_t>(saved.percentage * 1000000.0f + 0.5f);
+    rich.spineIndex = static_cast<uint16_t>(local.spineIndex);
+    rich.pageNumber = static_cast<uint16_t>(local.pageNumber);
+    rich.totalPages = static_cast<uint16_t>(local.totalPages > 0 ? local.totalPages : 1);
+    if (local.hasParagraphIndex) rich.paragraphIndex = local.paragraphIndex;
+    rich.xpath = saved.xpath;
+    upload.position = std::move(rich);
+  }
+  if (KOREADER_STORE.getSendMetadata()) {
+    const auto slash = path.find_last_of('/');
+    metadata.filename = slash == std::string::npos ? path : path.substr(slash + 1);
+    Storage.readFileToString("KOSync", path + ".meta.json", 2 * 1024, metadata.extraJson);
+    upload.metadata = std::move(metadata);
+  }
+
+  const auto update = KOReaderSyncClient::updateProgress(upload, kHttpTimeoutMs);
+  LOG_DBG("KOSync", "Sleep progress upload: result=%d http=%d", static_cast<int>(update),
+          KOReaderSyncClient::lastHttpCode);
+}
+
 void KOReaderSyncActivity::onEnter() {
   Activity::onEnter();
   ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
@@ -692,6 +761,19 @@ void KOReaderSyncActivity::onEnter() {
   // Check if already connected (e.g. from settings page auth)
   if (WiFi.status() == WL_CONNECTED) {
     LOG_DBG("KOSync", "Already connected to WiFi");
+    onWifiSelectionComplete(true);
+    return;
+  }
+
+  if (automaticWifi) {
+    if (!connectLastUsedWifi(10000)) {
+      LOG_DBG("KOSync", "Automatic book-open WiFi unavailable; returning to reader");
+      WiFi.disconnect(true);
+      WiFi.mode(WIFI_OFF);
+      wifiActivated = false;  // No TLS transaction; don't force a reboot on exit.
+      returnToReader();
+      return;
+    }
     onWifiSelectionComplete(true);
     return;
   }
@@ -1001,6 +1083,7 @@ void KOReaderSyncActivity::render(RenderLock&&) {
 }
 
 void KOReaderSyncActivity::loop() {
+  if (automaticWifi && state == SYNC_FAILED && autoReturnAt == 0) markAutoReturn();
   if (state == NO_CREDENTIALS || state == SYNC_FAILED || state == UPLOAD_COMPLETE || state == SYNC_COMPLETE) {
     if (autoReturnAt != 0 && millis() >= autoReturnAt) {
       returnToReader();

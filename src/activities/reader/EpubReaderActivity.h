@@ -205,7 +205,7 @@ class EpubReaderActivity final : public ReaderActivity {
   int clippingAtPoint(const Page& page, int x, int y) const;
   void openClippings();
   void applyProgressChange(const ProgressChangeResult& progress);
-  bool launchKOReaderSync();
+  bool launchKOReaderSync(bool automatic = false);
   unsigned long confirmLongPressThreshold() const;
   void toggleAutoPageTurn(uint8_t selectedPageTurnOption);
   void loadCachedBookmarks();
@@ -267,4 +267,5 @@ class EpubReaderActivity final : public ReaderActivity {
 
   ScreenshotInfo getScreenshotInfo() const override;
   CrossPointPosition getCurrentPosition() const;
+  bool captureSleepSyncProgress(CrossPointPosition& local, SavedProgressPosition& saved, KOReaderMetadata& metadata);
 };

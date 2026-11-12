@@ -17,6 +17,9 @@
 
 class Activity;    // forward declaration
 class RenderLock;  // forward declaration
+struct CrossPointPosition;
+struct SavedProgressPosition;
+struct KOReaderMetadata;
 
 enum class HomeMenuItem { NONE, FILE_BROWSER, LIBRARY, PLUGINS, OPDS_BROWSER, FILE_TRANSFER, SETTINGS_MENU };
 
@@ -94,7 +97,7 @@ class ActivityManager {
   void goToBrowser();
   void goToPlugins();
   void goToPluginDashboard(std::string deviceManifest);
-  void goToReader(std::string path, bool allowFastInitialRefresh = false);
+  void goToReader(std::string path, bool allowFastInitialRefresh = false, bool allowAutoSyncOnOpen = true);
   void goToSleep(bool fromTimeout = false);
   void goToBoot();
   void goToFullScreenMessage(std::string message, EpdFontFamily::Style style = EpdFontFamily::REGULAR);
@@ -114,6 +117,7 @@ class ActivityManager {
   // Bluetooth page turner (lib/BlePageTurner): the book in front, whether it has painted a page, and
   // a page or chapter turn from a remote. False when no book in front took the turn.
   bool isForegroundReader() const;
+  bool captureSleepSyncProgress(CrossPointPosition& local, SavedProgressPosition& saved, KOReaderMetadata& metadata);
   bool isForegroundAutoOrientationReader() const;
   bool isRemoteReaderContext() const;
   bool remoteClick(RemoteButton button);

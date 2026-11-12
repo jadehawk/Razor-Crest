@@ -31,6 +31,7 @@
 #include "plugins/StatsDashboardActivity.h"
 #include "plugins/StatsDashboardPluginCatalogActivity.h"
 #include "plugins/VocabularyHighlightsActivity.h"
+#include "reader/EpubReaderActivity.h"
 #include "reader/ReaderActivity.h"
 #include "reader/RemoteTurnGate.h"
 #include "settings/OpdsServerListActivity.h"
@@ -359,7 +360,7 @@ void ActivityManager::goToPluginDashboard(std::string deviceManifest) {
   if (activity) replaceActivity(std::move(activity));
 }
 
-void ActivityManager::goToReader(std::string path, const bool allowFastInitialRefresh) {
+void ActivityManager::goToReader(std::string path, const bool allowFastInitialRefresh, const bool allowAutoSyncOnOpen) {
   if (path.empty()) {
     goToFileBrowser("/");
     return;
@@ -377,6 +378,7 @@ void ActivityManager::goToReader(std::string path, const bool allowFastInitialRe
 
   auto activity = ReaderActivity::create(renderer, mappedInput, std::move(path), allowFastInitialRefresh);
   if (activity) {
+    activity->syncOnOpenPending = allowAutoSyncOnOpen;
     replaceActivity(std::move(activity));
   }
 }
@@ -449,6 +451,12 @@ bool ActivityManager::isReaderActivity() const {
 
 bool ActivityManager::isForegroundReader() const {
   return pendingAction == PendingAction::None && currentActivity && currentActivity->isReaderActivity();
+}
+
+bool ActivityManager::captureSleepSyncProgress(CrossPointPosition& local, SavedProgressPosition& saved,
+                                               KOReaderMetadata& metadata) {
+  if (!isForegroundReader() || currentActivity->name != "EpubReader") return false;
+  return static_cast<EpubReaderActivity*>(currentActivity.get())->captureSleepSyncProgress(local, saved, metadata);
 }
 
 bool ActivityManager::isForegroundAutoOrientationReader() const {

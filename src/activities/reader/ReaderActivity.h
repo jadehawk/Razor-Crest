@@ -22,6 +22,7 @@ class ReaderActivity : public Activity {
   ReaderSession readerSession;
   std::atomic<bool> pageRendered{false};
   bool bookRemembered = false;
+  bool syncOnOpenPending = false;  // Armed only for user-selected books, never boot resumes or sync returns.
   void markPageRendered() { pageRendered.store(true, std::memory_order_release); }
   void rememberBookOnceRendered();
 

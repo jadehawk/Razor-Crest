@@ -9,6 +9,7 @@
 #include <HalDisplay.h>
 #include <HalFrontlight.h>
 #include <HalGPIO.h>
+#include <HalPowerManager.h>
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
@@ -19,6 +20,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <functional>
 #include <iterator>
 #include <limits>
@@ -687,6 +689,14 @@ void EpubReaderActivity::loop() {
   }
 
   rememberBookOnceRendered();
+  if (syncOnOpenPending && bookRemembered) {
+    syncOnOpenPending = false;  // Suppress retries and loops on internal reader returns.
+    if (KOREADER_STORE.getSyncOnBookOpen() && KOREADER_STORE.hasCredentials() &&
+        powerManager.getBatteryPercentage() >= 20) {
+      launchKOReaderSync(/*automatic=*/true);
+      return;
+    }
+  }
 
   // The radio stopped for a chapter build: once the render task has let go of the lock, that page
   // is on screen; once the build tick below has finished the chapter, no parser is left alive and
@@ -1363,7 +1373,34 @@ unsigned long EpubReaderActivity::confirmLongPressThreshold() const {
   }
 }
 
-bool EpubReaderActivity::launchKOReaderSync() {
+bool EpubReaderActivity::captureSleepSyncProgress(CrossPointPosition& local, SavedProgressPosition& saved,
+                                                  KOReaderMetadata& metadata) {
+  if (!epub || !section || section->isBuilding() || !bookRemembered || !pageRendered.load()) return false;
+  RenderLock lock(*this);
+  local = getCurrentPosition();
+  if (KOREADER_STORE.getSendMetadata()) {
+    metadata.title = epub->getTitle();
+    metadata.authors = epub->getAuthor();
+    if (KOREADER_STORE.supportsExtendedMetadata()) {
+      Epub::SyncMetadata bookMeta;
+      if (epub->loadSyncMetadata(bookMeta)) {
+        metadata.isbn = std::move(bookMeta.isbn);
+        metadata.asin = std::move(bookMeta.asin);
+        metadata.series = std::move(bookMeta.series);
+        metadata.seriesIndex = bookMeta.seriesIndex;
+      }
+    }
+  }
+  if (!saveProgress(currentSpineIndex, section->currentPage, section->estimatedTotalPages())) return false;
+  {
+    GfxRenderer::FrameBufferLoan loan(renderer);
+    saved = ProgressMapper::toSavedProgress(epub, local);
+  }
+  return !saved.xpath.empty() && std::isfinite(saved.percentage) && saved.percentage >= 0.0f &&
+         saved.percentage <= 1.0f;
+}
+
+bool EpubReaderActivity::launchKOReaderSync(const bool automatic) {
   const uint32_t sessionSeconds = readerSession.trackedSeconds();
   const uint32_t sessionTurns = readerSession.qualifiedTurns();
   flushReaderSession();
@@ -1419,9 +1456,9 @@ bool EpubReaderActivity::launchKOReaderSync() {
   }
   LOG_DBG("KOSync", "Epub released (heap after: %u)", (unsigned)ESP.getFreeHeap());
 
-  activityManager.replaceActivity(
-      std::make_unique<KOReaderSyncActivity>(renderer, mappedInput, savedEpubPath, localPos, std::move(localKoPos),
-                                             std::move(localChapterName), false, sessionSeconds, sessionTurns));
+  activityManager.replaceActivity(std::make_unique<KOReaderSyncActivity>(
+      renderer, mappedInput, savedEpubPath, localPos, std::move(localKoPos), std::move(localChapterName), false,
+      sessionSeconds, sessionTurns, automatic));
   return true;
 }
 
