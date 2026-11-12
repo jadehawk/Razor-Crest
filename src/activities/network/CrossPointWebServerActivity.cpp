@@ -22,6 +22,7 @@
 #include "SilentRestart.h"
 #include "WifiSelectionActivity.h"
 #include "activities/network/CalibreConnectActivity.h"
+#include "activities/plugins/StatsDashboardPluginCatalogActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/PluginEvents.h"
@@ -103,15 +104,18 @@ void CrossPointWebServerActivity::onEnter() {
     return;
   }
 
-  // Launch network mode selection subactivity
+  showModeSelection();
+}
+
+void CrossPointWebServerActivity::showModeSelection() {
+  state = WebServerActivityState::MODE_SELECTION;
   LOG_DBG("WEBACT", "Launching NetworkModeSelectionActivity...");
   startActivityForResult(std::make_unique<NetworkModeSelectionActivity>(renderer, mappedInput),
                          [this](const ActivityResult& result) {
-                           if (result.isCancelled) {
+                           if (result.isCancelled)
                              onGoHome();
-                           } else {
+                           else
                              onNetworkModeSelected(std::get<NetworkModeResult>(result.data).mode);
-                           }
                          });
 }
 
@@ -155,6 +159,18 @@ void CrossPointWebServerActivity::onExit() {
 }
 
 void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) {
+  if (mode == NetworkMode::SEND2EREADER) {
+    auto catalog = makeUniqueNoThrow<StatsDashboardPluginCatalogActivity>(renderer, mappedInput,
+                                                                          /*rootMode=*/false, "send2ereader");
+    if (!catalog) {
+      LOG_ERR("WEBACT", "OOM: Send2Ereader catalog");
+      showModeSelection();
+      return;
+    }
+    startActivityForResult(std::move(catalog), [this](const ActivityResult&) { showModeSelection(); });
+    return;
+  }
+
   // Join Network brings up WiFi + the web server + TLS relays, whose working set
   // needs a large *contiguous* block. After reading/browsing the heap is
   // fragmented enough that tight boards (X3) abort mid-activation. Reboot once
@@ -204,19 +220,8 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
   isApMode = (mode == NetworkMode::CREATE_HOTSPOT);
 
   if (mode == NetworkMode::CONNECT_CALIBRE) {
-    startActivityForResult(
-        std::make_unique<CalibreConnectActivity>(renderer, mappedInput), [this](const ActivityResult& result) {
-          state = WebServerActivityState::MODE_SELECTION;
-
-          startActivityForResult(std::make_unique<NetworkModeSelectionActivity>(renderer, mappedInput),
-                                 [this](const ActivityResult& result) {
-                                   if (result.isCancelled) {
-                                     onGoHome();
-                                   } else {
-                                     onNetworkModeSelected(std::get<NetworkModeResult>(result.data).mode);
-                                   }
-                                 });
-        });
+    startActivityForResult(std::make_unique<CalibreConnectActivity>(renderer, mappedInput),
+                           [this](const ActivityResult& result) { showModeSelection(); });
     return;
   }
 

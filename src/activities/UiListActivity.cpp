@@ -258,6 +258,9 @@ void UiListActivity::render(RenderLock&&) {
   const int footerTop = band.valid() && hasFooter ? band.bottom - std::min(128, band.bottom - band.top) : 0;
   renderer.clearScreen();
   UITheme::getInstance().renderScreenBackground(renderer, footerTop);
+  // SD theme artwork is decorative, never foreground UI: rows with wrapped
+  // labels can extend below the estimated list height and must paint over it.
+  if (band.valid()) UITheme::getInstance().renderScreenDecoration(renderer, band.top, band.bottom);
   drawChrome();
   renderUi();
   // Wrapped labels grow rows, so fewer rows can fit than the fixed-height
@@ -268,10 +271,10 @@ void UiListActivity::render(RenderLock&&) {
   for (int pass = 0; activeNav().consumeRebuildNeeded() && pass < 8; ++pass) {
     renderer.clearScreen();
     UITheme::getInstance().renderScreenBackground(renderer, footerTop);
+    if (band.valid()) UITheme::getInstance().renderScreenDecoration(renderer, band.top, band.bottom);
     drawChrome();
     renderUi();
   }
-  if (band.valid()) UITheme::getInstance().renderScreenDecoration(renderer, band.top, band.bottom);
   drawFooter();
   renderOverlay();
   renderer.displayBuffer();
