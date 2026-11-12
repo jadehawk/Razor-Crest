@@ -7,7 +7,15 @@
 #include "components/OptionPopup.h"
 #endif
 
-enum class NetworkMode { JOIN_NETWORK, CONNECT_CALIBRE, CREATE_HOTSPOT, USB_DRIVE, LOCAL_SEND, OPDS_BROWSER };
+enum class NetworkMode {
+  JOIN_NETWORK,
+  CONNECT_CALIBRE,
+  CREATE_HOTSPOT,
+  USB_DRIVE,
+  LOCAL_SEND,
+  OPDS_BROWSER,
+  SEND2EREADER
+};
 
 /**
  * NetworkModeSelectionActivity presents the user with a choice:
@@ -18,6 +26,7 @@ enum class NetworkMode { JOIN_NETWORK, CONNECT_CALIBRE, CREATE_HOTSPOT, USB_DRIV
  *   Always accessible here; a customized Home screen may also offer a shortcut.
  * - "USB Drive" - Expose the SD card over USB (boards with USB mass storage)
  * - "Local Send" - Receive files when the optional LocalSend plugin is available.
+ * - "Send2Ereader" - Open the installed Send2Ereader plugin catalog directly.
  *
  * The onModeSelected callback is called with the user's choice.
  * The onCancel callback is called if the user presses back.
@@ -34,9 +43,9 @@ class NetworkModeSelectionActivity final : public UiListActivity {
   static constexpr int BASE_MENU_ITEM_COUNT = 3;
 #endif
 #if defined(CROSSPOINT_LOCALSEND) && CROSSPOINT_LOCALSEND
-  static constexpr int MAX_ITEM_COUNT = BASE_MENU_ITEM_COUNT + 2;
+  static constexpr int MAX_ITEM_COUNT = BASE_MENU_ITEM_COUNT + 3;
 #else
-  static constexpr int MAX_ITEM_COUNT = BASE_MENU_ITEM_COUNT + 1;
+  static constexpr int MAX_ITEM_COUNT = BASE_MENU_ITEM_COUNT + 2;
 #endif
 
   void onModeSelected(NetworkMode mode);

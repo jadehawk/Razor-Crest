@@ -875,8 +875,10 @@ std::string PluginCatalogActivity::downloadDir() const {
 }
 
 PluginCatalogActivity::PluginCatalogActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                             const bool rootMode)
-    : CatalogActivity("PluginCatalog", renderer, mappedInput, /*wantsTouchLongPress=*/true), rootMode(rootMode) {}
+                                             const bool rootMode, std::string initialPlugin)
+    : CatalogActivity("PluginCatalog", renderer, mappedInput, /*wantsTouchLongPress=*/true),
+      rootMode(rootMode),
+      initialPlugin(std::move(initialPlugin)) {}
 
 PluginCatalogActivity::~PluginCatalogActivity() = default;
 
@@ -890,6 +892,16 @@ void PluginCatalogActivity::onEnter() {
   app.on(ACTION_PAGE, &PluginCatalogActivity::onPageEvent, this);
   app.on(ACTION_REFRESH, &PluginCatalogActivity::onRefreshEvent, this);
   enterPluginPicker();
+  if (!initialPlugin.empty()) {
+    for (size_t i = 0; i < installedPlugins.size(); ++i) {
+      if (installedPlugins[i].name != initialPlugin ||
+          installedPlugins[i].deviceKind != PluginLocations::DeviceKind::Catalog)
+        continue;
+      activateIndex(pickerRowForPlugin(static_cast<int>(i)));
+      return;
+    }
+    finish();  // Plugin was removed or no longer provides a usable catalog.
+  }
 }
 
 int PluginCatalogActivity::pinnedPluginCount() const {
@@ -1269,6 +1281,10 @@ void PluginCatalogActivity::enterCatalog() {
 // pick connects instantly; onExit tears it down when the activity ends.
 void PluginCatalogActivity::exitCatalog() {
   clearEphemeralToken();
+  if (!initialPlugin.empty()) {
+    finish();  // A direct File Transfer shortcut returns to its parent list.
+    return;
+  }
   enterPluginPicker();
 }
 

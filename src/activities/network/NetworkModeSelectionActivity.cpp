@@ -1,11 +1,13 @@
 #include "NetworkModeSelectionActivity.h"
 
 #include <GfxRenderer.h>
+#include <HalStorage.h>
 #include <I18n.h>
 
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "components/UiAppHelpers.h"
+#include "util/PluginLocations.h"
 #if defined(CROSSPOINT_LOCALSEND) && CROSSPOINT_LOCALSEND
 #include "LocalSendPluginActivity.h"
 #endif
@@ -34,7 +36,7 @@ constexpr ModeRow MODE_ROWS[] = {
     {NetworkMode::USB_DRIVE, StrId::STR_USB_DRIVE, StrId::STR_USB_DRIVE_DESC, UIIcon::Usb},
 #endif
 };
-static_assert(sizeof(MODE_ROWS) / sizeof(MODE_ROWS[0]) == NetworkModeSelectionActivity::MAX_ITEM_COUNT);
+static_assert(sizeof(MODE_ROWS) / sizeof(MODE_ROWS[0]) + 1 == NetworkModeSelectionActivity::MAX_ITEM_COUNT);
 }  // namespace
 
 NetworkModeSelectionActivity::NetworkModeSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
@@ -50,6 +52,20 @@ NetworkModeSelectionActivity::NetworkModeSelectionActivity(GfxRenderer& renderer
     item.actionValue = static_cast<int16_t>(rowCount_);
     rowModes_[rowCount_] = row.mode;
     rowItems_[rowCount_++] = item;
+
+    if (row.mode == NetworkMode::JOIN_NETWORK) {
+      const std::string pluginDir = PluginLocations::findPluginDir("send2ereader");
+      if (!pluginDir.empty() && Storage.exists((pluginDir + "/manifest.json").c_str()) &&
+          Storage.exists((pluginDir + "/device.json").c_str())) {
+        fui::ListItem shortcut;
+        shortcut.label = "Send2Ereader";
+        shortcut.subtitle = "Receive books from a Send2Ereader session";
+        shortcut.icon = listIconFor(UIIcon::Book, 32);
+        shortcut.actionValue = static_cast<int16_t>(rowCount_);
+        rowModes_[rowCount_] = NetworkMode::SEND2EREADER;
+        rowItems_[rowCount_++] = shortcut;
+      }
+    }
   }
 }
 

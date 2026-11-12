@@ -149,6 +149,8 @@ The index is created automatically the first time the Library is opened. To pick
 
 The File Transfer screen allows you to upload and manage files on the device. When you enter the screen, choose **Join a Network**, **Calibre Wireless**, or **Create Hotspot**. The reader then starts the web server for the selected mode. The screen also lists **OPDS Browser**, which opens your OPDS catalogs; with no server configured it opens the server list so you can add one (see [OPDS Servers](#365-opds-servers-multiple-libraries)). When the plugin system is off and a server is configured, OPDS Browser is on the Home screen instead.
 
+On Razor-Crest, installing the **Send2Ereader** plugin adds a **Send2Ereader** entry to File Transfer, directly opening its on-device catalog. Back returns to File Transfer. The entry disappears when the plugin is removed or the Plugin System is disabled.
+
 See the [web server docs](./docs/webserver.md) for more information on how to connect to the web server and upload files.
 
 The web interface also supports **WebDAV**, allowing you to mount the device as a network drive and manage files directly from your computer's file manager.

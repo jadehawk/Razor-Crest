@@ -43,7 +43,8 @@ class PluginCatalogActivity : public CatalogActivity {
  public:
   // rootMode returns Home instead of popping to Settings.
   // Out-of-line construction/destruction needs the complete SecureHttpClient type.
-  explicit PluginCatalogActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool rootMode = false);
+  explicit PluginCatalogActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool rootMode = false,
+                                 std::string initialPlugin = {});
   ~PluginCatalogActivity() override;
 
   void onEnter() override;
@@ -248,6 +249,7 @@ class PluginCatalogActivity : public CatalogActivity {
   bool ignoreHubInstallerBackRelease = false;
   OptionPopup pluginHubPopup;
   bool rootMode = false;
+  std::string initialPlugin;
   std::string pickerReturnName;  // plugin identity to reselect after leaving a catalog
   std::vector<Item> items;
   // Row buffer over the active content. Footer paging is a separate native
