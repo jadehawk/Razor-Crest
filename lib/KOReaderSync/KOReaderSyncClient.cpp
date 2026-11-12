@@ -127,7 +127,7 @@ KOReaderSyncClient::Error KOReaderSyncClient::createUser() {
 }
 
 KOReaderSyncClient::Error KOReaderSyncClient::getProgress(const std::string& documentHash,
-                                                          KOReaderProgress& outProgress) {
+                                                          KOReaderProgress& outProgress, const uint32_t timeoutMs) {
   lastHttpCode = 0;
   if (!KOREADER_STORE.hasCredentials()) {
     LOG_DBG("KOSync", "No credentials configured");
@@ -147,6 +147,7 @@ KOReaderSyncClient::Error KOReaderSyncClient::getProgress(const std::string& doc
   }
   applyCustomHeaders(http);
   applyAuthHeaders(http);
+  if (timeoutMs) http.setTimeout(timeoutMs);
   const int httpCode = http.GET();
   lastHttpCode = httpCode;
 
@@ -217,7 +218,8 @@ KOReaderSyncClient::Error KOReaderSyncClient::getProgress(const std::string& doc
   return SERVER_ERROR;
 }
 
-KOReaderSyncClient::Error KOReaderSyncClient::updateProgress(const KOReaderProgress& progress) {
+KOReaderSyncClient::Error KOReaderSyncClient::updateProgress(const KOReaderProgress& progress,
+                                                             const uint32_t timeoutMs) {
   lastHttpCode = 0;
   if (!KOREADER_STORE.hasCredentials()) {
     LOG_DBG("KOSync", "No credentials configured");
@@ -287,6 +289,7 @@ KOReaderSyncClient::Error KOReaderSyncClient::updateProgress(const KOReaderProgr
   applyCustomHeaders(http);
   applyAuthHeaders(http);
   http.addHeader("Content-Type", "application/json");
+  if (timeoutMs) http.setTimeout(timeoutMs);
   const int httpCode = http.sendRequest("PUT", body);
   http.end();
   lastHttpCode = httpCode;

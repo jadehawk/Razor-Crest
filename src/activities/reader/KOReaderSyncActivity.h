@@ -26,7 +26,12 @@ class KOReaderSyncActivity final : public Activity, private UiAppHost {
   explicit KOReaderSyncActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& epubPath,
                                 CrossPointPosition localPosition, SavedProgressPosition localKoPos,
                                 std::string localChapterName, const bool pluginEventsOnly = false,
-                                uint32_t sessionSeconds = 0, uint32_t sessionForwardTurns = 0);
+                                uint32_t sessionSeconds = 0, uint32_t sessionForwardTurns = 0,
+                                bool automaticWifi = false);
+
+  // Background-free, upload-only sleep sync after the sleep frame is painted.
+  static void syncOnSleep(const std::string& path, const CrossPointPosition& local, const SavedProgressPosition& saved,
+                          KOReaderMetadata metadata);
 
   void onEnter() override;
   void onExit() override;
@@ -92,6 +97,7 @@ class KOReaderSyncActivity final : public Activity, private UiAppHost {
   // Reuses the KOReader WiFi connect/drain/return flow without a server: flush
   // plugged-outbox events instead of syncing progress.
   bool pluginEventsOnly = false;
+  bool automaticWifi = false;
 
   void onWifiSelectionComplete(bool success);
   void performSync();

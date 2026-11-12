@@ -29,6 +29,7 @@
 #include <atomic>
 #include <cstdarg>
 #include <cstring>
+#include <utility>
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
@@ -43,10 +44,12 @@
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
 #include "activities/boot_sleep/SleepActivity.h"
+#include "activities/reader/KOReaderSyncActivity.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "components/UITheme.h"
 #include "components/themes/ThemePackRegistry.h"
 #include "fontIds.h"
+#include "network/LastUsedWifi.h"
 #include "platform/UsbSerialJtagHandoff.h"
 #include "util/ButtonNavigator.h"
 #include "util/PluginEvents.h"
@@ -128,6 +131,9 @@ constexpr uint32_t SILENT_REBOOT_TARGET_SETTINGS = 2;
 constexpr uint32_t SILENT_REBOOT_TARGET_JOIN_NETWORK = 3;
 constexpr uint32_t SILENT_REBOOT_TARGET_MAX = SILENT_REBOOT_TARGET_JOIN_NETWORK;
 constexpr uint32_t SILENT_REBOOT_LIGHT_ON = 1U << 0;
+constexpr uint32_t SILENT_REBOOT_READER_ORIENTATION_VALID = 1U << 1;
+constexpr uint32_t SILENT_REBOOT_READER_ORIENTATION_SHIFT = 2;
+constexpr uint32_t SILENT_REBOOT_READER_ORIENTATION_MASK = 0x3U;
 
 // How the device is coming back to life, resolved once at boot. Both resume
 // flows suppress the splash and leave the panel holding its pre-boot frame; a
@@ -155,6 +161,13 @@ static bool deepSleepInProgress = false;
 static void armSilentReboot(const uint32_t target) {
   silentRebootTarget = target;
   silentRebootPayload = Frontlight.isOn() ? SILENT_REBOOT_LIGHT_ON : 0;
+  // Auto-rotation updates SETTINGS.orientation in RAM but intentionally avoids
+  // an SD write on every turn. A sync return must restore that live orientation
+  // after the heap-defragmenting restart, not the older on-disk value.
+  if (target == SILENT_REBOOT_TARGET_READER && SETTINGS.orientation < CrossPointSettings::ORIENTATION_COUNT) {
+    silentRebootPayload |= SILENT_REBOOT_READER_ORIENTATION_VALID |
+                           (static_cast<uint32_t>(SETTINGS.orientation) << SILENT_REBOOT_READER_ORIENTATION_SHIFT);
+  }
   silentRebootMagic = SILENT_REBOOT_MAGIC;
 }
 
@@ -377,12 +390,11 @@ static bool showsPluginSleepImage(const bool quickResume) {
                                         /*coverFallback=*/false);
 }
 
-// Brings WiFi up for a sleep drain when a handler opted into "connect".
-// `showPopup` is only used for the pre-paint sleep-image fetch: that popup is
-// painted over by the sleep screen, so it cannot become the retained frame.
-static bool joinSleepWifi(const bool showPopup) {
+// Reused by sleep-event delivery and automatic book-open sync. The standard
+// network picker remains exclusive to interactive Wi-Fi operations.
+bool connectLastUsedWifi(const uint32_t timeoutMs, const bool showPopup) {
   if (powerManager.getBatteryPercentage() < 20) return false;
-  // Sleep can be the first WiFi use since boot or deep-sleep wake.
+  if (WiFi.status() == WL_CONNECTED) return true;
   WIFI_STORE.loadFromFile();
   const auto cred = WIFI_STORE.findCredential(WIFI_STORE.getLastConnectedSsid());
   if (!cred) return false;
@@ -390,12 +402,16 @@ static bool joinSleepWifi(const bool showPopup) {
   if (showPopup) GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
   WiFi.mode(WIFI_STA);
   WiFi.begin(cred->ssid.c_str(), cred->password.c_str());
-  const unsigned long joinDeadline = millis() + 10000;
-  while (WiFi.status() != WL_CONNECTED && millis() < joinDeadline) {
+  const unsigned long startedAt = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - startedAt < timeoutMs) {
     delay(100);
   }
   return WiFi.status() == WL_CONNECTED;
 }
+
+// The optional popup is painted over by the sleep screen; post-paint callers
+// never request it, preserving the retained frame.
+static bool joinSleepWifi(const bool showPopup) { return connectLastUsedWifi(10000, showPopup); }
 
 // Runs one half of the sleep-entry drain. SleepImage must run before the sleep
 // screen paints so a fetched image appears on this sleep; Deferred runs after
@@ -501,6 +517,12 @@ void enterDeepSleep(bool fromTimeout = false) {
        SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT);
 
   emitSleepPluginEvents();
+  CrossPointPosition sleepLocal{};
+  SavedProgressPosition sleepSaved{};
+  KOReaderMetadata sleepMetadata;
+  const bool syncOnSleepReady = bluetoothStopped && powerManager.getBatteryPercentage() >= 20 &&
+                                KOREADER_STORE.getSyncOnSleep() && KOREADER_STORE.hasCredentials() &&
+                                activityManager.captureSleepSyncProgress(sleepLocal, sleepSaved, sleepMetadata);
   bool sleepWifiJoinFailed = false;
   if (bluetoothStopped && showsPluginSleepImage(isQuickResumeSleep)) {
     // Only a sleep image this mode actually paints is worth joining for; the
@@ -531,6 +553,19 @@ void enterDeepSleep(bool fromTimeout = false) {
   // non-image downloads run here instead of delaying the paint.
   if (bluetoothStopped) {
     drainSleepPlugins(pluginevents::DrainKind::Deferred, /*showPopup=*/false, sleepWifiJoinFailed);
+  }
+
+  if (syncOnSleepReady) {
+    bool connected = WiFi.status() == WL_CONNECTED;
+    if (!connected && !sleepWifiJoinFailed) {
+      connected = joinSleepWifi(/*showPopup=*/false);
+      if (!connected) sleepWifiJoinFailed = true;
+    }
+    if (connected) {
+      KOReaderSyncActivity::syncOnSleep(APP_STATE.openEpubPath, sleepLocal, sleepSaved, std::move(sleepMetadata));
+    } else {
+      LOG_DBG("KOSync", "Sleep sync skipped: last-used WiFi unavailable");
+    }
   }
 
   // Tear down WiFi so the modem power domain isn't held alive across deep sleep.
@@ -651,6 +686,10 @@ void setup() {
   const uint32_t snapshotTarget =
       (isSilentReboot && silentRebootTarget <= SILENT_REBOOT_TARGET_MAX) ? silentRebootTarget : 0;
   const bool silentRebootLightOn = isSilentReboot && (silentRebootPayload & SILENT_REBOOT_LIGHT_ON) != 0;
+  const bool restoreReaderOrientation = isSilentReboot && snapshotTarget == SILENT_REBOOT_TARGET_READER &&
+                                        (silentRebootPayload & SILENT_REBOOT_READER_ORIENTATION_VALID) != 0;
+  const uint8_t readerOrientation = static_cast<uint8_t>(
+      (silentRebootPayload >> SILENT_REBOOT_READER_ORIENTATION_SHIFT) & SILENT_REBOOT_READER_ORIENTATION_MASK);
   silentRebootMagic = 0;
   silentRebootTarget = 0;
   silentRebootPayload = 0;
@@ -738,6 +777,10 @@ void setup() {
     SETTINGS.readerMenuStyle = CrossPointSettings::READER_MENU_TOOLBAR;
   }
   SETTINGS.loadFromFile();
+  if (restoreReaderOrientation && readerOrientation < CrossPointSettings::ORIENTATION_COUNT) {
+    SETTINGS.orientation = readerOrientation;  // Restore the live reader layout without writing to SD.
+    LOG_DBG("MAIN", "Restored reader orientation after silent reboot: %u", static_cast<unsigned>(readerOrientation));
+  }
   // Push the saved timezone's POSIX rule into the clock (migrating the legacy
   // UTC-offset setting on first boot after the update).
   timezones::applyToClock();
@@ -906,7 +949,7 @@ void setup() {
     activityManager.goToCrashReport();
   } else if (resume == BootResume::Silent && snapshotTarget == SILENT_REBOOT_TARGET_READER &&
              !APP_STATE.openEpubPath.empty()) {
-    activityManager.goToReader(APP_STATE.openEpubPath);
+    activityManager.goToReader(APP_STATE.openEpubPath, /*fastRefresh=*/false, /*autoSync=*/false);
   } else if (resume == BootResume::Silent && snapshotTarget == SILENT_REBOOT_TARGET_JOIN_NETWORK) {
     // Rebooted on the way *into* File Transfer > Join Network for a fresh heap;
     // resume that flow directly instead of landing on home.
@@ -930,7 +973,7 @@ void setup() {
     APP_STATE.openEpubPath = "";
     APP_STATE.readerActivityLoadCount++;
     APP_STATE.saveToFile();
-    activityManager.goToReader(path, allowFastInitialReaderRefresh);
+    activityManager.goToReader(path, allowFastInitialReaderRefresh, /*autoSync=*/false);
   }
 
   // A normal splash should remain visible after its physical panel refresh.
