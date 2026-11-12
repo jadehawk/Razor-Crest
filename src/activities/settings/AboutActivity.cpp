@@ -24,8 +24,7 @@ enum MenuItem {
   ITEM_CHIP,
   ITEM_FLASH,
   ITEM_SD_SIZE,
-  ITEM_SD_USED,
-  ITEM_SD_FREE,
+  ITEM_STORAGE_DETAILS,
   ITEM_DISPLAY,
   ITEM_RESOLUTION,
   ITEM_TOUCH,
@@ -39,20 +38,8 @@ enum MenuItem {
 // these screenshots across every device language, so the labels must be
 // identical on every unit.
 const char* const menuNames[AboutActivity::ITEM_COUNT] = {
-    "Device",
-    "Firmware",
-    "Chip",
-    "Flash",
-    "SD Size",
-    "SD Used",
-    "SD Free",
-    "Display Controller",
-    "Resolution",
-    "Touch",
-    "Frontlight",
-    "RTC",
-    "Tilt Sensor (IMU)",
-    "MAC Address",
+    "Device",     "Firmware", "Chip",       "Flash", "SD Size",           "Storage Details", "Display Controller",
+    "Resolution", "Touch",    "Frontlight", "RTC",   "Tilt Sensor (IMU)", "MAC Address",
 };
 
 // "14.5 GB" / "35 MB": GiB with one decimal, MiB below 1 GiB.
@@ -118,7 +105,7 @@ const char* touchControllerName(const BoardConfig::TouchController c) {
 AboutActivity::AboutActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
     : UiListActivity("About", renderer, mappedInput) {}
 
-const char* AboutActivity::headerTitle() const { return "About"; }
+const char* AboutActivity::headerTitle() const { return showingStorageDetails_ ? "Storage Details" : "About"; }
 
 void AboutActivity::onEnter() {
   UiListActivity::onEnter();
@@ -156,22 +143,54 @@ void AboutActivity::onEnter() {
   snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
   rowValues_[ITEM_MAC] = buf;
 
-  // The used-space scan walks the whole FAT (seconds on a large card): answer the press with "Loading" first.
-  // onEnter runs without the render lock; take it for the popup.
-  {
-    RenderLock lock;
-    GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
+  // SD capacity is cached at mount; calculating used space scans the FAT.
+  rowValues_[ITEM_SD_SIZE] = formatBytes(Storage.sdTotalBytes());
+  rowValues_[ITEM_STORAGE_DETAILS] = ">";
+  detailItems_[0].label = "SD Used";
+  detailItems_[1].label = "SD Free";
+  for (int i = 0; i < DETAIL_COUNT; ++i) {
+    detailItems_[i].actionValue = static_cast<int16_t>(i);
+    detailValues_[i].clear();
   }
-  // The firmware does not boot without a card, so About always has one.
-  const uint64_t sdTotal = Storage.sdTotalBytes();
-  rowValues_[ITEM_SD_SIZE] = formatBytes(sdTotal);
-  uint64_t sdUsed = 0;
-  if (Storage.sdUsedBytes(sdUsed)) {
-    rowValues_[ITEM_SD_USED] = formatBytes(sdUsed);
-    rowValues_[ITEM_SD_FREE] = formatBytes(sdUsed <= sdTotal ? sdTotal - sdUsed : 0);
-  } else {
-    rowValues_[ITEM_SD_USED] = rowValues_[ITEM_SD_FREE] = "Error.";
+  showingStorageDetails_ = false;
+  sdUsageCalculated_ = false;
+}
+
+void AboutActivity::activateIndex(const int index) {
+  if (showingStorageDetails_ || index != ITEM_STORAGE_DETAILS) return;
+
+  app.clearTapFlash();
+  showingStorageDetails_ = true;
+  nav.reset();
+
+  if (!sdUsageCalculated_) {
+    // The FAT free-cluster scan may take seconds; show Loading only on request.
+    {
+      RenderLock lock;
+      GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
+    }
+
+    const uint64_t sdTotal = Storage.sdTotalBytes();
+    uint64_t sdUsed = 0;
+    if (Storage.sdUsedBytes(sdUsed)) {
+      detailValues_[0] = formatBytes(sdUsed);
+      detailValues_[1] = formatBytes(sdUsed <= sdTotal ? sdTotal - sdUsed : 0);
+      sdUsageCalculated_ = true;
+    } else {
+      detailValues_[0] = detailValues_[1] = "Error.";
+    }
   }
+  requestUpdate();
+}
+
+void AboutActivity::onBackButton() {
+  if (!showingStorageDetails_) {
+    finish();
+    return;
+  }
+  showingStorageDetails_ = false;
+  nav.reset(ITEM_STORAGE_DETAILS);
+  requestUpdate();
 }
 
 void AboutActivity::buildScreen(UiScreen& screen) {
@@ -180,13 +199,17 @@ void AboutActivity::buildScreen(UiScreen& screen) {
                                                 static_cast<int16_t>(metrics.buttonHintsHeight), 0});
   screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 
-  for (int i = 0; i < ITEM_COUNT; i++) {
-    rowItems_[i].value = rowValues_[i].c_str();
+  const int count = listCount();
+  for (int i = 0; i < count; ++i) {
+    if (showingStorageDetails_)
+      detailItems_[i].value = detailValues_[i].c_str();
+    else
+      rowItems_[i].value = rowValues_[i].c_str();
   }
 
   fui::ListProps props;
-  props.items = rowItems_;
-  props.count = ITEM_COUNT;
+  props.items = showingStorageDetails_ ? detailItems_ : rowItems_;
+  props.count = static_cast<uint16_t>(count);
   props.action = ACTION_ROW;
   props.inputMask = fui::InputTouch;  // physical buttons stay in loop()
   props.valueInset = 8;
