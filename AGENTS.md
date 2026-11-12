@@ -107,7 +107,7 @@ C:\XP-FW\build-fw.cmd X3 X4 X4Pro Seed
 
 By default, use the active authoritative ThinkForge workspace/worktree as the builder `-SourcePath` when testing branch-specific or uncommitted changes. The builder reproduces tracked staged/unstaged changes and normal untracked source files in its short-path mirror without modifying the authoritative source tree.
 
-The normal build must clean each requested target before compiling while retaining the installed compiler/package cache. Do not use `-NoClean` unless an incremental target build is explicitly requested.
+Local development builds are incremental by default: preserve per-environment object caches under `C:\XP-FW\cache\pio-build` and retain the pinned compiler/package caches. Use `-Clean` only for intentional clean/release verification builds; `-NoClean` remains supported for compatibility. The builder uses 8 parallel jobs by default (`-Jobs` to override). Never remove another device's cache while building a target.
 
 Output belongs under `C:\XP-FW\out\<timestamp>-<sha>\`. For every successful firmware build, also copy that model's complete build output into the established model-specific delivery folder `C:\XP-FW\out\latest\<MODEL>\` (for example `C:\XP-FW\out\latest\X3\` or `C:\XP-FW\out\latest\X4Pro\`). Preserve other model folders already present under `out\latest`; a later single-model build must not erase them. Never create or use a parallel convenience path such as `C:\XP-FW\Latest\`. Do not scatter test firmware into ad-hoc build folders.
 

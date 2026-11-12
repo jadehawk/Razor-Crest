@@ -3,6 +3,7 @@ import re
 import sys
 import gzip
 import hashlib
+import io
 
 # PlatformIO runs this from the project root without __file__.
 sys.path.insert(0, os.path.abspath(os.path.join("scripts", "vendor")))
@@ -192,7 +193,7 @@ for root, _, files in os.walk(SRC_DIR):
             base_name = sanitize_identifier(f"{os.path.splitext(file)[0]}{suffix}")
             header_path = os.path.join(root, f"{base_name}.generated.h")
 
-            with open(header_path, "w", encoding="utf-8") as h:
+            with io.StringIO() as h:
                 h.write(HEADER_PREAMBLE)
                 h.write(HEADER_PRAGMA)
                 h.write(HEADER_INCLUDE)
@@ -216,6 +217,17 @@ for root, _, files in os.walk(SRC_DIR):
                 # echo it back as If-None-Match, enabling 304 responses.
                 etag = hashlib.sha256(compressed).hexdigest()[:16]
                 h.write(f'constexpr const char* {base_name}ETag = "\\"{etag}\\"";\n')
+
+                generated = h.getvalue()
+
+            # Preserve the header timestamp when its payload has not changed.
+            unchanged = False
+            if os.path.isfile(header_path):
+                with open(header_path, "r", encoding="utf-8") as existing:
+                    unchanged = existing.read() == generated
+            if not unchanged:
+                with open(header_path, "w", encoding="utf-8") as output:
+                    output.write(generated)
 
             print(f"Generated: {header_path}")
             print(f"  Original: {len(content)} bytes")
