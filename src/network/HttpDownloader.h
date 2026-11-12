@@ -33,6 +33,8 @@ class HttpDownloader {
   // downloadToFile() and fail into their error UI instead.
   static constexpr uint32_t MIN_TLS_FREE_HEAP = 48 * 1024;
   static constexpr uint32_t MIN_TLS_MAX_ALLOC = 32 * 1024;
+  // PSRAM-equipped boards can use the upstream contiguous-block floor.
+  static constexpr uint32_t MIN_TLS_MAX_ALLOC_PSRAM = 20000;
 
   using Header = std::pair<std::string, std::string>;
 

@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <FontCacheManager.h>
 #include <FreeInkUIIcon.h>
+#include <HalMemory.h>
 #include <Logging.h>
 #include <Memory.h>
 #include <WiFi.h>
@@ -189,9 +190,11 @@ HttpDownloader::DownloadError CatalogActivity::downloadFile(const std::string& u
   }
   const uint32_t freeHeap = ESP.getFreeHeap();
   const uint32_t maxBlock = ESP.getMaxAllocHeap();
-  // A complete TLS handshake and full-record buffer must both fit before
-  // beginning a transfer, even after a catalog/details page fragmented RAM.
-  if (freeHeap < HttpDownloader::MIN_TLS_FREE_HEAP || maxBlock < HttpDownloader::MIN_TLS_MAX_ALLOC) {
+  // Retain the stricter contiguous-block reserve on PSRAM-less boards.
+  // PSRAM devices use the upstream floor rather than rejecting valid downloads.
+  const uint32_t minMaxBlock = HalMemory::getPsramHeap().totalBytes > 0 ? HttpDownloader::MIN_TLS_MAX_ALLOC_PSRAM
+                                                                        : HttpDownloader::MIN_TLS_MAX_ALLOC;
+  if (freeHeap < HttpDownloader::MIN_TLS_FREE_HEAP || maxBlock < minMaxBlock) {
     LOG_ERR("CAT", "Low heap for download (%u free, %u max block)", freeHeap, maxBlock);
     return HttpDownloader::HTTP_ERROR;
   }
