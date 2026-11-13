@@ -1,6 +1,5 @@
 #include "HomeMenuButtonsActivity.h"
 
-#include <BoardConfig.h>
 #include <I18n.h>
 #include <Memory.h>
 
@@ -18,13 +17,7 @@ constexpr StrId kChoices[] = {StrId::STR_HOME_SHOW, StrId::STR_HOME_HIDE, StrId:
 
 void HomeMenuButtonsActivity::onEnter() {
   UiListActivity::onEnter();
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const int top = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset;
-  const int rowHeight = GUI.getMenuRowHeight(renderer);
-  const int capacity = HomeMenuRegistry::capacityFor(
-      renderer, top, rowHeight, metrics.menuSpacing, BoardConfig::hasTouch() ? 0 : metrics.buttonHintsHeight,
-      UITheme::getInstance().activeExternalScene() ? (BoardConfig::hasTouch() ? 80 : 46) : 0);
-  registry.load(capacity, SETTINGS.pluginsEnabled != 0, OPDS_STORE.hasServers());
+  registry.load(SETTINGS.pluginsEnabled != 0, OPDS_STORE.hasServers());
 }
 
 bool HomeMenuButtonsActivity::handleCustomInput() {
@@ -43,12 +36,11 @@ void HomeMenuButtonsActivity::buildScreen(UiScreen& screen) {
   screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
   rows.resize(listCount());
   const auto& entries = registry.all();
-  const bool full = registry.visible().size() >= static_cast<size_t>(registry.capacity());
   for (size_t i = 0; i < entries.size(); ++i) {
     rows[i].label = entries[i].label.c_str();
     rows[i].value = entries[i].target == HomeMenuRegistry::Target::Settings ? I18N.get(StrId::STR_HOME_REQUIRED)
                     : entries[i].enabled                                    ? I18N.get(StrId::STR_HOME_VISIBLE)
-                                         : I18N.get(full ? StrId::STR_HOME_NO_ROOM : StrId::STR_HOME_HIDDEN);
+                                                                            : I18N.get(StrId::STR_HOME_HIDDEN);
     rows[i].actionValue = static_cast<int16_t>(i);
   }
   rows.back().label = I18N.get(StrId::STR_HOME_RESTORE_DEFAULTS);

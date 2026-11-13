@@ -52,6 +52,9 @@ class HomeActivity final : public Activity {
   std::vector<RecentBook> recentBooks;
   HomeMenuRegistry homeMenuRegistry;
   std::vector<HomeMenuRegistry::Entry> homeButtons;
+  int homeMenuViewportTop = 0;
+  int homeMenuViewportRows = 1;
+  void ensureHomeMenuSelectionVisible();
   const HomeMenuItem initialMenuItem;
   const bool cleanInitialRefresh;
 

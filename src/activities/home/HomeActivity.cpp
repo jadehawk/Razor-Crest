@@ -28,6 +28,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/BookProgress.h"
+#include "util/HomeMenuGeometry.h"
 #include "util/RecentBookLimits.h"
 
 namespace {
@@ -45,6 +46,13 @@ int HomeActivity::getMenuItemCount() const {
     count++;
   }
   return count;
+}
+
+void HomeActivity::ensureHomeMenuSelectionVisible() {
+  if (coverGridUi) return;
+  const int base = UITheme::getInstance().getMetrics().homeContinueReadingInMenu ? 0 : recentSlots();
+  homeMenuViewportTop = home_menu::scrollTopForSelection(homeMenuViewportTop, selectorIndex - base,
+                                                         getMenuItemCount() - base, homeMenuViewportRows);
 }
 
 void HomeActivity::loadRecentBooks(int maxBooks) {
@@ -360,12 +368,13 @@ void HomeActivity::onEnter() {
   hasContinueReading = !recentBooks.empty();
   if (!coverGridUi) {
     const int top = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset;
-    const int slots = HomeMenuRegistry::capacityFor(
+    homeMenuViewportRows = HomeMenuRegistry::capacityFor(
         renderer, top, GUI.getMenuRowHeight(renderer), metrics.menuSpacing,
         BoardConfig::hasTouch() ? 0 : metrics.buttonHintsHeight,
         UITheme::getInstance().activeExternalScene() ? (BoardConfig::hasTouch() ? 80 : 46) : 0);
-    homeMenuRegistry.load(slots, hasPlugins, hasOpdsServers);
+    homeMenuRegistry.load(hasPlugins, hasOpdsServers);
     homeButtons = homeMenuRegistry.visible();
+    homeMenuViewportTop = 0;
   }
   if (coverGridUi) {
     fillCoverGridFromLibrary();
@@ -394,6 +403,8 @@ void HomeActivity::onEnter() {
       if (match != homeButtons.end()) selectorIndex = base + static_cast<int>(match - homeButtons.begin());
     }
   }
+
+  ensureHomeMenuSelectionVisible();
 
   // Trigger first update
   requestUpdate();
@@ -526,11 +537,13 @@ void HomeActivity::loop() {
   if (!coverGridUi) {
     buttonNavigator.onNext([this, menuCount] {
       selectorIndex = ButtonNavigator::nextIndex(selectorIndex, menuCount);
+      ensureHomeMenuSelectionVisible();
       requestUpdate();
     });
 
     buttonNavigator.onPrevious([this, menuCount] {
       selectorIndex = ButtonNavigator::previousIndex(selectorIndex, menuCount);
+      ensureHomeMenuSelectionVisible();
       requestUpdate();
     });
   }
@@ -547,13 +560,39 @@ void HomeActivity::loop() {
       return;
     }
   }
+  if (!coverGridUi && mappedInput.hasTouch() &&
+      (swipe == MappedInputManager::SwipeDir::Up || swipe == MappedInputManager::SwipeDir::Down)) {
+    const auto& content = UITheme::getInstance().getContentArea(renderer);
+    const int top = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset;
+    const int footer = UITheme::getInstance().activeExternalScene() ? 80 : 0;
+    const int bottom = home_menu::safeBottom(renderer.getScreenHeight(), 0, footer);
+    const int menuBase = metrics.homeContinueReadingInMenu ? 0 : recentSlots();
+    const int total = menuCount - menuBase;
+    if (swipeStartX >= content.x && swipeStartX < content.x + content.width && swipeStartY >= top &&
+        swipeStartY < bottom && total > homeMenuViewportRows) {
+      const int step = std::max(1, homeMenuViewportRows - 1);
+      const int nextTop = home_menu::scrollTopBy(
+          homeMenuViewportTop, swipe == MappedInputManager::SwipeDir::Up ? step : -step, total, homeMenuViewportRows);
+      if (nextTop != homeMenuViewportTop) {
+        homeMenuViewportTop = nextTop;
+        const int selectedRow = selectorIndex - menuBase;
+        const int shown = home_menu::visibleRows(total, nextTop, homeMenuViewportRows);
+        if (selectedRow < nextTop || selectedRow >= nextTop + shown)
+          selectorIndex = menuBase + (swipe == MappedInputManager::SwipeDir::Up ? nextTop + shown - 1 : nextTop);
+        requestUpdate();
+      }
+      return;
+    }
+  }
   if (swipe == MappedInputManager::SwipeDir::Up) {
     selectorIndex = ButtonNavigator::nextIndex(selectorIndex, menuCount);
+    ensureHomeMenuSelectionVisible();
     requestUpdate();
     return;
   }
   if (swipe == MappedInputManager::SwipeDir::Down) {
     selectorIndex = ButtonNavigator::previousIndex(selectorIndex, menuCount);
+    ensureHomeMenuSelectionVisible();
     requestUpdate();
     return;
   }
@@ -634,15 +673,16 @@ void HomeActivity::loop() {
   }
 
   const int menuTop = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset;
-  const int renderedMenuCount = menuCount - (metrics.homeContinueReadingInMenu ? 0 : recentSlots());
+  const int menuBase = metrics.homeContinueReadingInMenu ? 0 : recentSlots();
+  const int renderedMenuCount = home_menu::visibleRows(menuCount - menuBase, homeMenuViewportTop, homeMenuViewportRows);
   int menuRow = -1;
   // Row height from the theme, not the metrics table: RoundedRaff draws
   // font-derived rows and the touch grid must match the visuals exactly.
   const int menuRowHeight = GUI.getMenuRowHeight(renderer);
   const auto menuTouch = mappedInput.rowTouch(menuRow, menuTop, menuRowHeight + metrics.menuSpacing, renderedMenuCount,
-                                              0, INT32_MAX, menuRowHeight);
+                                              content.x, content.x + content.width, menuRowHeight);
   if (menuTouch != MappedInputManager::RowTouch::None) {
-    const int touchedIndex = metrics.homeContinueReadingInMenu ? menuRow : menuRow + recentSlots();
+    const int touchedIndex = menuBase + homeMenuViewportTop + menuRow;
     if (menuTouch == MappedInputManager::RowTouch::Down) {
       if (selectorIndex != touchedIndex) {
         selectorIndex = touchedIndex;
@@ -773,31 +813,40 @@ void HomeActivity::render(RenderLock&&) {
     renderer.fillRect(x + cardW - rail, y + 3, rail, cardH - 6, true);
   }
 
-  // Build menu items dynamically
-  std::vector<const char*> menuItems;
-  menuItems.reserve(homeButtons.size() + 1);
-  std::vector<UIIcon> menuIcons;
-  menuIcons.reserve(homeButtons.size() + 1);
-  for (const auto& shortcut : homeButtons) {
-    menuItems.push_back(shortcut.label.c_str());
-    menuIcons.push_back(shortcut.icon);
-  }
-
-  if (metrics.homeContinueReadingInMenu && !recentBooks.empty()) {
-    // Insert Continue Reading at the top if enabled in theme
-    menuItems.insert(menuItems.begin(), tr(STR_CONTINUE_READING));
-    menuIcons.insert(menuIcons.begin(), Book);
-  }
+  // Render only the visible window, so every enabled shortcut is reachable
+  // without drawing rows under the footer or allocating a second menu list.
+  const bool menuHasResume = metrics.homeContinueReadingInMenu && !recentBooks.empty();
+  const int menuBase = menuHasResume ? 0 : recentSlots();
+  const int totalRows = static_cast<int>(homeButtons.size()) + (menuHasResume ? 1 : 0);
+  const int viewportTop = home_menu::scrollTopBy(homeMenuViewportTop, 0, totalRows, homeMenuViewportRows);
+  const int shownRows = home_menu::visibleRows(totalRows, viewportTop, homeMenuViewportRows);
+  const int selectedRow = selectorIndex - menuBase - viewportTop;
+  const int menuTop = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset;
+  const int hintsHeight = BoardConfig::hasTouch() ? 0 : metrics.buttonHintsHeight;
+  const int footerHeight = external ? (BoardConfig::hasTouch() ? 80 : 46) : 0;
+  const int menuHeight = std::max(1, home_menu::safeBottom(pageHeight, hintsHeight, footerHeight) - menuTop);
+  const Rect menuRect{content.x, menuTop, content.width, menuHeight};
 
   GUI.drawButtonMenu(
-      renderer,
-      Rect{content.x, metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset, content.width,
-           pageHeight - (metrics.headerHeight + metrics.homeTopPadding + metrics.verticalSpacing +
-                         metrics.homeMenuTopOffset + metrics.buttonHintsHeight)},
-      static_cast<int>(menuItems.size()),
-      metrics.homeContinueReadingInMenu ? selectorIndex : selectorIndex - recentSlots(),
-      [&menuItems](int index) { return std::string(menuItems[index]); },
-      [&menuIcons](int index) { return menuIcons[index]; });
+      renderer, menuRect, shownRows, selectedRow >= 0 && selectedRow < shownRows ? selectedRow : -1,
+      [this, menuHasResume, viewportTop](int row) {
+        const int index = viewportTop + row;
+        return menuHasResume && index == 0 ? std::string(tr(STR_CONTINUE_READING))
+                                           : homeButtons[index - (menuHasResume ? 1 : 0)].label;
+      },
+      [this, menuHasResume, viewportTop](int row) {
+        const int index = viewportTop + row;
+        return menuHasResume && index == 0 ? Book : homeButtons[index - (menuHasResume ? 1 : 0)].icon;
+      });
+
+  if (totalRows > homeMenuViewportRows) {
+    const int barWidth = std::max(2, metrics.scrollBarWidth);
+    const int barX = menuRect.x + menuRect.width - metrics.scrollBarRightOffset - barWidth;
+    const int thumbHeight = std::min(menuHeight, std::max(12, menuHeight * shownRows / totalRows));
+    const int travel = menuHeight - thumbHeight;
+    const int maxTop = totalRows - homeMenuViewportRows;
+    renderer.fillRect(barX, menuTop + (viewportTop * travel) / maxTop, barWidth, thumbHeight, true);
+  }
 
   const auto labels = mappedInput.mapLabels(recentBooks.empty() ? "" : tr(STR_RESUME), tr(STR_SELECT), tr(STR_DIR_UP),
                                             tr(STR_DIR_DOWN));
