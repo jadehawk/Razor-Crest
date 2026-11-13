@@ -51,7 +51,24 @@ class UITheme {
   // Preserves SETTINGS.sdThemeId; call reload() after the directory swap.
   void suspendExternalAssets();
   void syncFonts();  // Call after display/font initialization and on theme change.
-  const ThemeScene* activeExternalScene() const { return externalActive ? &externalScene : nullptr; }
+  // During a TLS file transfer, keep the normal UI but avoid SD-backed artwork
+  // on the render task (especially the X3's limited task stack).
+  class ScopedArtworkSuppression {
+   public:
+    ScopedArtworkSuppression(UITheme& theme, bool suppress) : theme(theme), previous(theme.artworkSuppressed) {
+      if (suppress) theme.artworkSuppressed = true;
+    }
+    ~ScopedArtworkSuppression() { theme.artworkSuppressed = previous; }
+    ScopedArtworkSuppression(const ScopedArtworkSuppression&) = delete;
+    ScopedArtworkSuppression& operator=(const ScopedArtworkSuppression&) = delete;
+
+   private:
+    UITheme& theme;
+    bool previous;
+  };
+  const ThemeScene* activeExternalScene() const {
+    return externalActive && !artworkSuppressed ? &externalScene : nullptr;
+  }
   bool hasExternalListSeparators() const { return externalActive && externalScene.usesRowSeparators(); }
   bool useTabbedSettings() const {
     if (SETTINGS.settingsNavigation == CrossPointSettings::SETTINGS_NAV_LIST) return false;
@@ -82,6 +99,7 @@ class UITheme {
   ThemeScene externalScene;
   ThemeFonts themeFonts;
   bool externalActive = false;
+  bool artworkSuppressed = false;
   std::unique_ptr<BaseTheme> currentTheme;
   mutable ThemeMetrics adjustedMetrics;
   mutable bool metricsValid = false;
