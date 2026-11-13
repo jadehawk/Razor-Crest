@@ -81,9 +81,11 @@ namespace {
 // v71: Focus split offsets follow the visual run order for RTL words.
 // v72: Make ruby rendering closer to how Chromium renders ruby by default.
 // v73: TrueType vector fonts load and advance .notdef for missing glyphs.
-// v74: Independent Razor-Crest and upstream builds used v74 for different layout fixes.
-// v75: Preserve explicitly centered EPUB paragraphs and defer TrueType advance rounding.
-constexpr uint8_t SECTION_FILE_VERSION = 75;
+// v74: Razor-Crest and upstream used v74 for different layout changes.
+// v75: Razor-Crest preserved centered paragraphs and deferred TrueType advance rounding;
+//      upstream disabled heading hyphenation using this same cache version.
+// v76: Combine both layout behaviors, invalidating caches written by either v75 build.
+constexpr uint8_t SECTION_FILE_VERSION = 76;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
