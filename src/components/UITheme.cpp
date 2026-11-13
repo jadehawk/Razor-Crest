@@ -139,9 +139,11 @@ const std::string& UITheme::usbGrayscalePath() const {
 }
 
 bool UITheme::renderExternalScene(ThemeScene::Region region, const GfxRenderer& renderer, Rect area, const char* title,
-                                  const std::vector<RecentBook>* books, int selection, ThemeScene::Phase phase) const {
+                                  const std::vector<RecentBook>* books, int selection, ThemeScene::Phase phase,
+                                  size_t bookIndex) const {
   const ThemeScene* scene = activeExternalScene();
-  return scene && scene->hasRegion(region) && scene->draw(renderer, region, area, title, books, selection, phase);
+  return scene && scene->hasRegion(region) &&
+         scene->draw(renderer, region, area, title, books, selection, phase, bookIndex);
 }
 
 void UITheme::setTheme(CrossPointSettings::UI_THEME type) {

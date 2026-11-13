@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <functional>
 #include <string>
 #include <vector>
@@ -19,12 +20,14 @@ class ThemeScene {
   enum class HeaderBackStyle : uint8_t { Emblem, Arrow, Both };
   bool load(const std::string& themeJsonPath);
   bool draw(const GfxRenderer& renderer, Region region, Rect area, const char* screenTitle = nullptr,
-            const std::vector<RecentBook>* recentBooks = nullptr, int selectorIndex = 0,
-            Phase phase = Phase::Full) const;
+            const std::vector<RecentBook>* recentBooks = nullptr, int selectorIndex = 0, Phase phase = Phase::Full,
+            size_t bookIndex = 0) const;
   bool hasRegion(Region region) const;
   bool headerBackgroundBlack() const;
   // Native full-size book-card scene (one visual slot regardless of recent count).
   bool hasNativeCoverCard() const;
+  // Explicit theme opt-in, with legacy native-cover compatibility.
+  bool supportsBookCarousel() const;
   int bookCarouselRailWidth() const { return carouselRailWidth; }
   const std::string& usbGrayscalePath() const { return usbGrayFile; }
   bool selectSleepGrayscalePath(std::string& path) const;
@@ -71,6 +74,8 @@ class ThemeScene {
   int rowCut = 0;
   int hintCut = 0;
   int carouselRailWidth = 8;
+  bool carouselConfigured = false;
+  bool carouselEnabled = false;
   bool rowSeparators = false;
   bool settingsNavigationTabs = false;
   bool menuDoubleOutline = false;

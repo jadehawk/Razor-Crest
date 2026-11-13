@@ -22,5 +22,21 @@ int main() {
   p.clamp();
   assert(p.current() == 1);
   assert(p.move(1) == 0);
+  // Bounded Home navigation never wraps, unlike plugin carousels.
+  p = {3, 0, true};
+  assert(!p.canMoveBounded(-1));
+  assert(!p.canMoveBounded(0));
+  assert(p.moveBounded(-1) == 0);
+  assert(p.canMoveBounded(1));
+  assert(p.moveBounded(1) == 1);
+  assert(p.moveBounded(1) == 2);
+  assert(!p.canMoveBounded(1));
+  assert(p.moveBounded(1) == 2);
+  assert(p.moveBounded(-1) == 1);
+  assert(p.move(-1) == 0);  // Existing cyclic API remains unchanged.
+  p = {1, 0, true};
+  assert(!p.canMoveBounded(1));
+  p.enabled = false;
+  assert(!p.canMoveBounded(-1));
   return 0;
 }

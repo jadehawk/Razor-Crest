@@ -5,9 +5,8 @@ advertised capability; they are not requirements tied to a firmware name.
 
 ## Home: `home.book-carousel.v1`
 
-**Setting:** Display > Continue Reading opens a dedicated page with Enable Continue Reading Carousel (off by default for new installations) and Continue Reading Book Limit. The setting enables cyclic navigation inside one
-full-size native SD-theme `book-card` of variant `cover`, where the theme
-declares a Home scene. Existing cover-grid layouts are unaffected.
+**Setting:** Display > Book Carousel appears only for active compatible SD themes, and opens a dedicated page with Enable Book Carousel (off by default for new installations) and Book Limit. The setting enables bounded navigation inside one
+SD-theme `book-card`, where the theme declares `styles.book_carousel: true` and a Home scene. `cover` and `outlined` card variants are supported; older `cover` scenes without the style remain compatible. Existing built-in and cover-grid layouts are unaffected.
 
 - One book card remains visible; never adjacent covers or a cover-strip.
 - A single Home focus slot represents the entire card, regardless of the number
@@ -17,14 +16,16 @@ declares a Home scene. Existing cover-grid layouts are unaffected.
 - Touch devices swipe left/right beginning inside the card; swipe gestures
   beginning at the left-edge Back zone are reserved for system navigation.
   Tap opens the displayed book.
-- Cycling wraps around. The remembered selection is retained while Home is
-  revisited in the same firmware session; missing/finished books are skipped.
+- Cycling does not wrap. At the final book, Down advances into the Home menu;
+  Up from its first row returns to the selected book. Touch swipes stop at the
+  first/last book. The remembered selection is retained while Home is revisited
+  in the same firmware session; missing/finished books are skipped.
 - One eligible book keeps the original single-card presentation and normal
   side-button navigation. The Back/Resume shortcut opens the displayed book.
 - The source is the Recent Books store, not a full-library scan.
   - Without PSRAM, the Recent Books storage ceiling and carousel maximum stay at 10.
   - With PSRAM, the storage ceiling is 20. The Library pinned overlay stays at 10.
-- Display > Continue Reading Book Limit offers Auto (10 or 20 by hardware), 5,
+- Display > Book Carousel > Book Limit offers Auto (10 or 20 by hardware), 5,
   10, and on PSRAM devices 20. This limit controls recent
   candidates, not the number of decoded cover images. The stored
   continueReadingBookLimit value is zero for Auto and is clamped at use.

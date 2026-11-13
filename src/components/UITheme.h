@@ -85,7 +85,8 @@ class UITheme {
   bool selectSleepGrayscalePath(std::string& path) const;
   bool renderExternalScene(ThemeScene::Region region, const GfxRenderer& renderer, Rect area,
                            const char* title = nullptr, const std::vector<RecentBook>* books = nullptr,
-                           int selection = 0, ThemeScene::Phase phase = ThemeScene::Phase::Full) const;
+                           int selection = 0, ThemeScene::Phase phase = ThemeScene::Phase::Full,
+                           size_t bookIndex = 0) const;
   void setTheme(CrossPointSettings::UI_THEME type);
   static std::string getCoverThumbPath(std::string coverBmpPath, int coverHeight);
   static UIIcon getFileIcon(const std::string& filename);

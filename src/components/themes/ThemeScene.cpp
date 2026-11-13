@@ -251,6 +251,8 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
   rowCut = 0;
   hintCut = 0;
   carouselRailWidth = 8;
+  carouselConfigured = false;
+  carouselEnabled = false;
   rowSeparators = false;
   settingsNavigationTabs = false;
   menuDoubleOutline = false;
@@ -302,6 +304,11 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
       return false;
     if (!styles["row_separators"].isNull() && !styles["row_separators"].is<bool>()) return false;
     rowSeparators = styles["row_separators"] | false;
+    if (!styles["book_carousel"].isNull()) {
+      if (!styles["book_carousel"].is<bool>()) return false;
+      carouselConfigured = true;
+      carouselEnabled = styles["book_carousel"].as<bool>();
+    }
     if (!styles["settings_navigation"].isNull() && !styles["settings_navigation"].is<const char*>()) return false;
     const char* navigation = styles["settings_navigation"] | "list";
     if (strcmp(navigation, "list") && strcmp(navigation, "tabs")) return false;
@@ -666,8 +673,16 @@ bool ThemeScene::hasNativeCoverCard() const {
   return false;
 }
 
+bool ThemeScene::supportsBookCarousel() const {
+  const auto& home = regions[static_cast<size_t>(Region::Home)];
+  const bool hasBookCard =
+      std::any_of(home.begin(), home.end(), [](const Op& op) { return op.kind == Kind::BookCard; });
+  return hasBookCard && (carouselConfigured ? carouselEnabled : hasNativeCoverCard());
+}
+
 bool ThemeScene::draw(const GfxRenderer& renderer, Region region, Rect area, const char* screenTitle,
-                      const std::vector<RecentBook>* recentBooks, const int selectorIndex, const Phase phase) const {
+                      const std::vector<RecentBook>* recentBooks, const int selectorIndex, const Phase phase,
+                      const size_t bookIndex) const {
   if (area.width <= 0 || area.height <= 0) return false;
   const auto clip = renderer.getClipRect();
   const int left = std::max(clip[0], area.x);
@@ -812,7 +827,7 @@ bool ThemeScene::draw(const GfxRenderer& renderer, Region region, Rect area, con
         renderer.fillRect(area.x, y, area.width, thickness, op.black);
     } else if (op.kind == Kind::BookCard) {
       // The book data, focus state and actual navigation remain firmware owned.
-      const bool hasBook = recentBooks && !recentBooks->empty();
+      const bool hasBook = recentBooks && bookIndex < recentBooks->size();
       const bool selected = hasBook && selectorIndex == 0;
       const int width = std::max(1, area.width - 28);
       const int height = std::min(area.height, 66);
@@ -822,7 +837,7 @@ bool ThemeScene::draw(const GfxRenderer& renderer, Region region, Rect area, con
       if (op.data == "@native-cover") {
         // Featured native thumbnail, title and saved progress; never bake cover
         // artwork into the theme. The theme owns the geometry only.
-        const RecentBook* first = hasBook ? &(*recentBooks)[0] : nullptr;
+        const RecentBook* first = hasBook ? &(*recentBooks)[bookIndex] : nullptr;
         const int coverHeight = std::min(area.height, 166);
         const int coverY = anchored(area.y, area.height, coverHeight, op.anchorY, op.offsetY);
         const int coverX = x;
@@ -938,7 +953,7 @@ bool ThemeScene::draw(const GfxRenderer& renderer, Region region, Rect area, con
       const char* heading = hasBook ? tr(STR_CONTINUE_READING) : tr(STR_NO_OPEN_BOOK);
       const auto upper = upperAscii(renderer.truncatedText(UI_10_FONT_ID, heading, usable));
       renderer.drawText(UI_10_FONT_ID, textX, y + 12, upper.c_str(), selected, EpdFontFamily::BOLD);
-      const RecentBook* first = hasBook ? &(*recentBooks)[0] : nullptr;
+      const RecentBook* first = hasBook ? &(*recentBooks)[bookIndex] : nullptr;
       const char* detail =
           first ? (first->title.empty() ? first->path.c_str() : first->title.c_str()) : tr(STR_START_READING);
       const auto line = renderer.truncatedText(SMALL_FONT_ID, detail, usable);

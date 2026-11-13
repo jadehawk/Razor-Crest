@@ -17,7 +17,7 @@ class ContinueReadingSettingsActivity final : public UiListActivity {
   std::string limitLabel;
 
   int listCount() const override { return ROW_COUNT; }
-  const char* headerTitle() const override { return tr(STR_CONTINUE_READING); }
+  const char* headerTitle() const override { return tr(STR_BOOK_CAROUSEL); }
   void buildScreen(UiScreen& screen) override;
   void activateIndex(int index) override;
   bool handleCustomInput() override;

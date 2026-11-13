@@ -231,7 +231,8 @@ void SettingsActivity::rebuildSettings() {
   addAction(SettingsSection::Reader, StrId::STR_TEXT_SETTINGS, SettingAction::TextSettings);
   addAction(SettingsSection::Reader, StrId::STR_MANAGE_FONTS, SettingAction::DownloadFonts);
   addAction(SettingsSection::Display, StrId::STR_HOME_MENU_BUTTONS, SettingAction::HomeMenuButtons);
-  addAction(SettingsSection::Display, StrId::STR_CONTINUE_READING, SettingAction::ContinueReading);
+  if (const auto* scene = UITheme::getInstance().activeExternalScene(); scene && scene->supportsBookCarousel())
+    addAction(SettingsSection::Display, StrId::STR_BOOK_CAROUSEL, SettingAction::ContinueReading);
   if (section == SettingsSection::Controls) {
     if (controlsGroup == ControlsGroup::Root) {
       if (BoardConfig::hasHomeKey()) {
