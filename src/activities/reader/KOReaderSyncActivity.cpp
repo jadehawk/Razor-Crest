@@ -680,6 +680,21 @@ void KOReaderSyncActivity::syncOnSleep(const std::string& path, const CrossPoint
   if (hash.empty()) return;
 
   WifiPowerSaveGuard powerSave;
+  if (KOREADER_STORE.getSyncClippings()) {
+    bool clippingsSynced;
+    {
+#if defined(CONFIG_IDF_TARGET_ESP32C3) && CONFIG_IDF_TARGET_ESP32C3
+      // The sleep frame is already painted. The C3 clipping transport borrows
+      // its framebuffer as a 32 KiB HTTP buffer, as in interactive sync.
+      extern GfxRenderer renderer;
+      RenderLock lock;
+      GfxRenderer::FrameBufferLoan loan(renderer);
+#endif
+      clippingsSynced = clippingSync::run(path, hash, clippingSync::Mode::UploadOnly, kHttpTimeoutMs);
+    }
+    if (!clippingsSynced)
+      LOG_ERR("KOSync", "Sleep clippings upload deferred; pending changes will retry on the next sync");
+  }
   KOReaderProgress remote{};
   auto result = KOReaderSyncClient::getProgress(hash, remote, kHttpTimeoutMs);
   if (result == KOReaderSyncClient::NOT_FOUND && KOREADER_STORE.getSyncBehavior() == KOReaderSyncBehavior::SMART) {

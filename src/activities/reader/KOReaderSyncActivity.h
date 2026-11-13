@@ -29,7 +29,7 @@ class KOReaderSyncActivity final : public Activity, private UiAppHost {
                                 uint32_t sessionSeconds = 0, uint32_t sessionForwardTurns = 0,
                                 bool automaticWifi = false);
 
-  // Background-free, upload-only sleep sync after the sleep frame is painted.
+  // Background-free, upload-only progress and clippings sync after the sleep frame is painted.
   static void syncOnSleep(const std::string& path, const CrossPointPosition& local, const SavedProgressPosition& saved,
                           KOReaderMetadata metadata);
 

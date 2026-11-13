@@ -13,6 +13,8 @@ using Headers = std::vector<std::pair<std::string, std::string>>;
 inline std::vector<Headers> headers;  // One entry per begin(), in request order.
 inline std::vector<std::string> uploads;
 inline std::string remoteResponse;
+inline std::string probeResponse = "{\"sync_version\":2}";
+inline uint32_t timeoutMs = 0;
 inline int requests = 0;
 inline int failHttpAt = -1;
 inline bool incomplete = false;
@@ -21,6 +23,7 @@ namespace freeink {
 class SecureHttpClient {
  public:
   void setInsecure() {}
+  void setTimeout(const uint32_t ms) { fake::timeoutMs = ms; }
   bool begin(const std::string& url) {
     url_ = url;
     fake::headers.emplace_back();
@@ -38,7 +41,7 @@ class SecureHttpClient {
     const bool upload = std::string(method) == "PUT";
     if (upload) fake::uploads.emplace_back(reinterpret_cast<const char*>(data), length);
     const std::string response = upload                                        ? "{\"accepted\":1}"
-                                 : url_.find("?cursor=0") != std::string::npos ? "{\"sync_version\":2}"
+                                 : url_.find("?cursor=0") != std::string::npos ? fake::probeResponse
                                                                                : fake::remoteResponse;
     complete_ = !fake::incomplete;
     for (size_t offset = 0; offset < response.size(); offset += 97) {

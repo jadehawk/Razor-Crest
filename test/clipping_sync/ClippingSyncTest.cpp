@@ -30,6 +30,8 @@ void reset() {
   fake::failHttpAt = -1;
   fake::incomplete = false;
   fake::remoteResponse = "{\"cursor\":0,\"more\":false,\"items\":[]}";
+  fake::probeResponse = "{\"sync_version\":2}";
+  fake::timeoutMs = 0;
   syncCredentials.enabled = true;
   syncCredentials.customHeaders.clear();
 }
@@ -115,11 +117,152 @@ void everyRequestSendsAuthHeaders(const SyncCredentials::Header& custom, const s
     assert(values == std::vector<std::string>{authorization});
   }
 }
+
+void sleepUploadsPendingChangesWithoutPull() {
+  reset();
+#if defined(CONFIG_IDF_TARGET_ESP32S3) && CONFIG_IDF_TARGET_ESP32S3
+  fake::syncHeap = 100000;
+#endif
+  add("kept");
+  add("removed");
+  assert(clippingSync::run(book, "hash"));  // Establish server IDs and clear pending flags.
+  released();
+  assert(CLIPPINGS.loadForBook(book, "", "", "epub"));
+  assert(CLIPPINGS.removeClippingAt(1));
+  CLIPPINGS.unload();
+  add("new on device");
+
+  fake::requests = 0;
+  fake::headers.clear();
+  fake::uploads.clear();
+  // A sleeping device must not fetch or apply remote clippings.
+  fake::remoteResponse = "not a valid remote clipping response";
+  assert(clippingSync::run(book, "hash", clippingSync::Mode::UploadOnly, 4000));
+  released();
+  assert(fake::timeoutMs == 4000);
+  assert(fake::requests == 3);  // Capability probe, deleted item, new item.
+  assert(fake::uploads.size() == 2);
+  assert(fake::uploads[0].find("\"deleted\":1") != std::string::npos);
+  assert(fake::uploads[1].find("new on device") != std::string::npos);
+  for (const auto& [path, unused] : fake::files) assert(!path.ends_with(".deleted"));
+
+  assert(CLIPPINGS.loadForBook(book, "", "", "epub"));
+  assert(CLIPPINGS.clippingCount() == 2);
+  assert(!CLIPPINGS.clippingAt(0)->pendingUpload);
+  assert(!CLIPPINGS.clippingAt(1)->pendingUpload);
+  CLIPPINGS.unload();
+}
+
+void sleepFailuresRetainPendingChanges() {
+  reset();
+#if defined(CONFIG_IDF_TARGET_ESP32S3) && CONFIG_IDF_TARGET_ESP32S3
+  fake::syncHeap = 100000;
+#endif
+  add("retry on next sleep");
+  fake::failHttpAt = 1;  // Probe succeeds, upload fails.
+  assert(!clippingSync::run(book, "hash", clippingSync::Mode::UploadOnly, 4000));
+  released();
+  assert(CLIPPINGS.loadForBook(book, "", "", "epub"));
+  assert(CLIPPINGS.clippingAt(0)->pendingUpload);
+  CLIPPINGS.unload();
+
+  fake::requests = 0;
+  fake::failHttpAt = -1;
+  assert(clippingSync::run(book, "hash", clippingSync::Mode::UploadOnly, 4000));
+  released();
+  assert(CLIPPINGS.loadForBook(book, "", "", "epub"));
+  assert(!CLIPPINGS.clippingAt(0)->pendingUpload);
+  CLIPPINGS.unload();
+
+  reset();
+#if defined(CONFIG_IDF_TARGET_ESP32S3) && CONFIG_IDF_TARGET_ESP32S3
+  fake::syncHeap = 100000;
+#endif
+  add("incompatible server");
+  fake::probeResponse = "{\"sync_version\":1}";
+  assert(!clippingSync::run(book, "hash", clippingSync::Mode::UploadOnly, 4000));
+  released();
+  assert(fake::requests == 1);
+  assert(fake::uploads.empty());
+  assert(CLIPPINGS.loadForBook(book, "", "", "epub"));
+  assert(CLIPPINGS.clippingAt(0)->pendingUpload);
+  CLIPPINGS.unload();
+}
+
+void sleepDeletionOnlyRetriesUntilAcknowledged() {
+  reset();
+#if defined(CONFIG_IDF_TARGET_ESP32S3) && CONFIG_IDF_TARGET_ESP32S3
+  fake::syncHeap = 100000;
+#endif
+  add("delete at sleep");
+  assert(clippingSync::run(book, "hash"));
+  released();
+  assert(CLIPPINGS.loadForBook(book, "", "", "epub"));
+  assert(CLIPPINGS.removeClippingAt(0));
+  CLIPPINGS.unload();
+
+  fake::requests = 0;
+  fake::uploads.clear();
+  fake::failHttpAt = 1;  // The server probe succeeds but the deletion fails.
+  assert(!clippingSync::run(book, "hash", clippingSync::Mode::UploadOnly, 4000));
+  released();
+  bool queued = false;
+  for (const auto& [path, unused] : fake::files) queued |= path.ends_with(".deleted");
+  assert(queued);
+
+  fake::requests = 0;
+  fake::failHttpAt = -1;
+  assert(clippingSync::run(book, "hash", clippingSync::Mode::UploadOnly, 4000));
+  released();
+  assert(fake::requests == 2);  // Probe and one deletion, without a remote pull.
+  assert(fake::uploads.size() == 1);
+  assert(fake::uploads.front().find("\"deleted\":1") != std::string::npos);
+  for (const auto& [path, unused] : fake::files) assert(!path.ends_with(".deleted"));
+}
+
+void sleepWithoutPendingChangesSkipsHttp() {
+  reset();
+#if defined(CONFIG_IDF_TARGET_ESP32S3) && CONFIG_IDF_TARGET_ESP32S3
+  fake::syncHeap = 100000;
+#endif
+  add("already synced");
+  assert(clippingSync::run(book, "hash"));
+  released();
+  fake::requests = 0;
+  fake::uploads.clear();
+  fake::headers.clear();
+  fake::remoteResponse = "not a valid remote clipping response";
+  assert(clippingSync::run(book, "hash", clippingSync::Mode::UploadOnly, 4000));
+  released();
+  assert(fake::requests == 0);
+  assert(fake::uploads.empty());
+  assert(CLIPPINGS.loadForBook(book, "", "", "epub"));
+  assert(!CLIPPINGS.clippingAt(0)->pendingUpload);
+  CLIPPINGS.unload();
+}
+
+void disabledSleepClippingsDoesNothing() {
+  reset();
+  add("remain local");
+  syncCredentials.enabled = false;
+  assert(clippingSync::run(book, "hash", clippingSync::Mode::UploadOnly, 4000));
+  released();
+  assert(fake::requests == 0);
+  assert(fake::timeoutMs == 0);
+  assert(CLIPPINGS.loadForBook(book, "", "", "epub"));
+  assert(CLIPPINGS.clippingAt(0)->pendingUpload);
+  CLIPPINGS.unload();
+}
 }  // namespace
 
 int main() {
   buildscratch::lend(framebuffer.data(), framebuffer.size());
   maximumTextRoundTrip();
+  sleepUploadsPendingChangesWithoutPull();
+  sleepFailuresRetainPendingChanges();
+  sleepDeletionOnlyRetriesUntilAcknowledged();
+  sleepWithoutPendingChangesSkipsHttp();
+  disabledSleepClippingsDoesNothing();
   const std::string basic = "Basic cmVhZGVyOnBhc3M=";
   everyRequestSendsAuthHeaders({}, basic);
   everyRequestSendsAuthHeaders({"CF-Access-Client-Id", "client"}, basic);

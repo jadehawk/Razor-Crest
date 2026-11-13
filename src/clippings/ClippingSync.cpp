@@ -137,7 +137,8 @@ bool decode(JsonObjectConst item, Clipping& clipping, std::string& text, bool& d
 }
 }  // namespace
 
-bool clippingSync::run(const std::string& bookPath, const std::string& documentHash) {
+bool clippingSync::run(const std::string& bookPath, const std::string& documentHash, const Mode mode,
+                       const uint32_t timeoutMs) {
   // Gate before loading files, allocating buffers, or contacting the server.
   if (!KOREADER_STORE.getSyncClippings()) return true;
   if (!KOREADER_STORE.hasCredentials()) return false;
@@ -145,6 +146,22 @@ bool clippingSync::run(const std::string& bookPath, const std::string& documentH
   struct Unload {
     ~Unload() { CLIPPINGS.unload(); }
   } unload;
+
+  // A sleep with no local changes should not spend battery on an extra TLS
+  // handshake or require the server's optional clippings extension.
+  if (mode == Mode::UploadOnly) {
+    bool hasPendingUploads = false;
+    for (size_t i = 0; i < CLIPPINGS.clippingCount(); ++i) {
+      if (CLIPPINGS.clippingAt(i)->pendingUpload) {
+        hasPendingUploads = true;
+        break;
+      }
+    }
+    uint32_t offset = 0;
+    char deletedId[65];
+    if (!CLIPPINGS.nextDeletion(offset, deletedId)) return false;
+    if (!hasPendingUploads && !deletedId[0]) return true;
+  }
 
 #if defined(CONFIG_IDF_TARGET_ESP32C3) && CONFIG_IDF_TARGET_ESP32C3
   const auto releaseScratch = [](char* buffer) { buildscratch::release(reinterpret_cast<uint8_t*>(buffer)); };
@@ -160,6 +177,7 @@ bool clippingSync::run(const std::string& bookPath, const std::string& documentH
     return false;
   }
   http->setInsecure();
+  if (timeoutMs) http->setTimeout(timeoutMs);
   const std::string url = KOREADER_STORE.getBaseUrl() + "/api/v1/clippings/" + documentHash;
   JsonDocument doc;
   // Probe the extension before any upload, even when the user explicitly enabled it.
@@ -193,6 +211,10 @@ bool clippingSync::run(const std::string& bookPath, const std::string& documentH
     if (!request(*http, url, buffer.get(), doc, true)) return false;
   }
   if (!CLIPPINGS.finishUploads()) return false;
+
+  // Sleep is upload-only: do not fetch or apply remote clippings/deletions,
+  // including when the server already has equal or newer reading progress.
+  if (mode == Mode::UploadOnly) return true;
 
   // ponytail: rescan one book per manual sync; persist an account-scoped cursor if histories grow large.
   uint64_t cursor = 0;
