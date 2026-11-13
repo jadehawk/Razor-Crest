@@ -4999,6 +4999,14 @@ void PluginCatalogActivity::drawFooter() {
 }
 
 void PluginCatalogActivity::render(RenderLock&& lock) {
+  // Avoid SD-backed theme art while the X3 renders a download over TLS. The
+  // progress UI and theme fonts are retained; other screens are unchanged.
+#if FREEINK_DEVICE_X3
+  const bool suppressArtwork = state == State::DOWNLOADING;
+#else
+  const bool suppressArtwork = false;
+#endif
+  UITheme::ScopedArtworkSuppression artworkGuard(UITheme::getInstance(), suppressArtwork);
   if (pluginHubPopup.processRender(renderer, mappedInput)) return;
   CatalogActivity::render(std::move(lock));
 }

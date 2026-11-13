@@ -82,6 +82,9 @@ void ActivityManager::renderTaskTrampoline(void* param) {
 }
 
 void ActivityManager::renderTaskLoop() {
+#if FREEINK_DEVICE_X3
+  UBaseType_t lastReportedStackFree = 0;
+#endif
   while (true) {
     const uint32_t pendingRenders = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 #if FREEINK_DEVICE_X4PRO
@@ -107,6 +110,16 @@ void ActivityManager::renderTaskLoop() {
       snprintf(renderName, sizeof(renderName), "%s", currentActivity->name.c_str());
 #endif
       currentActivity->render(std::move(lock));
+#if FREEINK_DEVICE_X3
+      // On ESP-IDF the high-water mark is the minimum unused task stack in
+      // bytes. Report the first sample and subsequent drops into the danger
+      // range, without adding work inside the deepest theme/SD call chain.
+      const UBaseType_t minStackFree = uxTaskGetStackHighWaterMark(nullptr);
+      if (lastReportedStackFree == 0 || (minStackFree < 2048 && minStackFree + 256 < lastReportedStackFree)) {
+        lastReportedStackFree = minStackFree ? minStackFree : 1;
+        LOG_INF("UISTACK", "Render task minimum free stack: %u bytes", static_cast<unsigned>(minStackFree));
+      }
+#endif
 #if FREEINK_DEVICE_X4PRO
       // Diagnostic only: distinguish busy rendering from the ~562ms panel refresh.
       const uint32_t renderMs = millis() - renderStart;
