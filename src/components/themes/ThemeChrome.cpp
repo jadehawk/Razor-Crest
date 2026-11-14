@@ -17,6 +17,7 @@
 #include "components/icons/transfer.h"
 #include "components/icons/wifi.h"
 #include "fontIds.h"
+#include "util/HomeMenuGeometry.h"
 
 namespace {
 void chamfer(const GfxRenderer& r, int x, int y, int w, int h, int cut, bool black) {
@@ -74,13 +75,19 @@ std::string uppercase(std::string input) {
 }
 }  // namespace
 
+int ThemeScene::homeMenuFooterHeight(const GfxRenderer& renderer) const {
+  if (menuFooterFile.empty()) return 0;
+  const bool largePortrait = renderer.getScreenWidth() == 480 && renderer.getScreenHeight() >= 800;
+  return ((gpio.hasTouch() || largePortrait) && !menuFooterTouchFile.empty()) ? 80 : 46;
+}
+
 bool ThemeScene::drawMenu(const GfxRenderer& renderer, const Rect area, int itemCount, int selected,
                           const std::function<std::string(int)>& label, const std::function<UIIcon(int)>& icon) const {
   if (rowCut <= 0 || itemCount < 0 || area.width < 80 || area.height < 30) return false;
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int rowHeight = std::max(32, metrics.menuRowHeight);
   const int rowStep = rowHeight + metrics.menuSpacing;
-  const int pageItems = std::max(1, area.height / rowStep);
+  const int pageItems = home_menu::rowsFitting(area.height, rowHeight, metrics.menuSpacing, !menuFooterFile.empty());
   const int pageStart = std::max(0, selected) / pageItems * pageItems;
   const int x = area.x + 12;
   const int width = area.width - 24;
@@ -122,8 +129,7 @@ bool ThemeScene::drawMenu(const GfxRenderer& renderer, const Rect area, int item
   if (!menuFooterFile.empty() && pageStart == 0) {
     // Footer is decoration only. Restrict it to the unused lane above
     // physical button hints so it never covers navigation or menu rows.
-    const bool largePortrait = renderer.getScreenWidth() == 480 && renderer.getScreenHeight() >= 800;
-    const bool roomyPanel = (gpio.hasTouch() || largePortrait) && !menuFooterTouchFile.empty();
+    const bool roomyPanel = homeMenuFooterHeight(renderer) == 80;
     const int afterRows = area.y + itemCount * rowStep + 4;
     const Rect panel = UITheme::getContentArea(renderer);
     const int bottom = panel.y + panel.height - (gpio.hasTouch() ? 0 : metrics.buttonHintsHeight) - 4;
