@@ -8,7 +8,7 @@
   <link rel="icon" type="image/svg+xml" href="/assets/razor-crest-icon.svg" />
   <style>
     #plugin-container { display: grid; gap: 16px; margin: 16px 0; }
-    #plugin-container .card { margin: 0; border: 1px solid var(--border-color); scroll-margin-top: 20px; }
+    #plugin-container .card { margin: 0; border: 1px solid var(--border-color); scroll-margin-top: 170px; }
     #plugin-container p { line-height: 1.5; }
     #plugin-container .setting-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, 280px); align-items: center; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--border-color); }
     #plugin-container .setting-name { color: var(--label-color); font-weight: 600; }
@@ -32,7 +32,8 @@
       outline: 2px solid var(--accent-color); outline-offset: 2px;
     }
     #plugin-container hr { border: 0; border-top: 1px solid var(--border-color); margin: 18px 0; }
-    #plugin-picker { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+    #plugin-picker { position: sticky; top: 72px; z-index: 10; display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px 16px; margin: 12px 0; background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 8px; }
+    #plugin-picker[hidden] { display: none; }
     #plugin-picker label { font-weight: 600; }
     #plugin-select { flex: 1; min-width: 170px; max-width: 440px; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--card-bg); color: var(--font-color); font: inherit; }
     #plugin-message { margin-top: 12px; color: var(--label-color); }
@@ -59,17 +60,19 @@
   <main class="page-content">
     <div class="card">
       <h2>Plugins</h2>
-      <div id="plugin-picker" hidden>
-        <label for="plugin-select">Jump to plugin</label>
-        <select id="plugin-select" aria-label="Jump to installed plugin"></select>
-      </div>
       <p id="plugin-message" role="status">Loading plugins...</p>
+    </div>
+    <div id="plugin-picker" hidden>
+      <label for="plugin-select">Jump to plugin</label>
+      <select id="plugin-select" aria-label="Jump to installed plugin">
+        <option value="" selected>Choose an installed plugin</option>
+      </select>
     </div>
     <div id="plugin-container"></div>
   </main>
   <!--#include file="shared/Footer.html.inc" -->
+  <script src="/js/plugin-host.js"></script>
   <script>
-    <!--#include file="shared/PluginHost.js.inc" -->
     // All installed plugins receive a management card; browser plugins also
     // render their plugin.js panel inside it, preserving this header/actions.
     function renderInstalledPluginCard(container, plugin, hubAvailable) {
@@ -147,36 +150,39 @@
       const message = document.getElementById('plugin-message');
       const picker = document.getElementById('plugin-picker');
       const select = document.getElementById('plugin-select');
-      try {
-        const result = await loadPlugins('plugins');
-        if (!result.enabled) {
+      select.addEventListener('change', () => {
+        if (!select.value) return;
+        const target = document.getElementById(select.value);
+        if (target) target.scrollIntoView({behavior: 'smooth', block: 'start'});
+      });
+      const onDiscovered = (plugins, enabled) => {
+        if (!enabled) {
           message.textContent = 'Plugin System is disabled. Enable it on the device under Settings > Connectivity > Plugins.';
           return;
         }
-        if (result.error) {
-          message.textContent = 'Could not load installed plugins. Check the device connection and refresh.';
-          return;
-        }
-        if (!result.plugins.length) {
+        if (!plugins.length) {
           message.textContent = 'No plugins installed.';
           return;
         }
-        picker.hidden = false;
-        message.textContent = '';
-        message.hidden = true;
-        for (const plugin of result.plugins) {
+        for (const plugin of plugins) {
           const option = document.createElement('option');
           option.value = 'plugin-' + plugin.name;
           option.textContent = (plugin.title || plugin.name) +
             (plugin.version ? ' — v' + String(plugin.version).replace(/^v/i, '') : '');
           select.appendChild(option);
         }
-        select.addEventListener('change', () => {
-          const target = document.getElementById(select.value);
-          if (target) target.scrollIntoView({behavior: 'smooth', block: 'start'});
+        message.hidden = true;
+        picker.hidden = false;
+      };
+      try {
+        const ok = await loadPlugins('plugins', null, {
+          renderCard: renderInstalledPluginCard,
+          onDiscovered
         });
+        if (!ok) throw new Error('Plugin discovery failed');
       } catch (error) {
-        message.textContent = 'Could not load plugins. Check the device connection and refresh.';
+        message.hidden = false;
+        message.textContent = 'Could not load installed plugins. Check the device connection and refresh.';
       }
     })();
   </script>
