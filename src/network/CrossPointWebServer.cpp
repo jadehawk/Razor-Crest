@@ -2146,7 +2146,8 @@ void CrossPointWebServer::handlePluginList() const {
 
     const auto readMetadata = [&](const char* filename) {
       std::string raw;
-      if (!Storage.readFileToString("WEB", e.dir + "/" + filename, 8192, raw)) return;
+      const size_t maxBytes = strcmp(filename, "manifest.json") == 0 ? 64 * 1024 : 8192;
+      if (!Storage.readFileToString("WEB", e.dir + "/" + filename, maxBytes, raw)) return;
       JsonDocument metadata;
       if (deserializeJson(metadata, raw, DeserializationOption::Filter(filter)) != DeserializationError::Ok) return;
       for (const char* field : {"title", "version", "author", "description", "mount"}) {
@@ -2157,6 +2158,10 @@ void CrossPointWebServer::handlePluginList() const {
     if (e.hasDevice) readMetadata("device.json");
   }
 
+  if (doc.overflowed()) {
+    server->send(503, "application/json", "{\"error\":\"out of memory\"}");
+    return;
+  }
   sendJson(doc);
 }
 

@@ -157,41 +157,76 @@ window.CrossPoint = window.CrossPoint || {
 // one stalled request does not hold back the plugins after it.
 const PLUGIN_SCRIPT_TIMEOUT_MS = 30000;
 
-// beforeLoad runs once, before the first matching plugin script; a failure
-// there does not stop the plugins from loading. Resolves to false when the
-// container or the plugin list is missing.
-async function loadPlugins(mount, beforeLoad) {
+// beforeLoad runs once before the first matching browser script.
+// The Plugins page gets its installed-plugin list before scripts start loading.
+// Other pages retain the boolean success result and mount filtering.
+async function loadPlugins(mount, beforeLoad, options) {
   const host = document.getElementById('plugin-container');
   if (!host) return false;
   let list;
-  try { list = await (await fetch('/api/plugins')).json(); } catch (e) { return false; }
+  let enabled = true;
+  try {
+    const response = await fetch('/api/plugins');
+    if (!response.ok) return false;
+    enabled = response.headers.get('X-Plugins-Enabled') !== '0';
+    list = await response.json();
+  } catch (e) { return false; }
   if (!Array.isArray(list)) return false;  // e.g. {"error":"out of memory"}
-  for (const p of list) {
-    // Native-only plugins have no browser script; their metadata appears
-    // on the installed-plugin management page, not in the browser host.
-    if (p.hasPluginJs === false) continue;
-    // A null mount loads all browser plugins for the headless job runner.
-    if (mount && (p.mount || 'settings') !== mount) continue;
-    if (beforeLoad) {
-      try { await beforeLoad(); } catch (e) { console.warn('Plugin preload failed:', e); }
-      beforeLoad = null;
-    }
+  const managementPage = mount === 'plugins';
+  if (managementPage && !enabled) {
+    if (options && options.onDiscovered) options.onDiscovered([], false);
+    return true;
+  }
+  const visible = list.filter(p => managementPage ||
+    (p.hasPluginJs !== false && (!mount || (p.mount || 'settings') === mount)));
+  if (managementPage) {
+    const isHub = p => (p.name || '').toLowerCase().replace(/[-_]/g, '') === 'pluginhub';
+    visible.sort((a, b) => (Number(isHub(b)) - Number(isHub(a))) ||
+      (a.title || a.name).localeCompare(b.title || b.name, undefined, {sensitivity: 'base'}));
+  }
+  const hubAvailable = managementPage && visible.some(p =>
+    (p.name || '').toLowerCase().replace(/[-_]/g, '') === 'pluginhub' && p.hasPluginJs !== false);
+  const scripts = [];
+  for (const p of visible) {
     const container = document.createElement('div');
     container.className = 'card';
     container.id = 'plugin-' + p.name;
     host.appendChild(container);
+    const panel = (managementPage && options && options.renderCard) ?
+      options.renderCard(container, p, hubAvailable) : container;
+    if (p.hasPluginJs === false) continue;
+    if (managementPage && (p.mount || 'settings') !== 'settings') {
+      const notice = document.createElement('p');
+      notice.textContent = (p.mount === 'files') ?
+        'Browser settings for this plugin are on the File Manager page.' :
+        'This plugin has no settings on the Plugins page.';
+      panel.appendChild(notice);
+      continue;
+    }
+    scripts.push({p, panel});
+  }
+  if (options && options.onDiscovered) options.onDiscovered(visible, enabled);
+  for (const {p, panel} of scripts) {
+    if (beforeLoad) {
+      try { await beforeLoad(); } catch (e) { console.warn('Plugin preload failed:', e); }
+      beforeLoad = null;
+    }
     const showFailure = () => {
-      const h = document.createElement('h2');
-      h.textContent = p.title || p.name;
       const msg = document.createElement('p');
       msg.style.color = '#c0392b';
       msg.textContent = 'Failed to load plugin.';
-      container.replaceChildren(h, msg);
+      if (managementPage) {
+        panel.replaceChildren(msg);  // Keep the management header and actions.
+      } else {
+        const heading = document.createElement('h2');
+        heading.textContent = p.title || p.name;
+        panel.replaceChildren(heading, msg);
+      }
     };
     const s = document.createElement('script');
     const render = () => {
       if (typeof s.cpRender !== 'function') return;
-      const rendered = s.cpRender(container, {
+      const rendered = s.cpRender(panel, {
         name: p.name,
         dir: p.dir,
         relay: (m, u, h, b) => CrossPoint.relay(p.name, m, u, h, b),
@@ -220,7 +255,7 @@ async function loadPlugins(mount, beforeLoad) {
         showFailure();
         loaded.then(() => {
           if (typeof s.cpRender !== 'function') return;
-          container.replaceChildren();
+          panel.replaceChildren();
           render();
         }).catch(showFailure);
         continue;

@@ -576,12 +576,16 @@ contracts are below. Outbound TLS is encrypted but the peer is not verified
 
 ### `GET /api/plugins`
 
-Installed plugins that ship a `plugin.js`:
-`[{"name":"<folder>","dir":"<root>/<folder>","title":"<title>","mount":"settings"}, ...]`.
-`dir` is where the plugin is installed (plugins keep their own files there);
-`title` and `mount` come from the plugin's `manifest.json` when present.
-Mount `settings` (the default) shows the card on the Plugins page (`/plugins`);
-mount `files` shows it in the File Manager.
+All installed plugins, including those without `plugin.js`:
+`[{"name":"<folder>","dir":"<root>/<folder>","title":"<title>","mount":"settings","hasPluginJs":true}, ...]`.
+`dir` is the installed directory. `title`, `mount`, `version`, `author`,
+and `description` are read from `manifest.json` (up to 64 KiB) and can be
+overridden by `device.json` (up to 8 KiB). Only these fields are parsed.
+`hasPluginJs` indicates whether a browser script is available. Every plugin
+has a management card and jump-to-plugin entry on `/plugins`, but only scripts
+mounted to `settings` (the default) render there; `files` scripts render in
+the File Manager. An incomplete list due to JSON allocation failure returns
+HTTP 503 rather than a partial success response.
 
 ### `GET /plugin?name=<plugin>&file=<file>`
 
