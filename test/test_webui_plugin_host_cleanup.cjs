@@ -16,8 +16,14 @@ class Element {
     this.id = '';
     this.style = {};
     this._text = '';
+    this.value = '';
+    this.hidden = false;
+    this.listeners = {};
+    this.scrollCalls = [];
   }
   appendChild(child) { this.children.push(child); return child; }
+  addEventListener(type, callback) { this.listeners[type] = callback; }
+  scrollIntoView(options) { this.scrollCalls.push(options); }
   replaceChildren(...children) { this.children = children; this._text = ''; }
   set textContent(value) { this._text = String(value); this.children = []; }
   get textContent() { return this._text || this.children.map(child => child.textContent).join(' '); }
@@ -161,6 +167,98 @@ test('invalid list and HTTP errors fail cleanly; disabled state is reported', as
   assert.equal(disabled.requests.length, 0);
 });
 
+async function runManagementPageScript(plugins, enabled = true) {
+  const html = fs.readFileSync(path.join(root, 'src/network/html/PluginsPage.html'), 'utf8');
+  const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+  const host = new Element('div');
+  host.children = plugins.map(plugin => {
+    const card = new Element('div');
+    card.id = 'plugin-' + plugin.name;
+    return card;
+  });
+  const select = new Element('select');
+  const picker = new Element('div');
+  picker.hidden = true;
+  const message = new Element('p');
+  let discovered;
+  const elements = {
+    'plugin-container': host,
+    'plugin-select': select,
+    'plugin-picker': picker,
+    'plugin-message': message
+  };
+  const document = {
+    getElementById: id => elements[id] || host.children.find(card => card.id === id) || null,
+    createElement: tag => new Element(tag)
+  };
+  const context = {
+    document,
+    loadPlugins: async (mount, beforeLoad, options) => {
+      assert.equal(mount, 'plugins');
+      assert.equal(beforeLoad, null);
+      assert.equal(typeof options.renderCard, 'function');
+      discovered = options.onDiscovered;
+      discovered(plugins, enabled);
+      return true;
+    }
+  };
+  vm.createContext(context);
+  vm.runInContext(script, context, {filename: 'PluginsPage.html'});
+  await new Promise(resolve => setImmediate(resolve));
+  return {host, select, picker, message, discovered};
+}
+
+test('Plugins page populates option IDs and scrolls to their cards', async () => {
+  const {host, select, picker, discovered} = await runManagementPageScript(installed);
+  assert.equal(typeof discovered, 'function');
+  assert.equal(picker.hidden, false);
+  assert.equal(select.children.length, host.children.length);
+  for (let i = 0; i < host.children.length; i++) {
+    const card = host.children[i];
+    const option = select.children[i];
+    assert.equal(option.value, card.id);
+    select.value = option.value;
+    select.listeners.change();
+    assert.equal(card.scrollCalls.length, 1);
+    assert.equal(card.scrollCalls[0].behavior, 'smooth');
+    assert.equal(card.scrollCalls[0].block, 'start');
+  }
+  select.value = '';
+  select.listeners.change();
+  assert.ok(host.children.every(card => card.scrollCalls.length === 1));
+});
+
+test('Plugins page hides selector for empty and disabled lists', async () => {
+  const empty = await runManagementPageScript([]);
+  assert.equal(empty.picker.hidden, true);
+  assert.equal(empty.select.children.length, 0);
+  assert.match(empty.message.textContent, /No plugins installed/);
+  const disabled = await runManagementPageScript(installed, false);
+  assert.equal(disabled.picker.hidden, true);
+  assert.equal(disabled.select.children.length, 0);
+  assert.match(disabled.message.textContent, /Plugin System is disabled/);
+});
+
+test('large manifests retain the files mount in the metadata contract', () => {
+  const source = fs.readFileSync(path.join(root, 'src/network/CrossPointWebServer.cpp'), 'utf8');
+  const handler = source.split('void CrossPointWebServer::handlePluginList() const {')[1]
+    .split('// POST /api/plugins/remove')[0];
+  const cap = handler.match(/strcmp\(filename, "manifest\.json"\) == 0 \? (\d+) \* 1024 : \d+/);
+  assert.ok(cap, 'manifest.json should use its own read allowance');
+  assert.match(handler, /Storage\.readFileToString\("WEB", e\.dir \+ "\/" \+ filename, maxBytes, raw\)/);
+  assert.match(handler, /for \(const char\* field : \{"title", "version", "author", "description", "mount"\}\)/);
+  const manifest = JSON.stringify({description: 'x'.repeat(10_000), mount: 'files'});
+  assert.ok(Buffer.byteLength(manifest) > 8192);
+  const metadata = Buffer.byteLength(manifest) <= Number(cap[1]) * 1024 ?
+    JSON.parse(manifest) : {};
+  const entry = {mount: 'settings'};
+  for (const field of ['title', 'version', 'author', 'description', 'mount']) {
+    if (typeof metadata[field] === 'string') entry[field] = metadata[field];
+  }
+  assert.equal(entry.mount, 'files');
+  assert.match(handler, /if \(doc\.overflowed\(\)\) \{[\s\S]*?server->send\(503,[\s\S]*?return;[\s\S]*?\}\s*sendJson\(doc\);/);
+});
+
 test('Plugins page uses shared script and retains management actions and navigation', () => {
   const html = fs.readFileSync(path.join(root, 'src/network/html/PluginsPage.html'), 'utf8');
   assert.match(html, /<script src="\/js\/plugin-host\.js"><\/script>/);
@@ -168,6 +266,5 @@ test('Plugins page uses shared script and retains management actions and navigat
   assert.match(html, /renderCard: renderInstalledPluginCard/);
   assert.match(html, /\/api\/plugins\/remove/);
   assert.match(html, /action=reinstall/);
-  assert.match(html, /scrollIntoView\(\{behavior: 'smooth', block: 'start'\}\)/);
   assert.match(html, /#plugin-picker\[hidden\]/);
 });
