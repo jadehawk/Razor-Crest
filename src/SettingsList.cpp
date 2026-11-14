@@ -65,9 +65,13 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
   emit(SettingInfo::Enum(StrId::STR_SETTINGS_NAVIGATION, &CrossPointSettings::settingsNavigation,
                          {StrId::STR_SETTINGS_NAV_LIST, StrId::STR_SETTINGS_NAV_TABS, StrId::STR_SETTINGS_NAV_THEME},
                          "settingsNavigation", StrId::STR_CAT_SYSTEM));
-  if (!BoardConfig::hasTouch())
-    emit(SettingInfo::Toggle(StrId::STR_SUNLIGHT_FADING_FIX, &CrossPointSettings::fadingFix, "fadingFix",
-                             StrId::STR_CAT_DISPLAY));
+  if (!BoardConfig::hasTouch()) {
+    auto fadingFix = SettingInfo::Toggle(StrId::STR_SUNLIGHT_FADING_FIX, &CrossPointSettings::fadingFix, "fadingFix",
+                                         StrId::STR_CAT_DISPLAY);
+    // Keep it persisted, but do not offer it where the renderer ignores it.
+    if (!CrossPointSettings::fadingFixSupported()) fadingFix.withWebHidden();
+    emit(fadingFix);
+  }
 #if FREEINK_CAP_FRONTLIGHT
   emit(SettingInfo::Toggle(StrId::STR_RESTORE_LIGHT_ON_WAKE, &CrossPointSettings::frontlightRestoreOnWake,
                            "frontlightRestoreOnWake", StrId::STR_CAT_DISPLAY));
