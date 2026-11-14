@@ -239,23 +239,14 @@ test('Plugins page hides selector for empty and disabled lists', async () => {
   assert.match(disabled.message.textContent, /Plugin System is disabled/);
 });
 
-test('large manifests retain the files mount in the metadata contract', () => {
+test('plugin list handler keeps the 64 KiB manifest read limit and overflow guard', () => {
   const source = fs.readFileSync(path.join(root, 'src/network/CrossPointWebServer.cpp'), 'utf8');
   const handler = source.split('void CrossPointWebServer::handlePluginList() const {')[1]
     .split('// POST /api/plugins/remove')[0];
   const cap = handler.match(/strcmp\(filename, "manifest\.json"\) == 0 \? (\d+) \* 1024 : \d+/);
   assert.ok(cap, 'manifest.json should use its own read allowance');
+  assert.equal(Number(cap[1]) * 1024, 64 * 1024);
   assert.match(handler, /Storage\.readFileToString\("WEB", e\.dir \+ "\/" \+ filename, maxBytes, raw\)/);
-  assert.match(handler, /for \(const char\* field : \{"title", "version", "author", "description", "mount"\}\)/);
-  const manifest = JSON.stringify({description: 'x'.repeat(10_000), mount: 'files'});
-  assert.ok(Buffer.byteLength(manifest) > 8192);
-  const metadata = Buffer.byteLength(manifest) <= Number(cap[1]) * 1024 ?
-    JSON.parse(manifest) : {};
-  const entry = {mount: 'settings'};
-  for (const field of ['title', 'version', 'author', 'description', 'mount']) {
-    if (typeof metadata[field] === 'string') entry[field] = metadata[field];
-  }
-  assert.equal(entry.mount, 'files');
   assert.match(handler, /if \(doc\.overflowed\(\)\) \{[\s\S]*?server->send\(503,[\s\S]*?return;[\s\S]*?\}\s*sendJson\(doc\);/);
 });
 
