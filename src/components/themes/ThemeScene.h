@@ -36,6 +36,8 @@ class ThemeScene {
   // New ui-family variants retain independent raster sizes but warm on demand.
   bool usesUiFontFamilyVariants() const { return uiFamilyVariants_; }
   bool usesRowSeparators() const { return rowSeparators; }
+  // Only themes with declared footer artwork need space below the Home menu.
+  int homeMenuFooterHeight(const GfxRenderer& renderer) const;
   bool prefersTabbedSettings() const { return settingsNavigationTabs; }
   bool drawMenu(const GfxRenderer& renderer, Rect area, int itemCount, int selected,
                 const std::function<std::string(int)>& label, const std::function<UIIcon(int)>& icon) const;

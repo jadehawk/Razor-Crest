@@ -315,7 +315,12 @@ void HomeActivity::prepareCurrentCard(const int direction) {
 
 void HomeActivity::cycleCard(int direction) {
   if (!singleCardMode || !cardPager.canMoveBounded(direction)) return;
-  cardPager.moveBounded(direction);
+  showCardAt(direction < 0 ? cardPager.current() - 1 : cardPager.current() + 1, direction);
+}
+
+void HomeActivity::showCardAt(size_t index, int direction) {
+  if (!singleCardMode || index >= recentBooks.size()) return;
+  cardPager.index = index;
   prepareCurrentCard(direction);
   selectedHomeCardPath = recentBooks.empty() ? std::string{} : recentBooks[cardPager.current()].path;
   // The previous cover snapshot contains the old title and cover. Never reuse
@@ -362,14 +367,26 @@ void HomeActivity::onEnter() {
     selectedHomeCardPath = recentBooks.empty() ? std::string{} : recentBooks[cardPager.current()].path;
   }
   hasContinueReading = !recentBooks.empty();
+  homeMenuHeroReclaim = 0;
   if (!coverGridUi) {
-    const int top = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset;
-    homeMenuViewportRows = HomeMenuRegistry::capacityFor(
-        renderer, top, GUI.getMenuRowHeight(renderer), metrics.menuSpacing,
-        BoardConfig::hasTouch() ? 0 : metrics.buttonHintsHeight,
-        UITheme::getInstance().activeExternalScene() ? (BoardConfig::hasTouch() ? 80 : 46) : 0);
     homeMenuRegistry.load(hasPlugins, hasOpdsServers);
     homeButtons = homeMenuRegistry.visible();
+    const int top = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset;
+    const int rowHeight = GUI.getMenuRowHeight(renderer);
+    const int hintsHeight = BoardConfig::hasTouch() ? 0 : metrics.buttonHintsHeight;
+    const int footerHeight = scene ? scene->homeMenuFooterHeight(renderer) : 0;
+    const int ordinaryRows =
+        HomeMenuRegistry::capacityFor(renderer, top, rowHeight, metrics.menuSpacing, hintsHeight, footerHeight);
+    const int totalRows =
+        static_cast<int>(homeButtons.size()) + (metrics.homeContinueReadingInMenu && hasContinueReading ? 1 : 0);
+    if (scene && BoardConfig::hasTouch() && footerHeight == 0 && totalRows > ordinaryRows) {
+      // Reclaim only the few pixels needed for another complete row, while
+      // retaining the 8px bottom safety margin and all footer-art reservations.
+      const int available = home_menu::safeBottom(renderer.getScreenHeight(), hintsHeight, footerHeight) - top;
+      homeMenuHeroReclaim = home_menu::reclaimForNextRow(available, rowHeight, metrics.menuSpacing, 16);
+    }
+    homeMenuViewportRows = HomeMenuRegistry::capacityFor(renderer, top - homeMenuHeroReclaim, rowHeight,
+                                                         metrics.menuSpacing, hintsHeight, footerHeight);
     homeMenuViewportTop = 0;
   }
   if (coverGridUi) {
@@ -514,11 +531,34 @@ void HomeActivity::loop() {
     }
   };
 
+  // List navigation wraps in both directions. Re-entering the carousel from
+  // its final/first shortcut selects the matching first/last book.
+  const auto moveHomeSelection = [this, menuCount](int direction) {
+    if (menuCount <= 0) return;
+    const int from = selectorIndex;
+    selectorIndex =
+        direction > 0 ? ButtonNavigator::nextIndex(from, menuCount) : ButtonNavigator::previousIndex(from, menuCount);
+    if (singleCardMode && cardPager.canCycle() && selectorIndex == 0) {
+      if (direction > 0 && from == menuCount - 1) {
+        showCardAt(0, 1);
+      } else if (direction < 0 && from == recentSlots()) {
+        showCardAt(recentBooks.size() - 1, -1);
+      }
+    }
+    ensureHomeMenuSelectionVisible();
+    requestUpdate();
+  };
+
   // When a carousel card has focus, side buttons switch books. Front
   // Left/Right still move between Home selections; one-book behavior stays intact.
   if (singleCardMode && selectorIndex == 0 && cardPager.canCycle()) {
     if (mappedInput.isPressed(MappedInputManager::Button::Up)) {
-      if (mappedInput.wasPressed(MappedInputManager::Button::Up)) cycleCard(-1);
+      if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
+        if (cardPager.canMoveBounded(-1))
+          cycleCard(-1);
+        else if (!homeButtons.empty())
+          moveHomeSelection(-1);  // First book wraps to the final Home shortcut.
+      }
       return;
     }
     if (mappedInput.isPressed(MappedInputManager::Button::Down)) {
@@ -526,46 +566,32 @@ void HomeActivity::loop() {
         if (cardPager.canMoveBounded(1)) {
           cycleCard(1);
         } else if (!homeButtons.empty()) {
-          selectorIndex = recentSlots();  // From the last book into the Home menu.
-          ensureHomeMenuSelectionVisible();
-          requestUpdate();
+          moveHomeSelection(1);  // Last book moves into the first Home shortcut.
         }
       }
       return;
     }
   }
 
-  // Moving back from the first menu entry returns to the last viewed book.
+  // Moving back from the first menu entry selects the last carousel book.
   if (singleCardMode && cardPager.canCycle() && selectorIndex == recentSlots() &&
       mappedInput.isPressed(MappedInputManager::Button::Up)) {
-    if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
-      selectorIndex = 0;
-      requestUpdate();
-    }
+    if (mappedInput.wasPressed(MappedInputManager::Button::Up)) moveHomeSelection(-1);
     return;
   }
 
   // Cover grid home splits navigation by button group (see below); the flat
   // next/previous cycle is for the classic list home only.
   if (!coverGridUi) {
-    buttonNavigator.onNext([this, menuCount] {
-      selectorIndex = ButtonNavigator::nextIndex(selectorIndex, menuCount);
-      ensureHomeMenuSelectionVisible();
-      requestUpdate();
-    });
-
-    buttonNavigator.onPrevious([this, menuCount] {
-      selectorIndex = ButtonNavigator::previousIndex(selectorIndex, menuCount);
-      ensureHomeMenuSelectionVisible();
-      requestUpdate();
-    });
+    buttonNavigator.onNext([&moveHomeSelection] { moveHomeSelection(1); });
+    buttonNavigator.onPrevious([&moveHomeSelection] { moveHomeSelection(-1); });
   }
 
   int swipeStartX = 0;
   int swipeStartY = 0;
   const auto swipe = mappedInput.wasSwipe(&swipeStartX, &swipeStartY);
   if (singleCardMode && cardPager.canCycle() && mappedInput.hasTouch() && swipeStartY >= metrics.homeTopPadding &&
-      swipeStartY < metrics.homeTopPadding + metrics.homeCoverTileHeight && swipeStartX >= 44 &&
+      swipeStartY < metrics.homeTopPadding + metrics.homeCoverTileHeight - homeMenuHeroReclaim && swipeStartX >= 44 &&
       swipeStartX < renderer.getScreenWidth() - 24 && !mappedInput.wasBackGesture()) {
     if (swipe == MappedInputManager::SwipeDir::Left || swipe == MappedInputManager::SwipeDir::Right) {
       selectorIndex = 0;
@@ -576,8 +602,10 @@ void HomeActivity::loop() {
   if (!coverGridUi && mappedInput.hasTouch() &&
       (swipe == MappedInputManager::SwipeDir::Up || swipe == MappedInputManager::SwipeDir::Down)) {
     const auto& content = UITheme::getInstance().getContentArea(renderer);
-    const int top = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset;
-    const int footer = UITheme::getInstance().activeExternalScene() ? 80 : 0;
+    const int top =
+        metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset - homeMenuHeroReclaim;
+    const auto* scene = UITheme::getInstance().activeExternalScene();
+    const int footer = scene ? scene->homeMenuFooterHeight(renderer) : 0;
     const int bottom = home_menu::safeBottom(renderer.getScreenHeight(), 0, footer);
     const int menuBase = metrics.homeContinueReadingInMenu ? 0 : recentSlots();
     const int total = menuCount - menuBase;
@@ -598,15 +626,11 @@ void HomeActivity::loop() {
     }
   }
   if (swipe == MappedInputManager::SwipeDir::Up) {
-    selectorIndex = ButtonNavigator::nextIndex(selectorIndex, menuCount);
-    ensureHomeMenuSelectionVisible();
-    requestUpdate();
+    moveHomeSelection(1);
     return;
   }
   if (swipe == MappedInputManager::SwipeDir::Down) {
-    selectorIndex = ButtonNavigator::previousIndex(selectorIndex, menuCount);
-    ensureHomeMenuSelectionVisible();
-    requestUpdate();
+    moveHomeSelection(-1);
     return;
   }
 
@@ -667,9 +691,9 @@ void HomeActivity::loop() {
   const int recentCount = std::min(recentSlots(), coverColumnCount);
   const int coverColumnWidth = (content.width - 2 * metrics.contentSidePadding) / coverColumnCount;
   int touchedBook = -1;
-  const auto coverTouch = mappedInput.colTouch(touchedBook, content.x + metrics.contentSidePadding, coverColumnWidth,
-                                               recentCount, metrics.homeTopPadding,
-                                               metrics.homeTopPadding + metrics.homeCoverTileHeight, coverColumnWidth);
+  const auto coverTouch = mappedInput.colTouch(
+      touchedBook, content.x + metrics.contentSidePadding, coverColumnWidth, recentCount, metrics.homeTopPadding,
+      metrics.homeTopPadding + metrics.homeCoverTileHeight - homeMenuHeroReclaim, coverColumnWidth);
   if (coverTouch != MappedInputManager::RowTouch::None) {
     if (coverTouch == MappedInputManager::RowTouch::Down) {
       if (selectorIndex != touchedBook) {
@@ -684,7 +708,8 @@ void HomeActivity::loop() {
     return;
   }
 
-  const int menuTop = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset;
+  const int menuTop =
+      metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset - homeMenuHeroReclaim;
   const int menuBase = metrics.homeContinueReadingInMenu ? 0 : recentSlots();
   const int renderedMenuCount = home_menu::visibleRows(menuCount - menuBase, homeMenuViewportTop, homeMenuViewportRows);
   int menuRow = -1;
@@ -782,9 +807,9 @@ void HomeActivity::render(RenderLock&&) {
   coverRectX = content.x;
   coverRectY = metrics.homeTopPadding;
   coverRectW = content.width;
-  coverRectH = metrics.homeCoverTileHeight;
+  coverRectH = metrics.homeCoverTileHeight - homeMenuHeroReclaim;
 
-  const Rect tile{content.x, metrics.homeTopPadding, content.width, metrics.homeCoverTileHeight};
+  const Rect tile{content.x, metrics.homeTopPadding, content.width, metrics.homeCoverTileHeight - homeMenuHeroReclaim};
   const auto& uiTheme = UITheme::getInstance();
   const ThemeScene* external = uiTheme.activeExternalScene();
   const bool externalHome = external && external->hasRegion(ThemeScene::Region::Home);
@@ -835,9 +860,10 @@ void HomeActivity::render(RenderLock&&) {
   const int viewportTop = home_menu::scrollTopBy(homeMenuViewportTop, 0, totalRows, homeMenuViewportRows);
   const int shownRows = home_menu::visibleRows(totalRows, viewportTop, homeMenuViewportRows);
   const int selectedRow = selectorIndex - menuBase - viewportTop;
-  const int menuTop = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset;
+  const int menuTop =
+      metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset - homeMenuHeroReclaim;
   const int hintsHeight = BoardConfig::hasTouch() ? 0 : metrics.buttonHintsHeight;
-  const int footerHeight = external ? (BoardConfig::hasTouch() ? 80 : 46) : 0;
+  const int footerHeight = external ? external->homeMenuFooterHeight(renderer) : 0;
   const int menuHeight = std::max(1, home_menu::safeBottom(pageHeight, hintsHeight, footerHeight) - menuTop);
   const Rect menuRect{content.x, menuTop, content.width, menuHeight};
 

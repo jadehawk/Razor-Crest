@@ -35,6 +35,7 @@ class HomeActivity final : public Activity {
     return singleCardMode ? (recentBooks.empty() ? 0 : 1) : static_cast<int>(recentBooks.size());
   }
   void cycleCard(int direction);
+  void showCardAt(size_t index, int direction);
   void prepareCurrentCard(int direction);
   bool coverRendered = false;      // Track if cover has been rendered once
   bool coverBufferStored = false;  // Track if cover buffer is stored
@@ -54,6 +55,7 @@ class HomeActivity final : public Activity {
   std::vector<HomeMenuRegistry::Entry> homeButtons;
   int homeMenuViewportTop = 0;
   int homeMenuViewportRows = 1;
+  int homeMenuHeroReclaim = 0;
   void ensureHomeMenuSelectionVisible();
   const HomeMenuItem initialMenuItem;
   const bool cleanInitialRefresh;
