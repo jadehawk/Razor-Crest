@@ -116,11 +116,11 @@ std::string userKey(const std::string& passphrase) {
   freeink::content::WolfsslCrypto crypto;
   uint8_t hash[32];
   freeink::content::lcpUserKey(crypto, passphrase.data(), passphrase.size(), hash);
-  static constexpr char HEX[] = "0123456789abcdef";
+  static constexpr char HEX_DIGITS[] = "0123456789abcdef";
   char encoded[65];
   for (size_t i = 0; i < sizeof(hash); ++i) {
-    encoded[i * 2] = HEX[hash[i] >> 4];
-    encoded[i * 2 + 1] = HEX[hash[i] & 0x0f];
+    encoded[i * 2] = HEX_DIGITS[hash[i] >> 4];
+    encoded[i * 2 + 1] = HEX_DIGITS[hash[i] & 0x0f];
   }
   encoded[64] = '\0';
   return std::string(encoded, 64);
