@@ -41,6 +41,7 @@
 #include "EpubReaderUtils.h"
 #include "KOReaderCredentialStore.h"
 #include "KOReaderSyncActivity.h"
+#include "LcpPassphraseStore.h"
 #include "MappedInputManager.h"
 #include "ProgressMapper.h"
 #include "QrDisplayActivity.h"
@@ -55,10 +56,12 @@
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/settings/TextSettingsActivity.h"
+#include "activities/util/KeyboardEntryActivity.h"
 #include "clippings/ClippingText.h"
 #include "clippings/ClippingsManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/LcpUnlock.h"
 #include "util/BookmarkUtil.h"
 #include "util/ButtonNavigator.h"
 #include "util/ScreenshotUtil.h"
@@ -1590,6 +1593,15 @@ bool EpubReaderActivity::skipPages(int amount) {
 // instead of silently falling back to the previous screen. Exact error
 // strings are set by openProtectedBook (ContentProtection.cpp).
 bool EpubReaderActivity::handleLoadFailure() {
+  if (loadProtectionError == "no content key for this book") {
+    freeink::content::LcpLicense parsed;
+    if (lcpunlock::embeddedLicense(bookPath, pendingLcpJson, parsed)) {
+      pendingLcpProvider = std::move(parsed.provider);
+      pendingLcpHint = std::move(parsed.hint);
+      startLcpOpen();
+      return true;
+    }
+  }
   if (loadProtectionError.empty()) return false;
   const std::string& perr = loadProtectionError;
   StrId msg = StrId::STR_DRM_PROTECTED_FILE;
@@ -1611,6 +1623,108 @@ bool EpubReaderActivity::handleLoadFailure() {
   });
   requestUpdate();
   return true;  // stay alive; the popup's Back dismiss lands in loop()'s !epub finish
+}
+
+void EpubReaderActivity::showLcpOpenFailure(const StrId message) {
+  const char* options[1] = {tr(STR_OK_BUTTON)};
+  loadFailurePopup.showMessage("", I18N.get(message), options, 1, 0, [this](int) { finish(); });
+  requestUpdate();
+}
+
+void EpubReaderActivity::startLcpOpen() {
+  if (WiFi.status() != WL_CONNECTED) {
+    auto wifi = makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput);
+    if (!wifi) {
+      showLcpOpenFailure(StrId::STR_MEMORY_ERROR);
+      return;
+    }
+    startActivityForResult(std::move(wifi), [this](const ActivityResult& result) {
+      if (result.isCancelled || WiFi.status() != WL_CONNECTED) {
+        finish();
+        return;
+      }
+      startLcpOpen();
+    });
+    return;
+  }
+
+  if (!pendingLcpProvider.empty()) {
+    const std::string saved = LCP_PASSPHRASES.get(pendingLcpProvider);
+    if (!saved.empty()) {
+      switch (lcpunlock::unlock(bookPath, pendingLcpJson, saved)) {
+        case lcpunlock::Result::Ok:
+          loadProtectionError.clear();
+          pendingLcpJson.clear();
+          if (!loadBook()) {
+            if (!handleLoadFailure()) finish();
+          } else {
+            requestUpdate();
+          }
+          return;
+        case lcpunlock::Result::WrongPassphrase:
+          break;  // A changed library passphrase needs user input.
+        case lcpunlock::Result::NotEnrollable:
+          showLcpOpenFailure(StrId::STR_LCP_OFFICIAL_BUILD);
+          return;
+        case lcpunlock::Result::Unsupported:
+          showLcpOpenFailure(StrId::STR_LCP_UNSUPPORTED);
+          return;
+        case lcpunlock::Result::Failed:
+          showLcpOpenFailure(StrId::STR_DOWNLOAD_FAILED);
+          return;
+      }
+    }
+  }
+  promptLcpOpen(false);
+}
+
+void EpubReaderActivity::promptLcpOpen(const bool retry) {
+  const char* title = retry                     ? tr(STR_LCP_WRONG_PASSPHRASE)
+                      : !pendingLcpHint.empty() ? pendingLcpHint.c_str()
+                                                : tr(STR_LCP_PASSPHRASE);
+  auto keyboard = makeUniqueNoThrow<KeyboardEntryActivity>(renderer, mappedInput, title);
+  if (!keyboard) {
+    showLcpOpenFailure(StrId::STR_MEMORY_ERROR);
+    return;
+  }
+  startActivityForResult(std::move(keyboard), [this](const ActivityResult& result) {
+    if (result.isCancelled) {
+      finish();  // The protected EPUB remains on SD for another attempt.
+      return;
+    }
+    const auto hash = lcpunlock::userKey(std::get<KeyboardResult>(result.data).text);
+    completeLcpOpen(hash);
+  });
+}
+
+void EpubReaderActivity::completeLcpOpen(const std::string& userKeyHash) {
+  GUI.drawPopup(renderer, tr(STR_LOADING));
+  switch (lcpunlock::unlock(bookPath, pendingLcpJson, userKeyHash)) {
+    case lcpunlock::Result::Ok:
+      if (!pendingLcpProvider.empty()) LCP_PASSPHRASES.put(pendingLcpProvider, userKeyHash);
+      pendingLcpJson.clear();
+      pendingLcpProvider.clear();
+      pendingLcpHint.clear();
+      loadProtectionError.clear();
+      if (!loadBook()) {
+        if (!handleLoadFailure()) finish();
+      } else {
+        requestUpdate();
+      }
+      return;
+    case lcpunlock::Result::WrongPassphrase:
+      promptLcpOpen(true);
+      return;
+    case lcpunlock::Result::NotEnrollable:
+      showLcpOpenFailure(StrId::STR_LCP_OFFICIAL_BUILD);
+      return;
+    case lcpunlock::Result::Unsupported:
+      showLcpOpenFailure(StrId::STR_LCP_UNSUPPORTED);
+      return;
+    case lcpunlock::Result::Failed:
+      showLcpOpenFailure(StrId::STR_DOWNLOAD_FAILED);
+      return;
+  }
 }
 
 void EpubReaderActivity::beginLoanTimeSync() {

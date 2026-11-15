@@ -236,6 +236,15 @@ class EpubReaderActivity final : public ReaderActivity {
   // failed Epub itself does not outlive loadBook().
   std::string loadProtectionError;
 
+  // Triggered on first library open of an EPUB with a valid embedded LCPL.
+  std::string pendingLcpJson;
+  std::string pendingLcpProvider;
+  std::string pendingLcpHint;
+  void startLcpOpen();
+  void promptLcpOpen(bool retry);
+  void completeLcpOpen(const std::string& userKeyHash);
+  void showLcpOpenFailure(StrId message);
+
   bool loadBook() override;
   bool handleLoadFailure() override;
   // Wi-Fi join + SNTP for a loan whose date could not be verified, then a

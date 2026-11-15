@@ -67,6 +67,7 @@ class FileBrowserActivity final : public UiListActivity {
   void drawFooter() override;
   int footerStatusHeight() const override;
   void activateSelected();
+  void acquireLcp(const std::string& licensePath);
 
   // Data loading
   void loadFiles();

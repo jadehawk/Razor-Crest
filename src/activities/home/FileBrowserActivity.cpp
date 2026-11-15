@@ -1,11 +1,17 @@
 #include "FileBrowserActivity.h"
 
+#include <Arduino.h>
+#include <FontCacheManager.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
+#include <HalMemory.h>
 #include <I18n.h>
+#include <LibraryBuilder.h>
 #include <Memory.h>
 #include <Utf8.h>
+#include <WiFi.h>
+#include <ZipFile.h>
 
 #include <algorithm>
 #include <functional>
@@ -15,11 +21,15 @@
 #include "CrossPointState.h"
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
+#include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "components/UiAppHelpers.h"
 #include "fontIds.h"
+#include "network/HttpDownloader.h"
+#include "network/LcpServiceConfig.h"
+#include "network/LcpUnlock.h"
 #include "util/BookCacheUtils.h"
 #include "util/BookmarkUtil.h"
 
@@ -132,7 +142,7 @@ void FileBrowserActivity::loadFiles() {
           files.emplace_back(filename);
         }
       } else if (FsHelpers::hasReflowableBookExtension(filename) || FsHelpers::hasXtcExtension(filename) ||
-                 FsHelpers::hasImageExtension(filename)) {
+                 FsHelpers::hasImageExtension(filename) || FsHelpers::checkFileExtension(filename, ".lcpl")) {
         files.emplace_back(filename);
       }
     }
@@ -375,8 +385,83 @@ void FileBrowserActivity::activateSelected() {
   } else {
     const std::string fullPath = basepath + entry;
     lock.unlock();  // onSelectBook launches an activity; don't hold the lock across it
-    onSelectBook(fullPath);
+    if (mode == Mode::Books && FsHelpers::checkFileExtension(fullPath, ".lcpl")) {
+      acquireLcp(fullPath);
+    } else {
+      onSelectBook(fullPath);
+    }
   }
+}
+
+void FileBrowserActivity::acquireLcp(const std::string& licensePath) {
+  std::string licenseJson;
+  freeink::content::LcpLicense parsed;
+  if (!lcpunlock::licenseFile(licensePath, licenseJson, parsed)) {
+    const char* options[] = {tr(STR_OK_BUTTON)};
+    optionPopup.showMessage("", tr(STR_OPDS_NOT_A_BOOK), options, 1, 0, [](int) {});
+    requestUpdate();
+    return;
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    auto wifi = makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput);
+    if (!wifi) return;
+    startActivityForResult(std::move(wifi), [this, licensePath](const ActivityResult& result) {
+      if (!result.isCancelled && WiFi.status() == WL_CONNECTED) acquireLcp(licensePath);
+    });
+    return;
+  }
+
+  // The LCPL is an acquisition document, never a library book. Preserve the
+  // original license and never overwrite an existing EPUB with the same name.
+  const std::string base = licensePath.substr(0, licensePath.size() - 5);
+  std::string destination = base + ".epub";
+  for (unsigned i = 1; Storage.exists(destination.c_str()) && i <= 99; ++i)
+    destination = base + "_lcp" + std::to_string(i) + ".epub";
+  if (Storage.exists(destination.c_str())) {
+    const char* options[] = {tr(STR_OK_BUTTON)};
+    optionPopup.showMessage("", tr(STR_DOWNLOAD_FAILED), options, 1, 0, [](int) {});
+    requestUpdate();
+    return;
+  }
+
+  // Match the catalog's TLS heap gate: the C3 needs enough contiguous RAM
+  // for wolfSSL, especially after browsing folders or SD fonts.
+  {
+    RenderLock lock(*this);
+    if (auto* fcm = renderer.getFontCacheManager()) fcm->releaseSdFontCaches();
+  }
+  const uint32_t minBlock = HalMemory::getPsramHeap().totalBytes > 0 ? HttpDownloader::MIN_TLS_MAX_ALLOC_PSRAM
+                                                                     : HttpDownloader::MIN_TLS_MAX_ALLOC;
+  if (ESP.getFreeHeap() < HttpDownloader::MIN_TLS_FREE_HEAP || ESP.getMaxAllocHeap() < minBlock) {
+    const char* options[] = {tr(STR_OK_BUTTON)};
+    optionPopup.showMessage("", tr(STR_MEMORY_ERROR), options, 1, 0, [](int) {});
+    requestUpdate();
+    return;
+  }
+
+  GUI.drawPopup(renderer, tr(STR_LOADING));
+  const auto result = HttpDownloader::postToFile(lcpservice::FULFILL_URL, licenseJson,
+                                                 "application/vnd.readium.lcp.license.v1.0+json", destination);
+  std::string embedded;
+  freeink::content::LcpLicense verify;
+  if (result != HttpDownloader::OK || !lcpunlock::embeddedLicense(destination, embedded, verify)) {
+    Storage.remove(destination.c_str());
+    const char* options[] = {tr(STR_OK_BUTTON)};
+    optionPopup.showMessage("", tr(STR_DOWNLOAD_FAILED), options, 1, 0, [](int) {});
+    requestUpdate();
+    return;
+  }
+
+  library::markLibraryIndexDirty();
+  {
+    RenderLock lock(*this);
+    loadFiles();
+  }
+  requestUpdate();
+  // The normal reader now performs first-open LCP enrollment and passphrase
+  // prompting. No duplicate unlock path is needed in the file browser.
+  onSelectBook(destination);
 }
 
 void FileBrowserActivity::showEntryActions() {
