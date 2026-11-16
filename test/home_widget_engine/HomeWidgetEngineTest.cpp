@@ -194,6 +194,35 @@ void testOptionalPluginAndFailureRecovery() {
   assert(screen.pixel(8, 10) == 1); // Halo underlay remains outside Book
 }
 
+void testFallbackPanelInheritsOrRevealsWallpaper() {
+  GfxRenderer screen;
+  Context ctx{screen};
+  current = &ctx;
+  auto d = definition();
+  Result rects;
+  assert(resolve(d, Screen{32, 24}, rects) == Status::Ok);
+  auto p = plan();
+  p.underlayCount = 0;
+  p.widgets[2].kind = Kind::Plugin;
+  p.widgets[2].resource = 0; // Not installed
+  p.widgets[2].panel = Panel::White;
+  p.widgets[2].fallback = Kind::Empty;
+  p.widgets[2].fallbackPanel = static_cast<uint8_t>(Panel::Transparent);
+  auto s = surface(screen, ctx);
+  auto hooks = home_widgets::native::hooks(s);
+  auto result = paint(p, d, rects, hooks);
+  assert(result.status == PaintStatus::Ok && result.missingProviders == 1);
+  assert(screen.pixel(8, 14) == 1); // Background CPB remains visible.
+
+  p.widgets[2].fallbackPanel = 255; // Inherit opaque white widget panel
+  result = paint(p, d, rects, hooks);
+  assert(result.status == PaintStatus::Ok && result.missingProviders == 1);
+  assert(screen.pixel(8, 14) == 0);
+
+  p.widgets[2].fallbackPanel = 253; // Unknown enum always fails closed
+  assert(paint(p, d, rects, hooks).status == PaintStatus::InvalidPlan);
+}
+
 void testPartialRefreshAndClipRestore() {
   GfxRenderer screen;
   Context ctx{screen};
@@ -341,6 +370,7 @@ int main() {
   testLayering();
   testCorruptBackgroundAndPanelFallback();
   testOptionalPluginAndFailureRecovery();
+  testFallbackPanelInheritsOrRevealsWallpaper();
   testPartialRefreshAndClipRestore();
   testFailedSceneUnderlayFallback();
   testSolidBackgroundModesAndMissingAsset();

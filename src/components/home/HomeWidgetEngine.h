@@ -21,7 +21,7 @@ struct Widget {
   Kind kind = Kind::Empty;
   Panel panel = Panel::Transparent;
   Kind fallback = Kind::Empty;  // Plugin: Empty or Scene only
-  uint8_t reserved = 0;
+  uint8_t fallbackPanel = 255; // 255 = inherit panel, otherwise Panel enum
   uint16_t resource = 0;       // Validated scene/metric/provider handle
   uint16_t fallbackResource = 0;
   uint16_t minWidth = 1;
@@ -125,6 +125,8 @@ inline bool validPlan(const Plan& plan, const home_grid::Definition& def, const 
         widget.minWidth == 0 || widget.minHeight == 0)
       return false;
     if (widget.kind == Kind::Header && i != 0) return false;
+    if (widget.fallbackPanel != 255 &&
+        !validPanel(static_cast<Panel>(widget.fallbackPanel))) return false;
     if (widget.kind == Kind::Plugin && widget.fallback != Kind::Empty &&
         widget.fallback != Kind::Scene)
       return false;
@@ -232,6 +234,7 @@ inline PaintReport paint(const Plan& plan, const home_grid::Definition& def,
 
     Kind chosen = widget.kind;
     uint16_t resource = widget.resource;
+    Panel chosenPanel = widget.panel;
     if (widget.kind == Kind::Plugin) {
       const bool ready = widget.resource && hooks.providerAvailable &&
                          hooks.providerAvailable(hooks.user, widget.resource);
@@ -239,14 +242,16 @@ inline PaintReport paint(const Plan& plan, const home_grid::Definition& def,
         ++report.missingProviders;
         chosen = widget.fallback;
         resource = widget.fallbackResource;
+        if (widget.fallbackPanel != 255)
+          chosenPanel = static_cast<Panel>(widget.fallbackPanel);
       }
     }
     detail::begin(hooks, clipped);
-    if (widget.panel == Panel::White || widget.panel == Panel::Black)
-      hooks.fill(hooks.user, area, widget.panel == Panel::Black);
+    if (chosenPanel == Panel::White || chosenPanel == Panel::Black)
+      hooks.fill(hooks.user, area, chosenPanel == Panel::Black);
     const bool drawn = chosen == Kind::Plugin
-                           ? (hooks.native && hooks.native(hooks.user, Kind::Plugin, resource, area, widget.panel))
-                           : detail::drawWidget(chosen, resource, area, widget.panel, hooks);
+                           ? (hooks.native && hooks.native(hooks.user, Kind::Plugin, resource, area, chosenPanel))
+                           : detail::drawWidget(chosen, resource, area, chosenPanel, hooks);
     detail::end(hooks);
     if (drawn) continue;
     ++report.failedWidgets;
@@ -254,8 +259,8 @@ inline PaintReport paint(const Plan& plan, const home_grid::Definition& def,
     // any temporary framebuffer or SD scripts. Then keep panel/fallback safe.
     detail::redrawUnderlying(plan, result, hooks, clipped);
     detail::begin(hooks, clipped);
-    if (widget.panel == Panel::White || widget.panel == Panel::Black)
-      hooks.fill(hooks.user, area, widget.panel == Panel::Black);
+    if (chosenPanel == Panel::White || chosenPanel == Panel::Black)
+      hooks.fill(hooks.user, area, chosenPanel == Panel::Black);
     detail::end(hooks);
   }
   return report;

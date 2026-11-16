@@ -17,8 +17,10 @@ SOURCES = (
     ROOT / "test/home_widget_engine/HomeWidgetReadoutsTest.cpp",
     ROOT / "test/home_widget_engine/HomeSceneNamesTest.cpp",
     ROOT / "test/home_widget_engine/HomeGridActivationTest.cpp",
+    ROOT / "test/home_widget_engine/HomeLayoutJsonTest.cpp",
 )
 STUBS = ROOT / "test/home_widget_engine/stubs"
+ARDUINOJSON = ROOT / ".pio/libdeps/default/ArduinoJson/src"
 
 compilers = [
     executable for executable in ("g++", "clang++", "c++")
@@ -26,6 +28,10 @@ compilers = [
 ]
 if not compilers:
     raise SystemExit("A C++17 host compiler is required")
+if not ARDUINOJSON.is_dir():
+    raise SystemExit(
+        "Missing ArduinoJson host headers: expected .pio/libdeps/default/ArduinoJson/src"
+    )
 
 with tempfile.TemporaryDirectory() as directory:
     for compiler in compilers[:2]:
@@ -36,6 +42,7 @@ with tempfile.TemporaryDirectory() as directory:
             subprocess.run(
                 [compiler, "-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
                  "-pedantic", "-I", str(STUBS), "-I", str(ROOT / "src"),
+                 "-I", str(ARDUINOJSON),
                  str(source), "-o", str(exe)],
                 check=True,
             )
