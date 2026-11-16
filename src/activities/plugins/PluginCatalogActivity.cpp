@@ -5591,7 +5591,7 @@ void PluginCatalogActivity::rebuildRowItems() {
       }
     }
   } else {
-    if (!nativeFooterActive() && prevRowVisible()) addRow(tr(STR_PREV_PAGE), nullptr, ">");
+    if (!nativeFooterActive() && prevRowVisible()) addRow(tr(STR_PREV_PAGE), nullptr, "<");
     for (const auto& entry : items) {
       std::string dest;
       const bool saved = !entry.isDir && downloadDestination(entry, dest) && Storage.exists(dest.c_str());

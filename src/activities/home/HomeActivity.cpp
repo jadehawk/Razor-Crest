@@ -894,10 +894,8 @@ void HomeActivity::render(RenderLock&&) {
 
   renderer.displayBuffer(cleanInitialRefresh && !firstRenderDone ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
 
-  if (!firstRenderDone) {
-    firstRenderDone = true;
-    requestUpdate();
-  } else if (!recentsLoaded && !recentsLoading) {
+  firstRenderDone = true;
+  if (!recentsLoaded && !recentsLoading) {
     recentsLoading = true;
     // A themed Home still needs real cover thumbnails. Previously an
     // external scene short-circuited this entire generation path, leaving

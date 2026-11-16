@@ -76,10 +76,6 @@ SdCardFontSystem sdFontSystem;
 FontCacheManager fontCacheManager(renderer.getFontMap(), renderer.getSdCardFonts(), renderer.getTtfFonts());
 static unsigned long allowSleepAt = 0;
 
-// A wake hold must never become an in-app power-button action.  Boot may continue
-// while the button is held; swallow the one release that ends that wake gesture.
-static bool wakePowerReleasePending = false;
-
 // Fonts
 EpdFont notosans14RegularFont(&notosans_14_regular);
 EpdFont notosans14BoldFont(&notosans_14_bold);
@@ -134,6 +130,8 @@ constexpr uint32_t SILENT_REBOOT_LIGHT_ON = 1U << 0;
 constexpr uint32_t SILENT_REBOOT_READER_ORIENTATION_VALID = 1U << 1;
 constexpr uint32_t SILENT_REBOOT_READER_ORIENTATION_SHIFT = 2;
 constexpr uint32_t SILENT_REBOOT_READER_ORIENTATION_MASK = 0x3U;
+// Bits 1-3 belong to Razor-Crest's reader orientation snapshot.
+constexpr uint32_t SILENT_REBOOT_SUPPRESS_POWER = 1U << 4;
 
 // How the device is coming back to life, resolved once at boot. Both resume
 // flows suppress the splash and leave the panel holding its pre-boot frame; a
@@ -178,6 +176,7 @@ static void armSilentReboot(const uint32_t target) {
     silentRebootPayload |= SILENT_REBOOT_READER_ORIENTATION_VALID |
                            (static_cast<uint32_t>(SETTINGS.orientation) << SILENT_REBOOT_READER_ORIENTATION_SHIFT);
   }
+  if (mappedInputManager.suppressPowerAfterRestart()) silentRebootPayload |= SILENT_REBOOT_SUPPRESS_POWER;
   silentRebootMagic = SILENT_REBOOT_MAGIC;
 }
 
@@ -704,6 +703,7 @@ void setup() {
                                         (silentRebootPayload & SILENT_REBOOT_READER_ORIENTATION_VALID) != 0;
   const uint8_t readerOrientation = static_cast<uint8_t>(
       (silentRebootPayload >> SILENT_REBOOT_READER_ORIENTATION_SHIFT) & SILENT_REBOOT_READER_ORIENTATION_MASK);
+  const bool suppressRestartPower = isSilentReboot && (silentRebootPayload & SILENT_REBOOT_SUPPRESS_POWER) != 0;
   silentRebootMagic = 0;
   silentRebootTarget = 0;
   silentRebootPayload = 0;
@@ -860,7 +860,6 @@ void setup() {
             resumedTimerPower != HalGPIO::PowerWakeRequest::None ? timedSleepScreenRefreshUs() : 0;
         powerManager.startDeepSleep(gpio, timerWakeUs);
       }
-      wakePowerReleasePending = true;
       break;
     case HalGPIO::WakeupReason::AfterUSBPower:
       // Most devices return to sleep after a USB-powered cold boot.
@@ -887,6 +886,7 @@ void setup() {
       break;
   }
 
+  // Restore the light only after accepting the wake, so rejected wakes stay dark.
   // Brightness and warmth are always restored, but only once this boot is going
   // to stay awake: a released short press that fails the wake-hold check above
   // must not light the panel on its way back to sleep, and timer/USB
@@ -1017,7 +1017,8 @@ void setup() {
     gpio.update();
   }
 
-  allowSleepAt = millis() + 2000;
+  mappedInputManager.beginPowerInput(!isSilentReboot || suppressRestartPower, mappedInputManager.isPowerHeld());
+  allowSleepAt = millis() + (isSilentReboot ? 0 : 2000);
 }
 
 void loop() {
@@ -1121,15 +1122,6 @@ void loop() {
     powerManager.setPowerSaving(false);  // Restore normal CPU frequency on user activity
   }
 
-  // Let wake continue as soon as its hold has been verified. The release can
-  // arrive after setup, so consume that one input frame rather than making it
-  // a page turn, refresh, or other short power-button action.
-  if (wakePowerReleasePending && !gpio.isPressed(HalGPIO::BTN_POWER)) {
-    wakePowerReleasePending = false;
-    mappedInputManager.resetPowerButtonInput();
-    return;
-  }
-
   static bool screenshotButtonsReleased = true;
   static bool screenshotComboActive = false;
   if (gpio.isPressed(HalGPIO::BTN_POWER) && gpio.isPressed(HalGPIO::BTN_DOWN)) {
@@ -1137,6 +1129,7 @@ void loop() {
     screenshotComboActive = true;
     if (screenshotButtonsReleased) {
       screenshotButtonsReleased = false;
+      mappedInputManager.consumePowerGesture();
       {
         RenderLock lock;
         ScreenshotUtil::takeScreenshot(renderer);
@@ -1156,6 +1149,11 @@ void loop() {
     screenshotComboActive = false;
   }
 
+  if (mappedInputManager.wasPowerReleaseConsumed()) {
+    mappedInputManager.resetPowerButtonInput();
+    if (!mappedInputManager.powerSleepRequested()) return;
+  }
+
   if (mappedInputManager.powerSleepClick()) {
     enterDeepSleep();
     return;
@@ -1170,21 +1168,14 @@ void loop() {
     return;
   }
 
-  // A hold that woke the device must be released before it can count as a new
-  // in-app long press. Otherwise a user who keeps holding after wake would put
-  // the device straight back to sleep once allowSleepAt expires.
-  static bool powerReleasedSinceWake = false;
-  if (!gpio.isPressed(HalGPIO::BTN_POWER)) powerReleasedSinceWake = true;
-
   // On X4 Pro with SLEEP, a press still within the click window is a
   // double-click candidate — let it be released and evaluated above instead
   // of sleeping on button-down.
   const bool x4ProAwaitingClickWindow = x4ProDoubleClickEnabled &&
                                         SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP &&
-                                        gpio.getPowerButtonHeldTime() <= PowerButtonInput::MAX_CLICK_HOLD_MS;
+                                        gpio.getPowerButtonHeldTime() <= PowerButtonClickInput::MAX_CLICK_HOLD_MS;
 
-  if (!x4ProAwaitingClickWindow && powerReleasedSinceWake && millis() >= allowSleepAt &&
-      gpio.isPressed(HalGPIO::BTN_POWER) && gpio.getPowerButtonHeldTime() > SETTINGS.getPowerButtonDuration()) {
+  if (!x4ProAwaitingClickWindow && millis() >= allowSleepAt && mappedInputManager.powerSleepRequested()) {
     // If the screenshot combination is potentially being pressed, don't sleep
     if (gpio.isPressed(HalGPIO::BTN_DOWN)) {
       return;
@@ -1195,13 +1186,16 @@ void loop() {
     return;
   }
 
+  // A completed long hold stays consumed even when sleep is temporarily blocked.
+  if (mappedInputManager.wasPowerReleaseConsumed()) return;
+
 #if FREEINK_DEVICE_PAPERMONO
   // Paper Mono reports the PMIC power button as a one-tick click, so the held
   // path above cannot fire. With the default Ignore action, retain the normal
   // power-button meaning and shut down; explicit alternate bindings still win.
   if ((SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP ||
        SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::IGNORE) &&
-      millis() >= allowSleepAt && mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
+      millis() >= allowSleepAt && mappedInputManager.wasPowerSingleClick()) {
     enterDeepSleep();
     return;
   }
@@ -1213,7 +1207,7 @@ void loop() {
   }
   if (mappedInputManager.homeButtonAction() == HomeButtonAction::Refresh ||
       (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FORCE_REFRESH &&
-       mappedInputManager.wasReleased(MappedInputManager::Button::Power))) {
+       mappedInputManager.wasPowerSingleClick())) {
     LOG_DBG("MAIN", "Manual screen refresh triggered");
     if (!activityManager.handleForcedRefresh()) {
       RenderLock lock;
