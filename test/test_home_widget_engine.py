@@ -11,7 +11,10 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "test/home_widget_engine/HomeWidgetEngineTest.cpp"
+SOURCES = (
+    ROOT / "test/home_widget_engine/HomeWidgetEngineTest.cpp",
+    ROOT / "test/home_widget_engine/HomeWidgetThemeAdaptersTest.cpp",
+)
 STUBS = ROOT / "test/home_widget_engine/stubs"
 
 compilers = [
@@ -23,12 +26,15 @@ if not compilers:
 
 with tempfile.TemporaryDirectory() as directory:
     for compiler in compilers[:2]:
-        exe = Path(directory) / ("widget-test.exe" if os.name == "nt" else "widget-test")
-        subprocess.run(
-            [compiler, "-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
-             "-pedantic", "-I", str(STUBS), "-I", str(ROOT / "src"),
-             str(SOURCE), "-o", str(exe)],
-            check=True,
-        )
-        subprocess.run([str(exe)], check=True)
-        print(f"Home Widget Engine: {compiler} tests passed", flush=True)
+        for source in SOURCES:
+            exe = Path(directory) / (
+                source.stem + (".exe" if os.name == "nt" else "")
+            )
+            subprocess.run(
+                [compiler, "-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
+                 "-pedantic", "-I", str(STUBS), "-I", str(ROOT / "src"),
+                 str(source), "-o", str(exe)],
+                check=True,
+            )
+            subprocess.run([str(exe)], check=True)
+            print(f"Home Widget Engine: {source.name} {compiler} passed", flush=True)

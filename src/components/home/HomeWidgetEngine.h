@@ -173,9 +173,10 @@ inline void paintUnderlays(const Plan& plan, const home_grid::Result& result,
     if (clipped.width <= 0 || clipped.height <= 0) continue;
     begin(hooks, clipped);
     if (!hooks.scene || !hooks.scene(hooks.user, item.scene, area)) {
-      // Damaged/removed artwork: recover only its bounded area. The Home
-      // wallpaper remains underneath and controls/interaction survive.
-      hooks.fill(hooks.user, area, false);
+      // Damaged scene artwork may have painted part of the surface. Replay
+      // the underlying wallpaper inside the current clip (not a white wipe),
+      // preserving the backdrop and leaving native widgets interactive.
+      (void)paintBase(plan, result, hooks);
       ++failedCount;
     }
     end(hooks);

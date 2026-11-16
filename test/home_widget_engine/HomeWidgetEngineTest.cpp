@@ -226,13 +226,19 @@ void testFailedSceneUnderlayFallback() {
   const auto d = definition();
   Result rects;
   assert(resolve(d, Screen{32, 24}, rects) == Status::Ok);
-  const auto p = plan();
+  auto p = plan();
+  p.background.mode = BackgroundMode::White;
   auto s = surface(screen, ctx);
-  const auto report = paint(p, d, rects, home_widgets::native::hooks(s));
+  auto report = paint(p, d, rects, home_widgets::native::hooks(s));
   assert(report.status == PaintStatus::Ok && report.failedUnderlays == 1);
-  assert(screen.pixel(4, 10) == 0);  // Damaged artwork cleared from Hero.
+  assert(screen.pixel(4, 10) == 0);  // Failed scene restored solid-white base.
   assert(screen.pixel(4, 15) == 1);  // Native Book remains usable and visible.
   assert(screen.pixel(4, 20) == 0);  // Menu retains its opaque panel.
+
+  p.background.mode = BackgroundMode::Bitmap;
+  report = paint(p, d, rects, home_widgets::native::hooks(s));
+  assert(report.failedUnderlays == 1);
+  assert(screen.pixel(4, 10) == 1);  // Failed scene preserves CPB wallpaper.
 }
 
 void testSolidBackgroundModesAndMissingAsset() {
