@@ -373,7 +373,8 @@ void ActivityManager::goToPluginDashboard(std::string deviceManifest) {
   if (activity) replaceActivity(std::move(activity));
 }
 
-void ActivityManager::goToReader(std::string path, const bool allowFastInitialRefresh, const bool allowAutoSyncOnOpen) {
+void ActivityManager::goToReader(std::string path, const bool allowFastInitialRefresh, const bool allowAutoSyncOnOpen,
+                                 std::string acquiredLcplPath) {
   if (path.empty()) {
     goToFileBrowser("/");
     return;
@@ -392,6 +393,7 @@ void ActivityManager::goToReader(std::string path, const bool allowFastInitialRe
   auto activity = ReaderActivity::create(renderer, mappedInput, std::move(path), allowFastInitialRefresh);
   if (activity) {
     activity->syncOnOpenPending = allowAutoSyncOnOpen;
+    if (!acquiredLcplPath.empty()) activity->setAcquiredLcplPath(std::move(acquiredLcplPath));
     replaceActivity(std::move(activity));
   }
 }

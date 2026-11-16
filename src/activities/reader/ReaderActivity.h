@@ -14,6 +14,9 @@ class ReaderActivity : public Activity {
 
  protected:
   std::string bookPath;
+  // Only standalone LCPL acquisitions carry this path. Successful EPUB opens
+  // archive the license; failed or cancelled opens leave it in place.
+  std::string acquiredLcplPath;
   int pagesUntilFullRefresh = 0;
   bool forcedRefreshPending = false;
 
@@ -74,6 +77,8 @@ class ReaderActivity : public Activity {
 
  public:
   ~ReaderActivity() override = default;
+
+  void setAcquiredLcplPath(std::string path) { acquiredLcplPath = std::move(path); }
 
   static std::unique_ptr<ReaderActivity> create(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                                 std::string path, bool allowFastInitialRefresh);

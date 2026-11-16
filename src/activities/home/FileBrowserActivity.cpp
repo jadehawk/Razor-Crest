@@ -1,6 +1,7 @@
 #include "FileBrowserActivity.h"
 
 #include <Arduino.h>
+#include <Epub.h>
 #include <FontCacheManager.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
@@ -49,6 +50,29 @@ std::string getBookCachePath(const std::string& path) {
     return "";
   }
   return std::string("/.crosspoint/") + prefix + std::to_string(std::hash<std::string>{}(path));
+}
+
+// LCPL filenames are often ISBNs or UUIDs. Use the EPUB package title when
+// available, without replacing an existing book or its device-bound .key.
+std::string lcpTitledDestination(const std::string& downloadedPath, const std::string& title) {
+  if (title.empty()) return {};
+  char sanitized[192] = {};
+  FsHelpers::sanitizePathComponentForFat32(title.c_str(), sanitized, sizeof(sanitized));
+  std::string stem(sanitized);
+  const auto start = stem.find_first_not_of(".- ");
+  if (start == std::string::npos) return {};
+  const auto end = stem.find_last_not_of(".- ");
+  stem = stem.substr(start, end - start + 1);
+  if (stem.empty()) return {};
+
+  const auto slash = downloadedPath.find_last_of('/');
+  const std::string folder = slash == std::string::npos ? "" : downloadedPath.substr(0, slash + 1);
+  for (unsigned i = 0; i <= 99; ++i) {
+    const std::string candidate = folder + stem + (i ? "_" + std::to_string(i) : std::string()) + ".epub";
+    if (candidate == downloadedPath) return {};
+    if (!Storage.exists(candidate.c_str()) && !Storage.exists((candidate + ".key").c_str())) return candidate;
+  }
+  return {};
 }
 
 bool moveStatePath(const std::string& oldPath, const std::string& newPath, bool& moved) {
@@ -412,13 +436,15 @@ void FileBrowserActivity::acquireLcp(const std::string& licensePath) {
     return;
   }
 
-  // The LCPL is an acquisition document, never a library book. Preserve the
-  // original license and never overwrite an existing EPUB with the same name.
+  // The LCPL is an acquisition document, never a library book. Keep it
+  // in place until the EPUB reader successfully displays the unlocked book.
+  // Never reuse an existing EPUB name or an orphaned .key sidecar.
   const std::string base = licensePath.substr(0, licensePath.size() - 5);
   std::string destination = base + ".epub";
-  for (unsigned i = 1; Storage.exists(destination.c_str()) && i <= 99; ++i)
+  for (unsigned i = 1;
+       (Storage.exists(destination.c_str()) || Storage.exists((destination + ".key").c_str())) && i <= 99; ++i)
     destination = base + "_lcp" + std::to_string(i) + ".epub";
-  if (Storage.exists(destination.c_str())) {
+  if (Storage.exists(destination.c_str()) || Storage.exists((destination + ".key").c_str())) {
     const char* options[] = {tr(STR_OK_BUTTON)};
     optionPopup.showMessage("", tr(STR_DOWNLOAD_FAILED), options, 1, 0, [](int) {});
     requestUpdate();
@@ -453,15 +479,35 @@ void FileBrowserActivity::acquireLcp(const std::string& licensePath) {
     return;
   }
 
+  // Read only the EPUB's package metadata. Its OPF is unencrypted in the
+  // supported LCP books, so the title is available before a .key is created.
+  // Close the ZIP before renaming, particularly on the FAT SD-card backend.
+  std::string bookTitle;
+  {
+    auto epub = makeUniqueNoThrow<Epub>(destination, "/.crosspoint");
+    if (epub) {
+      std::string author;
+      epub->loadMetadata(bookTitle, author);
+    }
+  }
+  const std::string titledPath = lcpTitledDestination(destination, bookTitle);
+  if (!titledPath.empty()) {
+    if (Storage.rename(destination.c_str(), titledPath.c_str())) {
+      destination = titledPath;
+    } else {
+      LOG_ERR("FileBrowser", "Could not apply LCP title to %s", destination.c_str());
+    }
+  }
+
   library::markLibraryIndexDirty();
   {
     RenderLock lock(*this);
     loadFiles();
   }
   requestUpdate();
-  // The normal reader now performs first-open LCP enrollment and passphrase
-  // prompting. No duplicate unlock path is needed in the file browser.
-  onSelectBook(destination);
+  // Reader completion (after a page has rendered) archives the original LCPL.
+  // A cancelled/failed first-open leaves it accessible for retry.
+  activityManager.goToReader(destination, false, true, licensePath);
 }
 
 void FileBrowserActivity::showEntryActions() {

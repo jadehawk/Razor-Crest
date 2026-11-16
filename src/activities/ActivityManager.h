@@ -97,7 +97,8 @@ class ActivityManager {
   void goToBrowser();
   void goToPlugins();
   void goToPluginDashboard(std::string deviceManifest);
-  void goToReader(std::string path, bool allowFastInitialRefresh = false, bool allowAutoSyncOnOpen = true);
+  void goToReader(std::string path, bool allowFastInitialRefresh = false, bool allowAutoSyncOnOpen = true,
+                  std::string acquiredLcplPath = {});
   void goToSleep(bool fromTimeout = false);
   void goToBoot();
   void goToFullScreenMessage(std::string message, EpdFontFamily::Style style = EpdFontFamily::REGULAR);

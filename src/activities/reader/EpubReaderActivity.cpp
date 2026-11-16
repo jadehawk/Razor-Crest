@@ -114,6 +114,35 @@ int clampPercent(int percent) {
 }
 
 constexpr char READ_FOLDER[] = "/read";
+constexpr char LCP_PROCESSED_DIR[] = "/.crosspoint/lcp/processed";
+
+// Never consume the source license until a page has successfully rendered.
+// An SD error leaves it exactly where the user can retry the acquisition.
+bool archiveOpenedLcpLicense(const std::string& sourcePath) {
+  if (!FsHelpers::checkFileExtension(sourcePath, ".lcpl")) return false;
+  const std::string archivePrefix = std::string(LCP_PROCESSED_DIR) + "/";
+  if (sourcePath.compare(0, archivePrefix.size(), archivePrefix) == 0) return true;
+  if (!Storage.exists(sourcePath.c_str())) return false;
+  if (!Storage.exists(LCP_PROCESSED_DIR) && !Storage.mkdir(LCP_PROCESSED_DIR, true)) return false;
+
+  const auto slash = sourcePath.find_last_of('/');
+  const std::string filename = sourcePath.substr(slash == std::string::npos ? 0 : slash + 1);
+  if (filename.size() <= 5) return false;
+  const std::string stem = filename.substr(0, filename.size() - 5);
+  for (unsigned i = 0; i <= 999; ++i) {
+    const std::string name = stem + (i ? "_" + std::to_string(i) : std::string()) + ".lcpl";
+    if (name.size() > 240) return false;
+    const std::string archived = archivePrefix + name;
+    if (Storage.exists(archived.c_str())) continue;
+    if (Storage.rename(sourcePath.c_str(), archived.c_str())) {
+      LOG_INF("LCP", "Archived processed license: %s", archived.c_str());
+      return true;
+    }
+    LOG_ERR("LCP", "Could not archive processed LCPL: %s", sourcePath.c_str());
+    return false;
+  }
+  return false;
+}
 
 bool isInReadFolder(const std::string& path) {
   constexpr size_t n = sizeof(READ_FOLDER) - 1;
@@ -692,6 +721,14 @@ void EpubReaderActivity::loop() {
   }
 
   rememberBookOnceRendered();
+  if (bookRemembered && !acquiredLcplPath.empty()) {
+    // The first page is now visible; a passphrase cancellation or failed
+    // protected open never reaches this point. Keep the license if archiving
+    // fails so it can be retried manually.
+    if (!archiveOpenedLcpLicense(acquiredLcplPath))
+      LOG_ERR("LCP", "Retaining unarchived acquisition license: %s", acquiredLcplPath.c_str());
+    acquiredLcplPath.clear();
+  }
   if (syncOnOpenPending && bookRemembered) {
     syncOnOpenPending = false;  // Suppress retries and loops on internal reader returns.
     if (KOREADER_STORE.getSyncOnBookOpen() && KOREADER_STORE.hasCredentials() &&
