@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstring>
 
 class GfxRenderer {
  public:
@@ -31,6 +32,24 @@ class GfxRenderer {
       for (int dx = x; dx < x + width; ++dx) drawPixel(dx, dy, black);
   }
   int pixel(int x, int y) const { return pixels[y * Width + x]; }
+  int getTextWidth(int, const char* text) const {
+    return text ? static_cast<int>(std::strlen(text)) * 2 : 0;
+  }
+  int getLineHeight(int) const { return fontHeight; }
+  int fontHeight = 4;
+  void drawText(int, int x, int y, const char* text, bool black = true) const {
+    if (!text) return;
+    lastInkBlack = black;
+    ++textDrawCount;
+    const size_t copied = std::min(std::strlen(text), sizeof(lastText) - 1);
+    std::memcpy(lastText, text, copied);
+    lastText[copied] = '\0';
+    for (int i = 0; text[i] && i < 36; ++i)
+      drawPixel(x + i * 2, y, black);
+  }
+  mutable int textDrawCount = 0;
+  mutable bool lastInkBlack = true;
+  mutable char lastText[64]{};
 
  private:
   mutable std::array<int, 4> clip{};

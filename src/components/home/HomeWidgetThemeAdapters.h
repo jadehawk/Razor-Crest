@@ -12,6 +12,7 @@
 
 #include "components/UITheme.h"
 #include "components/home/HomeWidgetNativePaint.h"
+#include "components/home/HomeWidgetReadouts.h"
 
 namespace home_widgets::firmware {
 
@@ -53,6 +54,7 @@ struct View {
 
   void* providerContext = nullptr;
   bool (*providerReady)(void*, uint16_t) = nullptr;
+  ReadoutSource readouts{};
 };
 static_assert(sizeof(View) <= 256, "Home delegate view exceeds bounded V1 size");
 
@@ -71,7 +73,7 @@ inline bool drawScene(void* owner, uint16_t resource, home_grid::Rect area) {
                                         ThemeScene::Phase::Background, view.currentBook);
 }
 
-inline bool drawNative(void* owner, Kind kind, uint16_t, home_grid::Rect area) {
+inline bool drawNative(void* owner, Kind kind, uint16_t resource, home_grid::Rect area, Panel panel) {
   View& view = *static_cast<View*>(owner);
   const ::Rect nativeArea = toThemeRect(area);
   switch (kind) {
@@ -98,15 +100,20 @@ inline bool drawNative(void* owner, Kind kind, uint16_t, home_grid::Rect area) {
                                                 *view.coverBufferStored, *view.bufferRestored,
                                                 *view.storeCoverBuffer);
       return true;
-    case Kind::Shortcuts:
+    case Kind::Shortcuts: {
       if (view.visibleMenuRows < 0 || !view.menuLabel || !view.menuIcon) return false;
-      view.theme.getTheme().drawButtonMenu(view.renderer, nativeArea, view.visibleMenuRows,
-                                           view.selectedMenuRow, *view.menuLabel, *view.menuIcon);
+      const int rowHeight = view.theme.getTheme().getMenuRowHeight(view.renderer);
+      if (rowHeight <= 0 || (view.visibleMenuRows && nativeArea.height < rowHeight)) return false;
+      const int rows = std::min(view.visibleMenuRows, nativeArea.height / rowHeight);
+      const int selected = view.selectedMenuRow >= 0 && view.selectedMenuRow < rows
+                               ? view.selectedMenuRow : -1;
+      view.theme.getTheme().drawButtonMenu(view.renderer, nativeArea, rows,
+                                           selected, *view.menuLabel, *view.menuIcon);
       return true;
-    // V1 clock/metric widget providers need safe data binding and localized
-    // native text rendering; never claim to draw a widget before those exist.
+    }
     case Kind::Clock:
     case Kind::Metric:
+      return paintReadout(view.renderer, kind, resource, area, panel, view.readouts, UI_12_FONT_ID);
     case Kind::Plugin:
     case Kind::Scene:
     case Kind::Empty:

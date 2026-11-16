@@ -131,6 +131,43 @@ void testNativeFallbackBookAndSnapshot() {
   assert(screen.pixel(3, 13) == 1);
 }
 
+void testMenuOverflowIsClippedToNativeRowHeight() {
+  GfxRenderer screen;
+  UITheme theme;
+  std::function<std::string(int)> label = [](int) { return "Settings"; };
+  std::function<UIIcon(int)> icon = [](int) { return Folder; };
+  firmware::View view{theme, screen};
+  view.visibleMenuRows = 99;  // Corrupt/stale viewport request must not overdraw.
+  view.selectedMenuRow = 98;
+  view.menuLabel = &label;
+  view.menuIcon = &icon;
+  const auto d = layout();
+  Result out;
+  assert(resolve(d, Screen{32, 24}, out) == Status::Ok);
+  auto p = widgetPlan();
+  p.underlayCount = 0;
+  p.background.mode = BackgroundMode::White;
+  p.widgets[2].kind = Kind::Empty;
+  auto surface = firmware::makeSurface(view);
+  auto hooks = home_widgets::native::hooks(surface);
+  const auto painted = paint(p, d, out, hooks);
+  assert(painted.status == PaintStatus::Ok && painted.failedWidgets == 0);
+  assert(theme.theme.menuCount == 3); // 6-pixel menu / 2-pixel native rows
+  assert(theme.theme.menuSelected == -1);
+
+  view.visibleMenuRows = 2;
+  view.selectedMenuRow = 1;
+  assert(paint(p, d, out, hooks).failedWidgets == 0);
+  assert(theme.theme.menuCount == 2 && theme.theme.menuSelected == 1);
+
+  // A menu region too short for one native row fails without painting over
+  // adjacent widgets; Stage 4 must choose valid dimensions.
+  auto tight = d;
+  tight.rows[3].minHeight = tight.rows[3].maxHeight = 1;
+  assert(resolve(tight, Screen{32, 24}, out) == Status::Ok);
+  assert(paint(p, tight, out, hooks).failedWidgets == 1);
+}
+
 void testFailureModesAreSafeAndBoundsAreRetained() {
   GfxRenderer screen;
   UITheme theme;
@@ -177,5 +214,6 @@ bool draw(const GfxRenderer& renderer, const std::string& path, const Options& o
 int main() {
   testNativeHeaderBookMenuAndUnderlay();
   testNativeFallbackBookAndSnapshot();
+  testMenuOverflowIsClippedToNativeRowHeight();
   testFailureModesAreSafeAndBoundsAreRetained();
 }

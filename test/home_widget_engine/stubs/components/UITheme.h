@@ -20,6 +20,7 @@ struct RecentBook {
 };
 
 enum UIIcon { Folder, Library, Book };
+constexpr int UI_12_FONT_ID = 12;
 
 struct ThemeScene {
   enum class Region : unsigned char { Header, Home, Boot };
@@ -52,6 +53,8 @@ class UITheme {
       stored = save();
       restored = false;
     }
+
+    int getMenuRowHeight(const GfxRenderer&) const { return 2; }
 
     void drawButtonMenu(GfxRenderer& renderer, Rect rect, int count, int selected,
                         const std::function<std::string(int)>& labels,

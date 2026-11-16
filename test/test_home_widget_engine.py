@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCES = (
     ROOT / "test/home_widget_engine/HomeWidgetEngineTest.cpp",
     ROOT / "test/home_widget_engine/HomeWidgetThemeAdaptersTest.cpp",
+    ROOT / "test/home_widget_engine/HomeWidgetReadoutsTest.cpp",
 )
 STUBS = ROOT / "test/home_widget_engine/stubs"
 

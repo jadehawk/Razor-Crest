@@ -38,7 +38,7 @@ bool drawScene(void* owner, uint16_t resource, Rect area) {
   return !c.failScene;
 }
 
-bool drawNative(void* owner, Kind kind, uint16_t, Rect area) {
+bool drawNative(void* owner, Kind kind, uint16_t, Rect area, Panel) {
   auto& c = *static_cast<Context*>(owner);
   if (kind == Kind::Header) {
     ++c.headerCount;

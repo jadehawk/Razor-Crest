@@ -61,7 +61,7 @@ struct PaintHooks {
   bool (*bitmap)(void*, const Background& image, Rect canvas) = nullptr;
   bool (*scene)(void*, uint16_t scene, Rect area) = nullptr;
   // Header, book, shortcuts, clock and metric are native renderer adapters.
-  bool (*native)(void*, Kind kind, uint16_t resource, Rect area) = nullptr;
+  bool (*native)(void*, Kind kind, uint16_t resource, Rect area, Panel panel) = nullptr;
   bool (*providerAvailable)(void*, uint16_t provider) = nullptr;
   // Native chrome (status, focus, hints) is *always* drawn last by HomeActivity.
   // HomeActivity owns it separately; it cannot be supplied by SD themes.
@@ -192,12 +192,12 @@ inline void redrawUnderlying(const Plan& plan, const home_grid::Result& result,
   paintUnderlays(plan, result, hooks, area, ignoredUnderlayFailures);
 }
 
-inline bool drawWidget(Kind kind, uint16_t resource, Rect area, const PaintHooks& hooks) {
+inline bool drawWidget(Kind kind, uint16_t resource, Rect area, Panel panel, const PaintHooks& hooks) {
   if (kind == Kind::Empty) return true;
   if (kind == Kind::Scene) return hooks.scene && hooks.scene(hooks.user, resource, area);
   if (kind == Kind::Header || kind == Kind::Book || kind == Kind::Shortcuts ||
       kind == Kind::Clock || kind == Kind::Metric)
-    return hooks.native && hooks.native(hooks.user, kind, resource, area);
+    return hooks.native && hooks.native(hooks.user, kind, resource, area, panel);
   return false;
 }
 }  // namespace detail
@@ -245,8 +245,8 @@ inline PaintReport paint(const Plan& plan, const home_grid::Definition& def,
     if (widget.panel == Panel::White || widget.panel == Panel::Black)
       hooks.fill(hooks.user, area, widget.panel == Panel::Black);
     const bool drawn = chosen == Kind::Plugin
-                           ? (hooks.native && hooks.native(hooks.user, Kind::Plugin, resource, area))
-                           : detail::drawWidget(chosen, resource, area, hooks);
+                           ? (hooks.native && hooks.native(hooks.user, Kind::Plugin, resource, area, widget.panel))
+                           : detail::drawWidget(chosen, resource, area, widget.panel, hooks);
     detail::end(hooks);
     if (drawn) continue;
     ++report.failedWidgets;

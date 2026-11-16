@@ -18,7 +18,7 @@ struct Surface {
   void* owner = nullptr;
   const std::string* (*resolveBitmap)(void*, uint16_t asset) = nullptr;
   bool (*drawScene)(void*, uint16_t scene, Rect area) = nullptr;
-  bool (*drawNative)(void*, Kind kind, uint16_t resource, Rect area) = nullptr;
+  bool (*drawNative)(void*, Kind kind, uint16_t resource, Rect area, Panel panel) = nullptr;
   bool (*isProviderReady)(void*, uint16_t provider) = nullptr;
   int savedClip[2][4]{};
   uint8_t clipDepth = 0;
@@ -76,9 +76,9 @@ inline bool scene(void* context, uint16_t sceneId, Rect area) {
   return s.drawScene && s.drawScene(s.owner, sceneId, area);
 }
 
-inline bool nativeWidget(void* context, Kind kind, uint16_t resource, Rect area) {
+inline bool nativeWidget(void* context, Kind kind, uint16_t resource, Rect area, Panel panel) {
   const auto& s = *static_cast<Surface*>(context);
-  return s.drawNative && s.drawNative(s.owner, kind, resource, area);
+  return s.drawNative && s.drawNative(s.owner, kind, resource, area, panel);
 }
 
 inline bool providerReady(void* context, uint16_t provider) {
