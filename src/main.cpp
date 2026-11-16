@@ -513,6 +513,9 @@ static bool resumeAfterPiccoUsbHold() {
 // Enter deep sleep mode
 void enterDeepSleep(bool fromTimeout = false) {
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
+  // Go dark before Bluetooth shutdown, sleep-image downloads, and screen rendering.
+  // Keep the saved frontlight preference for restore-on-wake.
+  Frontlight.setOn(false);
   APP_STATE.lastSleepFromReader = activityManager.isReaderActivity();
   APP_STATE.lastSleepCoverFallback = false;
 
@@ -590,9 +593,6 @@ void enterDeepSleep(bool fromTimeout = false) {
 
   const uint64_t timerWakeUs = isQuickResumeSleep ? 0 : timedSleepScreenRefreshUs();
 #if FREEINK_DEVICE_PICCO
-  // The I2C LED driver keeps its state through deep sleep; switch it off here
-  // (SETTINGS.frontlightOn keeps the preference for restore-on-wake).
-  Frontlight.setOn(false);
   if (resumeAfterPiccoUsbHold()) return;
 #endif
 
