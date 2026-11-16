@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "CpbBitmap.h"
+#include "HomeSceneNames.h"
 #include "components/themes/BaseTheme.h"
 
 class GfxRenderer;
@@ -23,6 +24,12 @@ class ThemeScene {
             const std::vector<RecentBook>* recentBooks = nullptr, int selectorIndex = 0, Phase phase = Phase::Full,
             size_t bookIndex = 0) const;
   bool hasRegion(Region region) const;
+  // Numeric handles are resolved from strictly validated named Home scenes.
+  // Handle 1 is the legacy Home region; 2..5 are optional named scenes.
+  uint8_t homeSceneHandle(const char* name) const { return homeSceneNames.find(name); }
+  bool drawHomeScene(const GfxRenderer& renderer, uint16_t handle, Rect area,
+                     const char* screenTitle = nullptr, const std::vector<RecentBook>* recentBooks = nullptr,
+                     int selectorIndex = 0, Phase phase = Phase::Full, size_t bookIndex = 0) const;
   bool headerBackgroundBlack() const;
   // Native full-size book-card scene (one visual slot regardless of recent count).
   bool hasNativeCoverCard() const;
@@ -67,6 +74,11 @@ class ThemeScene {
     bool sleepDirectory = false;
   };
   std::array<std::vector<Op>, 8> regions{};
+  home_scenes::Registry homeSceneNames{};
+  std::array<std::vector<Op>, home_scenes::kMaxNamed> namedHomeScenes{};
+  bool drawOperations(const GfxRenderer& renderer, Region region, const std::vector<Op>& operations, Rect area,
+                      const char* screenTitle, const std::vector<RecentBook>* recentBooks,
+                      int selectorIndex, Phase phase, size_t bookIndex) const;
   // Preserve a choice only across sleep renderings, not theme reloads.
   mutable int lastSleepIndex = -1;
   std::array<std::string, 4> fonts{};

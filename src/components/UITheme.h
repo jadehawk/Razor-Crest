@@ -87,6 +87,12 @@ class UITheme {
                            const char* title = nullptr, const std::vector<RecentBook>* books = nullptr,
                            int selection = 0, ThemeScene::Phase phase = ThemeScene::Phase::Full,
                            size_t bookIndex = 0) const;
+  // Validated theme-local names resolve to compact handles; never a file path.
+  uint8_t homeSceneHandle(const char* name) const;
+  bool renderExternalHomeScene(uint16_t handle, const GfxRenderer& renderer, Rect area,
+                               const char* title = nullptr, const std::vector<RecentBook>* books = nullptr,
+                               int selection = 0, ThemeScene::Phase phase = ThemeScene::Phase::Full,
+                               size_t bookIndex = 0) const;
   void setTheme(CrossPointSettings::UI_THEME type);
   static std::string getCoverThumbPath(std::string coverBmpPath, int coverHeight);
   static UIIcon getFileIcon(const std::string& filename);

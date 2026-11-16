@@ -245,6 +245,8 @@ bool findThemeSleepImage(const std::string& fullDir, const std::string& id, cons
 
 bool ThemeScene::load(const std::string& themeJsonPath) {
   for (auto& region : regions) region.clear();
+  homeSceneNames = home_scenes::Registry{};
+  for (auto& scene : namedHomeScenes) scene.clear();
   lastSleepIndex = -1;
   cornerCut = 0;
   cardCut = 0;
@@ -368,6 +370,7 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
   bool advertisedSleepGray = false;
   bool advertisedUsbScene = false;
   bool advertisedUsbGray = false;
+  bool advertisedHomeLayout = false;
   JsonArrayConst themeEntries = manifest["themes"].as<JsonArrayConst>();
   if (themeEntries.isNull()) return false;
   for (JsonVariantConst entry : themeEntries) {
@@ -386,6 +389,7 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
       if (name && strcmp(name, "theme.sleep-grayscale.v1") == 0) advertisedSleepGray = true;
       if (name && strcmp(name, "theme.usb-scene.v1") == 0) advertisedUsbScene = true;
       if (name && strcmp(name, "theme.usb-grayscale.v1") == 0) advertisedUsbGray = true;
+      if (name && strcmp(name, "theme.home-layout.v1") == 0) advertisedHomeLayout = true;
     }
     break;
   }
@@ -521,14 +525,11 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
   }
 
   size_t total = 0;
-  for (JsonPairConst item : rawRegions) {
-    size_t regionIndex = 8;
-    for (size_t i = 0; i < 8; ++i)
-      if (!strcmp(item.key().c_str(), REGION_NAMES[i])) regionIndex = i;
-    if (regionIndex == 8) return false;
-    JsonArrayConst list = item.value().as<JsonArrayConst>();
-    if (list.isNull() || list.size() > 16 || total + list.size() > 48) return false;
-    auto& operations = regions[regionIndex];
+  // Both fixed legacy regions and optional named Home scenes use the exact
+  // same validated declarative ops, asset checks and global 48-op budget.
+  auto parseSceneList = [&](JsonArrayConst list, size_t regionIndex, std::vector<Op>& operations,
+                            bool namedHome) -> bool {
+    if (list.isNull() || !home_scenes::withinOpBudget(total, list.size(), namedHome)) return false;
     operations.reserve(list.size());
     for (JsonVariantConst value : list) {
       JsonObjectConst json = value.as<JsonObjectConst>();
@@ -617,7 +618,7 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
         if (strcmp(orientation, "horizontal") && strcmp(orientation, "vertical")) return false;
         op.vertical = !strcmp(orientation, "vertical");
         op.thickness = json["thickness"] | 1;
-      } else if (!strcmp(kind, "book-card") && regionIndex == 1) {
+      } else if (!strcmp(kind, "book-card") && regionIndex == 1 && !namedHome) {
         op.kind = Kind::BookCard;
         const char* variant = json["variant"] | "outlined";
         if (strcmp(variant, "outlined") && strcmp(variant, "filled") && strcmp(variant, "cover")) return false;
@@ -643,6 +644,33 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
       operations.push_back(std::move(op));
     }
     total += list.size();
+    return true;
+  };
+
+  for (JsonPairConst item : rawRegions) {
+    size_t regionIndex = 8;
+    for (size_t i = 0; i < 8; ++i)
+      if (!strcmp(item.key().c_str(), REGION_NAMES[i])) regionIndex = i;
+    if (regionIndex == 8 ||
+        !parseSceneList(item.value().as<JsonArrayConst>(), regionIndex, regions[regionIndex], false))
+      return false;
+  }
+
+  // Optional scenes are only legal in a package explicitly requiring the
+  // future Home layout capability; older firmware rejects that capability.
+  JsonObjectConst named = doc["home_scenes"].as<JsonObjectConst>();
+  if (!doc["home_scenes"].isNull()) {
+    if (!advertisedHomeLayout || named.isNull() || named.size() == 0 ||
+        named.size() > home_scenes::kMaxNamed)
+      return false;
+    for (JsonPairConst item : named) {
+      const uint8_t handle = homeSceneNames.add(item.key().c_str());
+      if (!handle) return false;
+      auto& operations = namedHomeScenes[handle - home_scenes::kFirstNamedHandle];
+      if (!parseSceneList(item.value().as<JsonArrayConst>(), static_cast<size_t>(Region::Home),
+                          operations, true))
+        return false;
+    }
   }
   return true;
 }
@@ -683,6 +711,26 @@ bool ThemeScene::supportsBookCarousel() const {
 bool ThemeScene::draw(const GfxRenderer& renderer, Region region, Rect area, const char* screenTitle,
                       const std::vector<RecentBook>* recentBooks, const int selectorIndex, const Phase phase,
                       const size_t bookIndex) const {
+  return drawOperations(renderer, region, regions[static_cast<size_t>(region)], area,
+                        screenTitle, recentBooks, selectorIndex, phase, bookIndex);
+}
+
+bool ThemeScene::drawHomeScene(const GfxRenderer& renderer, uint16_t handle, Rect area,
+                               const char* screenTitle, const std::vector<RecentBook>* recentBooks,
+                               int selectorIndex, Phase phase, size_t bookIndex) const {
+  if (handle == home_scenes::kLegacyHome)
+    return draw(renderer, Region::Home, area, screenTitle, recentBooks, selectorIndex, phase, bookIndex);
+  const int index = homeSceneNames.index(handle);
+  if (index < 0) return false;
+  return drawOperations(renderer, Region::Home, namedHomeScenes[index], area,
+                        screenTitle, recentBooks, selectorIndex, phase, bookIndex);
+}
+
+bool ThemeScene::drawOperations(const GfxRenderer& renderer, Region region,
+                                const std::vector<Op>& operations, Rect area,
+                                const char* screenTitle, const std::vector<RecentBook>* recentBooks,
+                                const int selectorIndex, const Phase phase,
+                                const size_t bookIndex) const {
   if (area.width <= 0 || area.height <= 0) return false;
   const auto clip = renderer.getClipRect();
   const int left = std::max(clip[0], area.x);
@@ -698,7 +746,7 @@ bool ThemeScene::draw(const GfxRenderer& renderer, Region region, Rect area, con
   const bool touchBack = region == Region::Header && selectorIndex != 0 && gpio.hasTouch();
   const bool showArrow = touchBack && backStyle != HeaderBackStyle::Emblem;
   const int headerShift = showArrow ? (backStyle == HeaderBackStyle::Both ? 42 : -50) : 0;
-  for (const auto& op : regions[static_cast<size_t>(region)]) {
+  for (const auto& op : operations) {
     if (phase == Phase::Background && op.kind == Kind::BookCard) continue;
     if (phase == Phase::Foreground && op.kind != Kind::BookCard) continue;
     if (op.kind == Kind::Fill) {

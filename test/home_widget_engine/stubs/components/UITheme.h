@@ -2,6 +2,7 @@
 
 // Host-only mirror of the UITheme API used by HomeWidgetThemeAdapters.
 #include <cstddef>
+#include <cstring>
 #include <functional>
 #include <string>
 #include <vector>
@@ -72,12 +73,35 @@ class UITheme {
 
   mutable FakeTheme theme;
   mutable int backgroundCalls = 0;
+  mutable int namedSceneCalls = 0;
+  mutable uint16_t lastNamedHandle = 0;
   mutable int foregroundCalls = 0;
   mutable Rect lastArea{};
   mutable size_t lastBookIndex = 999;
   bool sceneAvailable = true;
 
   const FakeTheme& getTheme() const { return theme; }
+
+  uint8_t homeSceneHandle(const char* name) const {
+    if (!name) return 0;
+    if (std::strcmp(name, "halo.hero") == 0) return 2;
+    if (std::strcmp(name, "snoopy.footer") == 0) return 3;
+    return 0;
+  }
+
+  bool renderExternalHomeScene(uint16_t handle, const GfxRenderer& renderer,
+                               Rect area, const char* title,
+                               const std::vector<RecentBook>* books, int selector,
+                               ThemeScene::Phase phase, size_t bookIndex) const {
+    if (handle == 1)
+      return renderExternalScene(ThemeScene::Region::Home, renderer, area,
+                                 title, books, selector, phase, bookIndex);
+    if (!sceneAvailable || handle < 2 || handle > 3) return false;
+    ++namedSceneCalls;
+    lastNamedHandle = handle;
+    renderer.drawPixel(area.x + 1, area.y + 1, true);
+    return true;
+  }
 
   bool renderExternalScene(ThemeScene::Region region, const GfxRenderer& renderer,
                            Rect area, const char*, const std::vector<RecentBook>*,

@@ -65,12 +65,12 @@ inline const std::string* getBitmap(void* owner, uint16_t resource) {
 
 inline bool drawScene(void* owner, uint16_t resource, home_grid::Rect area) {
   View& view = *static_cast<View*>(owner);
-  if (resource != kLegacyHomeScene) return false;
-  // ThemeScene::Phase::Background excludes the native BookCard operation;
-  // Stage 4 foreground paints the book at the same anchored scene geometry.
-  return view.theme.renderExternalScene(ThemeScene::Region::Home, view.renderer, toThemeRect(area),
-                                        nullptr, view.recentBooks, view.selectorIndex,
-                                        ThemeScene::Phase::Background, view.currentBook);
+  if (!resource) return false;
+  // Only handles validated at theme load are drawable. Named Home scenes are
+  // decorative and have no book-card or native input operations.
+  return view.theme.renderExternalHomeScene(resource, view.renderer, toThemeRect(area),
+                                            nullptr, view.recentBooks, view.selectorIndex,
+                                            ThemeScene::Phase::Background, view.currentBook);
 }
 
 inline bool drawNative(void* owner, Kind kind, uint16_t resource, home_grid::Rect area, Panel panel) {

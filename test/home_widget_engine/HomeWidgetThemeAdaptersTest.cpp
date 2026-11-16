@@ -168,6 +168,35 @@ void testMenuOverflowIsClippedToNativeRowHeight() {
   assert(paint(p, tight, out, hooks).failedWidgets == 1);
 }
 
+void testNamedSceneUnderlayAndWidget() {
+  GfxRenderer screen;
+  UITheme theme;
+  firmware::View view{theme, screen};
+  const auto d = layout();
+  Result out;
+  assert(resolve(d, Screen{32, 24}, out) == Status::Ok);
+  auto p = widgetPlan();
+  p.background.mode = BackgroundMode::White;
+  p.widgets[1].kind = Kind::Scene;
+  p.widgets[1].resource = theme.homeSceneHandle("snoopy.footer");
+  p.widgets[2].kind = Kind::Empty;
+  p.widgets[3].kind = Kind::Empty;
+  p.underlays[0].scene = theme.homeSceneHandle("halo.hero");
+  assert(p.widgets[1].resource == 3 && p.underlays[0].scene == 2);
+  assert(theme.homeSceneHandle("not-installed") == 0);
+  auto surface = firmware::makeSurface(view);
+  auto hooks = home_widgets::native::hooks(surface);
+  auto report = paint(p, d, out, hooks);
+  assert(report.status == PaintStatus::Ok && report.failedWidgets == 0);
+  assert(report.failedUnderlays == 0);
+  assert(theme.namedSceneCalls == 2 && theme.lastNamedHandle == 3);
+  assert(screen.getClipRect() == (std::array<int, 4>{0, 0, 32, 24}));
+  theme.sceneAvailable = false;
+  report = paint(p, d, out, hooks);
+  assert(report.failedUnderlays == 1 && report.failedWidgets == 1);
+  assert(screen.getClipRect() == (std::array<int, 4>{0, 0, 32, 24}));
+}
+
 void testFailureModesAreSafeAndBoundsAreRetained() {
   GfxRenderer screen;
   UITheme theme;
@@ -215,5 +244,6 @@ int main() {
   testNativeHeaderBookMenuAndUnderlay();
   testNativeFallbackBookAndSnapshot();
   testMenuOverflowIsClippedToNativeRowHeight();
+  testNamedSceneUnderlayAndWidget();
   testFailureModesAreSafeAndBoundsAreRetained();
 }
