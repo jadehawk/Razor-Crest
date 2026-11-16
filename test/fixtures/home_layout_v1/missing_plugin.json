@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "background": {
+    "mode": "none"
+  },
+  "row_gap": 2,
+  "rows": [
+    {
+      "id": "header",
+      "weight": 1,
+      "min_height": 62,
+      "column_gap": 0,
+      "max_height": 62,
+      "columns": [
+        {
+          "id": "main",
+          "weight": 1,
+          "min_width": 1,
+          "widget": {
+            "type": "native.header",
+            "panel": "opaque"
+          }
+        }
+      ]
+    },
+    {
+      "id": "optional_plugin",
+      "weight": 2,
+      "min_height": 150,
+      "column_gap": 0,
+      "columns": [
+        {
+          "id": "main",
+          "weight": 1,
+          "min_width": 1,
+          "widget": {
+            "type": "plugin.widget",
+            "plugin": "not-installed",
+            "widget": "custom_summary",
+            "fallback": {
+              "type": "empty"
+            },
+            "panel": "opaque"
+          }
+        }
+      ]
+    },
+    {
+      "id": "menu",
+      "weight": 3,
+      "min_height": 160,
+      "column_gap": 0,
+      "columns": [
+        {
+          "id": "main",
+          "weight": 1,
+          "min_width": 1,
+          "widget": {
+            "type": "native.shortcuts",
+            "source": "home_shortcuts",
+            "overflow": "scroll",
+            "row_height": 54,
+            "panel": "opaque"
+          }
+        }
+      ]
+    }
+  ]
+}

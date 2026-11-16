@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "background": {
+    "mode": "none"
+  },
+  "row_gap": 0,
+  "scene_underlays": [{"scene": "halo.hero", "from_row": "hero", "through_row": "book"}],
+  "rows": [
+    {
+      "id": "header",
+      "weight": 1,
+      "min_height": 56,
+      "column_gap": 0,
+      "max_height": 56,
+      "columns": [
+        {
+          "id": "main",
+          "weight": 1,
+          "min_width": 1,
+          "widget": {
+            "type": "native.header",
+            "panel": "opaque"
+          }
+        }
+      ]
+    },
+    {
+      "id": "hero",
+      "weight": 4,
+      "min_height": 165,
+      "column_gap": 0,
+      "columns": [
+        {
+          "id": "main",
+          "weight": 1,
+          "min_width": 1,
+          "widget": {
+            "type": "empty",
+            "panel": "transparent"
+          }
+        }
+      ]
+    },
+    {
+      "id": "book",
+      "weight": 2,
+      "min_height": 100,
+      "column_gap": 0,
+      "columns": [
+        {
+          "id": "main",
+          "weight": 1,
+          "min_width": 1,
+          "widget": {
+            "type": "native.book",
+            "carousel": true,
+            "panel": "transparent",
+            "variant": "outlined"
+          }
+        }
+      ]
+    },
+    {
+      "id": "menu",
+      "weight": 5,
+      "min_height": 180,
+      "max_height": 322,
+      "size_mode": "content",
+      "column_gap": 0,
+      "columns": [
+        {
+          "id": "main",
+          "weight": 1,
+          "min_width": 1,
+          "widget": {
+            "type": "native.shortcuts",
+            "source": "home_shortcuts",
+            "overflow": "scroll",
+            "row_height": 46,
+            "panel": "opaque"
+          }
+        }
+      ]
+    }
+  ]
+}

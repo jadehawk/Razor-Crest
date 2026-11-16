@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "background": {
+    "mode": "none"
+  },
+  "row_gap": 2,
+  "rows": [
+    {
+      "id": "header",
+      "weight": 1,
+      "min_height": 62,
+      "column_gap": 0,
+      "max_height": 62,
+      "columns": [
+        {
+          "id": "main",
+          "weight": 1,
+          "min_width": 1,
+          "widget": {
+            "type": "native.header",
+            "panel": "opaque"
+          }
+        }
+      ]
+    },
+    {
+      "id": "hero",
+      "weight": 3,
+      "min_height": 700,
+      "column_gap": 0,
+      "columns": [
+        {
+          "id": "main",
+          "weight": 1,
+          "min_width": 1,
+          "widget": {
+            "type": "theme.scene",
+            "scene": "oversized.hero",
+            "panel": "opaque"
+          }
+        }
+      ]
+    },
+    {
+      "id": "menu",
+      "weight": 2,
+      "min_height": 150,
+      "column_gap": 0,
+      "columns": [
+        {
+          "id": "main",
+          "weight": 1,
+          "min_width": 1,
+          "widget": {
+            "type": "native.shortcuts",
+            "source": "home_shortcuts",
+            "overflow": "scroll",
+            "row_height": 54,
+            "panel": "opaque"
+          }
+        }
+      ]
+    }
+  ]
+}

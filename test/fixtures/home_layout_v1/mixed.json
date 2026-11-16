@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "background": {
+    "mode": "image",
+    "asset": "home_background",
+    "paint": "opaque",
+    "fit": "cover",
+    "focus": [
+      50,
+      50
+    ]
+  },
+  "row_gap": 4,
+  "rows": [
+    {
+      "id": "header",
+      "weight": 1,
+      "min_height": 62,
+      "column_gap": 0,
+      "max_height": 62,
+      "columns": [
+        {
+          "id": "main",
+          "weight": 1,
+          "min_width": 1,
+          "widget": {
+            "type": "native.header",
+            "panel": "opaque"
+          }
+        }
+      ]
+    },
+    {
+      "id": "hero",
+      "weight": 3,
+      "min_height": 110,
+      "column_gap": 0,
+      "columns": [
+        {
+          "id": "full",
+          "weight": 1,
+          "min_width": 1,
+          "widget": {
+            "type": "theme.scene",
+            "scene": "mixed.hero",
+            "panel": "transparent"
+          }
+        }
+      ]
+    },
+    {
+      "id": "book_stats",
+      "weight": 2,
+      "min_height": 145,
+      "column_gap": 8,
+      "columns": [
+        {
+          "id": "book",
+          "weight": 2,
+          "min_width": 220,
+          "widget": {
+            "type": "native.book",
+            "carousel": true,
+            "panel": "opaque"
+          }
+        },
+        {
+          "id": "stats",
+          "weight": 1,
+          "min_width": 180,
+          "widget": {
+            "type": "plugin.widget",
+            "plugin": "reading-statistics",
+            "widget": "reading_snapshot",
+            "fallback": {
+              "type": "empty"
+            },
+            "panel": "opaque"
+          }
+        }
+      ]
+    },
+    {
+      "id": "metrics",
+      "weight": 1,
+      "min_height": 65,
+      "column_gap": 6,
+      "columns": [
+        {
+          "id": "clock",
+          "weight": 1,
+          "min_width": 85,
+          "widget": {
+            "type": "native.clock",
+            "panel": "transparent"
+          }
+        },
+        {
+          "id": "streak",
+          "weight": 1,
+          "min_width": 85,
+          "widget": {
+            "type": "native.metric",
+            "field": "active_days",
+            "panel": "opaque"
+          }
+        },
+        {
+          "id": "calendar",
+          "weight": 1,
+          "min_width": 85,
+          "widget": {
+            "type": "native.metric",
+            "field": "last_7_seconds",
+            "panel": "opaque"
+          }
+        }
+      ]
+    },
+    {
+      "id": "menu",
+      "weight": 4,
+      "min_height": 175,
+      "column_gap": 0,
+      "columns": [
+        {
+          "id": "full",
+          "weight": 1,
+          "min_width": 1,
+          "widget": {
+            "type": "native.shortcuts",
+            "source": "home_shortcuts",
+            "overflow": "scroll",
+            "row_height": 46,
+            "panel": "opaque"
+          }
+        }
+      ]
+    }
+  ]
+}
