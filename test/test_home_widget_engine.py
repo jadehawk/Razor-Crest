@@ -16,6 +16,7 @@ SOURCES = (
     ROOT / "test/home_widget_engine/HomeWidgetThemeAdaptersTest.cpp",
     ROOT / "test/home_widget_engine/HomeWidgetReadoutsTest.cpp",
     ROOT / "test/home_widget_engine/HomeSceneNamesTest.cpp",
+    ROOT / "test/home_widget_engine/HomeGridActivationTest.cpp",
 )
 STUBS = ROOT / "test/home_widget_engine/stubs"
 
