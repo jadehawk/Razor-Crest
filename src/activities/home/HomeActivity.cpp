@@ -419,6 +419,60 @@ void HomeActivity::onEnter() {
 
   ensureHomeMenuSelectionVisible();
 
+  // Stage 4 cold-path only: verify the selected SD theme's declared grid
+  // outside render()/loop(). Legacy Home remains the authoritative painter
+  // and input handler until the grid's navigation path is integrated.
+  homeGridCandidate.reset();
+  if (!coverGridUi && scene && !scene->homeLayoutPath().empty()) {
+    auto candidate = makeUniqueNoThrow<home_grid::session::State>();
+    if (!candidate) {
+      LOG_ERR("HOME", "OOM: Home layout descriptors; using legacy Home");
+    } else {
+      HalFile layoutFile;
+      if (!Storage.openFileForRead("THEME", scene->homeLayoutPath(), layoutFile)) {
+        LOG_ERR("HOME", "Home layout could not be opened; using legacy Home");
+      } else {
+        home_grid::json::Resources resources{};
+        resources.owner = const_cast<ThemeScene*>(scene);
+        resources.scene = [](void* owner, const char* name) -> uint16_t {
+          return static_cast<const ThemeScene*>(owner)->homeSceneHandle(name);
+        };
+        resources.bitmap = [](void* owner, const char* role) -> uint16_t {
+          const auto* active = static_cast<const ThemeScene*>(owner);
+          return role && strcmp(role, "home_background") == 0 &&
+                         !active->homeWallpaperPath().empty() ? 1 : 0;
+        };
+        // Optional providers return zero until Stage 5; their declared
+        // fallback remains in the same bounds.
+        const int totalRows = static_cast<int>(homeButtons.size()) +
+            (metrics.homeContinueReadingInMenu && hasContinueReading ? 1 : 0);
+        const int rowStep = std::max(1, GUI.getMenuRowHeight(renderer) + metrics.menuSpacing);
+        resources.preferredMenuHeight = static_cast<uint16_t>(std::min(
+            home_grid::kMaxScreenSize, std::max(0, totalRows) * rowStep));
+
+        const Rect content = UITheme::getInstance().getContentArea(renderer);
+        const int width = renderer.getScreenWidth();
+        const int height = renderer.getScreenHeight();
+        const int hintHeight = BoardConfig::hasTouch() ? 0 : metrics.buttonHintsHeight;
+        const int footerHeight = scene->homeMenuFooterHeight(renderer);
+        const home_grid::Screen safe{width, height, std::max(0, content.x),
+                                    std::max(0, width - content.x - content.width),
+                                    std::max(content.y, metrics.topPadding),
+                                    std::max(height - content.y - content.height,
+                                             hintHeight + footerHeight + 8)};
+        const home_grid::activation::Policy policy{true, true, true, scene->supportsHomeBackground()};
+        const auto status = home_grid::session::load(layoutFile, resources, safe, policy, *candidate);
+        if (status == home_grid::json::Status::Ok) {
+          LOG_INF("HOME", "SD Home layout verified (%u rows); legacy painter retained",
+                  static_cast<unsigned>(candidate->parsed.layout.rowCount));
+          homeGridCandidate = std::move(candidate);
+        } else {
+          LOG_ERR("HOME", "Home layout preflight failed (%d); using legacy Home", static_cast<int>(status));
+        }
+      }
+    }
+  }
+
   // Trigger first update
   requestUpdate();
 }
@@ -427,6 +481,7 @@ void HomeActivity::onExit() {
   Activity::onExit();
 
   coverGridUi.reset();
+  homeGridCandidate.reset();
 
   // Free the stored cover buffer if any
   freeCoverBuffer();

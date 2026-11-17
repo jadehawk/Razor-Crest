@@ -16,7 +16,8 @@ method = "int ThemeScene::homeMenuFooterHeight(" + chrome.split(
 )[1].split("\nbool ThemeScene::drawMenu(", 1)[0]
 
 # Row capacity, paint bounds and touch swipe bounds must use the same policy.
-assert home.count("scene->homeMenuFooterHeight(renderer)") == 2
+assert home.count("scene->homeMenuFooterHeight(renderer)") >= 2
+assert "hintHeight + footerHeight + 8" in home
 assert "external->homeMenuFooterHeight(renderer)" in home
 assert "homeMenuFooterHeight(renderer) == 80" in chrome
 

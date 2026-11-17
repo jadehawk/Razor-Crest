@@ -11,10 +11,11 @@
 #include <cstring>
 
 #include "components/home/HomeGridActivation.h"
+#include "components/home/HomeLayoutPackage.h"
 #include "components/home/HomeWidgetReadouts.h"
 
 namespace home_grid::json {
-constexpr size_t kMaxLayoutBytes = 8192;
+constexpr size_t kMaxLayoutBytes = home_grid::package::kMaxLayoutBytes;
 constexpr int kNestingLimit = 8;
 
 enum class Status : uint8_t {

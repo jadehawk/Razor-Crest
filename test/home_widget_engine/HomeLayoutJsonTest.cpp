@@ -1,4 +1,5 @@
 #include "components/home/HomeLayoutJson.h"
+#include "components/home/HomeLayoutSession.h"
 
 #include <cassert>
 #include <cstring>
@@ -218,6 +219,42 @@ void testHalFileReader() {
   assert(output.widgets.widgetCount == 0);
 }
 
+void testColdPathSession() {
+  const std::string halo = read("test/fixtures/home_layout_v1/halo.json");
+  home_grid::session::State state{};
+  const home_grid::activation::Policy policy{true, true, true, true};
+  FakeHalFile complete{halo};
+  assert(home_grid::session::load(complete, resources(),
+                                 home_grid::Screen{528, 792, 14, 14, 0, 40},
+                                 policy, state) == Status::Ok);
+  assert(state.active.enabled);
+  assert(state.parsed.widgets.widgetCount == 4);
+
+  // A failed subsequent load must wipe *all* previously activated geometry
+  // and descriptors, not silently keep the old theme's scene pointers.
+  FakeHalFile untrusted{halo};
+  home_grid::activation::Policy denied = policy;
+  denied.supportsWidgets = false;
+  assert(home_grid::session::load(untrusted, resources(),
+                                 home_grid::Screen{528, 792}, denied, state) ==
+         Status::InvalidLayout);
+  assert(!state.active.enabled && state.parsed.widgets.widgetCount == 0);
+  assert(state.parsed.layout.rowCount == 0);
+  assert(untrusted.memory.offset == 0); // Disabled capability must not read SD.
+
+  FakeHalFile tooLarge{halo, kMaxLayoutBytes + 1};
+  assert(home_grid::session::load(tooLarge, resources(),
+                                 home_grid::Screen{528, 792}, policy, state) ==
+         Status::TooLarge);
+  assert(!state.active.enabled && state.parsed.widgets.widgetCount == 0);
+
+  FakeHalFile smallScreen{halo};
+  assert(home_grid::session::load(smallScreen, resources(),
+                                 home_grid::Screen{40, 40}, policy, state) ==
+         Status::InvalidLayout);
+  assert(!state.active.enabled && state.parsed.layout.rowCount == 0);
+}
+
 void testByteCapAndGarbage() {
   const std::string json = read("test/fixtures/home_layout_v1/snoopy.json");
   reject(json + " malicious", Status::InvalidJson);
@@ -241,5 +278,6 @@ int main() {
   testKnownFixtures();
   testStrictSchemaAndResourceValidation();
   testHalFileReader();
+  testColdPathSession();
   testByteCapAndGarbage();
 }

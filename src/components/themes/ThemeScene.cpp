@@ -19,6 +19,7 @@
 #include <utility>
 
 #include "CrossPointSettings.h"
+#include "components/home/HomeLayoutPackage.h"
 #include "RecentBooksStore.h"
 #include "ThemeFonts.h"
 #include "components/UITheme.h"
@@ -260,6 +261,9 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
   menuDoubleOutline = false;
   backStyle = HeaderBackStyle::Emblem;
   menuFooterFile.clear();
+  homeLayoutFile.clear();
+  homeWallpaperFile.clear();
+  homeBackgroundCapability = false;
   menuFooterTouchFile.clear();
   screenTouchFile.clear();
   usbGrayFile.clear();
@@ -371,6 +375,8 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
   bool advertisedUsbScene = false;
   bool advertisedUsbGray = false;
   bool advertisedHomeLayout = false;
+  bool advertisedHomeWidgets = false;
+  bool advertisedHomeBackground = false;
   JsonArrayConst themeEntries = manifest["themes"].as<JsonArrayConst>();
   if (themeEntries.isNull()) return false;
   for (JsonVariantConst entry : themeEntries) {
@@ -390,10 +396,15 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
       if (name && strcmp(name, "theme.usb-scene.v1") == 0) advertisedUsbScene = true;
       if (name && strcmp(name, "theme.usb-grayscale.v1") == 0) advertisedUsbGray = true;
       if (name && strcmp(name, "theme.home-layout.v1") == 0) advertisedHomeLayout = true;
+      if (name && strcmp(name, "home.widgets.v1") == 0) advertisedHomeWidgets = true;
+      if (name && strcmp(name, "theme.home-background.v1") == 0) advertisedHomeBackground = true;
     }
     break;
   }
   if (declaredSettingsLayout != advertisedSettingsLayout) return false;
+  if (advertisedHomeWidgets != advertisedHomeLayout ||
+      (advertisedHomeBackground && !advertisedHomeLayout)) return false;
+  homeBackgroundCapability = advertisedHomeBackground;
   if ((!assets["sleep_art"].isNull()) != advertisedSleepGallery) return false;
   if ((!assets["usb_art"].isNull()) != advertisedUsbScene) return false;
   if ((!assets["usb_gray_art"].isNull()) != advertisedUsbGray || (advertisedUsbGray && !advertisedUsbScene))
@@ -483,6 +494,28 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
       LOG_ERR("THEME", "Invalid theme asset in %s", themeJsonPath.c_str());
       return false;
     }
+  }
+
+  // A V1 Home layout is a theme-private, manifest-declared file. Reject any
+  // absolute/traversal/foreign-theme paths and absent or oversized files
+  // before allowing it to be selected. No Home renderer is enabled here.
+  const JsonVariantConst layoutField = doc["home_layout"];
+  const bool hasHomeLayout = !layoutField.isUnbound();
+  if (hasHomeLayout != advertisedHomeLayout) return false;
+  if (hasHomeLayout) {
+    const char* relative = layoutField.as<const char*>();
+    if (!home_grid::package::validLayoutPath(id.c_str(), relative) || !isDeclared(files, relative))
+      return false;
+    const std::string absolute = base + "/" + relative;
+    HalFile layoutFile;
+    if (!Storage.openFileForRead("THEME", absolute, layoutFile) ||
+        layoutFile.fileSize64() == 0 ||
+        layoutFile.fileSize64() > home_grid::package::kMaxLayoutBytes)
+      return false;
+    homeLayoutFile = absolute;
+    const char* wallpaper = assets["home_background"].as<const char*>();
+    // Asset validation above already checked path, manifest and CPB header.
+    if (wallpaper) homeWallpaperFile = base + "/" + wallpaper;
   }
 
   const JsonArrayConst screenOps = rawRegions["screen"].as<JsonArrayConst>();

@@ -1,11 +1,13 @@
 #pragma once
 #include <functional>
+#include <memory>
 #include <vector>
 
 #include "./FileBrowserActivity.h"
 #include "RecentBooksStore.h"
 #include "activities/Activity.h"
 #include "components/CoverGridHomeUi.h"
+#include "components/home/HomeLayoutSession.h"
 #include "util/ButtonNavigator.h"
 #include "util/HomeMenuRegistry.h"
 #include "util/SingleCardPager.h"
@@ -52,6 +54,9 @@ class HomeActivity final : public Activity {
   int coverRectH = 0;
   std::vector<RecentBook> recentBooks;
   HomeMenuRegistry homeMenuRegistry;
+  // Parsed/verified only on cold Home entry. Legacy paint/input remain active
+  // until the grid compositor's navigation and rendering are integrated.
+  std::unique_ptr<home_grid::session::State> homeGridCandidate;
   std::vector<HomeMenuRegistry::Entry> homeButtons;
   int homeMenuViewportTop = 0;
   int homeMenuViewportRows = 1;

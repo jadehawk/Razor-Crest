@@ -27,6 +27,10 @@ class ThemeScene {
   // Numeric handles are resolved from strictly validated named Home scenes.
   // Handle 1 is the legacy Home region; 2..5 are optional named scenes.
   uint8_t homeSceneHandle(const char* name) const { return homeSceneNames.find(name); }
+  // Manifest-verified theme-local paths; empty until a V1 Home layout is installed.
+  const std::string& homeLayoutPath() const { return homeLayoutFile; }
+  const std::string& homeWallpaperPath() const { return homeWallpaperFile; }
+  bool supportsHomeBackground() const { return homeBackgroundCapability; }
   bool drawHomeScene(const GfxRenderer& renderer, uint16_t handle, Rect area,
                      const char* screenTitle = nullptr, const std::vector<RecentBook>* recentBooks = nullptr,
                      int selectorIndex = 0, Phase phase = Phase::Full, size_t bookIndex = 0) const;
@@ -95,6 +99,9 @@ class ThemeScene {
   bool menuDoubleOutline = false;
   HeaderBackStyle backStyle = HeaderBackStyle::Emblem;
   std::string menuFooterFile;
+  std::string homeLayoutFile;
+  std::string homeWallpaperFile;
+  bool homeBackgroundCapability = false;
   std::string menuFooterTouchFile;
   std::string screenTouchFile;
   std::string usbGrayFile;
