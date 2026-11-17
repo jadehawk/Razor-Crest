@@ -62,6 +62,7 @@ class HomeActivity final : public Activity {
   int homeMenuViewportRows = 1;
   int homeMenuHeroReclaim = 0;
   void ensureHomeMenuSelectionVisible();
+  bool renderGridHome(); // Shares existing carousel, menu and hint state.
   const HomeMenuItem initialMenuItem;
   const bool cleanInitialRefresh;
 

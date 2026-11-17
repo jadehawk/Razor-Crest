@@ -46,6 +46,7 @@ struct View {
   bool* coverBufferStored = nullptr;
   bool* bufferRestored = nullptr;
   const std::function<bool()>* storeCoverBuffer = nullptr;
+  const std::function<bool()>* restoreCoverBuffer = nullptr;
 
   int visibleMenuRows = 0;
   int selectedMenuRow = -1;
@@ -95,6 +96,16 @@ inline bool drawNative(void* owner, Kind kind, uint16_t resource, home_grid::Rec
       if (!view.recentBooks || !view.coverRendered || !view.coverBufferStored ||
           !view.bufferRestored || !view.storeCoverBuffer)
         return false;
+      // The compositor repaints its wallpaper first. Restore the existing
+      // Book-only cached region *inside* this clipped widget, not before
+      // painting the whole grid or through a second framebuffer.
+      if (*view.coverRendered && *view.coverBufferStored && view.restoreCoverBuffer) {
+        *view.bufferRestored = (*view.restoreCoverBuffer)();
+        if (!*view.bufferRestored) {
+          *view.coverRendered = false;
+          *view.coverBufferStored = false;
+        }
+      }
       view.theme.getTheme().drawRecentBookCover(view.renderer, nativeArea, *view.recentBooks,
                                                 view.selectorIndex, *view.coverRendered,
                                                 *view.coverBufferStored, *view.bufferRestored,

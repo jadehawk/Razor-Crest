@@ -5,6 +5,7 @@
 #include <Epub.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
+#include <HalClock.h>
 #include <HalDisplay.h>
 #include <HalMemory.h>
 #include <HalStorage.h>
@@ -26,6 +27,8 @@
 #include "OpdsServerStore.h"
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
+#include "components/home/HomeGridInteraction.h"
+#include "components/home/HomeWidgetThemeAdapters.h"
 #include "fontIds.h"
 #include "util/BookProgress.h"
 #include "util/HomeMenuGeometry.h"
@@ -463,9 +466,30 @@ void HomeActivity::onEnter() {
         const home_grid::activation::Policy policy{true, true, true, scene->supportsHomeBackground()};
         const auto status = home_grid::session::load(layoutFile, resources, safe, policy, *candidate);
         if (status == home_grid::json::Status::Ok) {
-          LOG_INF("HOME", "SD Home layout verified (%u rows); legacy painter retained",
-                  static_cast<unsigned>(candidate->parsed.layout.rowCount));
-          homeGridCandidate = std::move(candidate);
+          home_grid::interaction::Regions areas;
+          const bool mapped = home_grid::interaction::locate(
+              candidate->parsed.widgets, candidate->active.rectangles, areas);
+          const int nativeRowHeight = GUI.getMenuRowHeight(renderer);
+          const int capacity = mapped ? home_grid::interaction::visibleMenuCapacity(
+              areas.menu, nativeRowHeight, metrics.menuSpacing,
+              scene->homeMenuFooterHeight(renderer) > 0) : 0;
+          const bool rowHeightMatches = candidate->parsed.menuRowHeight == 0 ||
+                                        candidate->parsed.menuRowHeight == nativeRowHeight;
+          // The old Home carousel has one logical card and an indexed menu.
+          // Defer layouts requiring multiple simultaneous book focus targets
+          // until the native navigation model can represent them safely.
+          const bool bookMatches = (recentSlots() == 0 || areas.bookWidget >= 0) &&
+                                   (singleCardMode || recentSlots() <= 1);
+          if (mapped && capacity > 0 && rowHeightMatches && bookMatches) {
+            homeMenuViewportRows = capacity;
+            homeMenuViewportTop = 0;
+            ensureHomeMenuSelectionVisible();
+            LOG_INF("HOME", "SD Home layout ready (%u rows, menu capacity %d)",
+                    static_cast<unsigned>(candidate->parsed.layout.rowCount), capacity);
+            homeGridCandidate = std::move(candidate);
+          } else {
+            LOG_ERR("HOME", "Home grid unsupported navigation/size; using legacy Home");
+          }
         } else {
           LOG_ERR("HOME", "Home layout preflight failed (%d); using legacy Home", static_cast<int>(status));
         }
@@ -527,6 +551,10 @@ void HomeActivity::freeCoverBuffer() {
 void HomeActivity::loop() {
   const int menuCount = getMenuItemCount();
   const auto& metrics = UITheme::getInstance().getMetrics();
+  home_grid::interaction::Regions gridAreas;
+  const bool gridActive = homeGridCandidate && homeGridCandidate->active.enabled &&
+      home_grid::interaction::locate(homeGridCandidate->parsed.widgets,
+                                     homeGridCandidate->active.rectangles, gridAreas);
 
   auto activateSelection = [this] {
     if (selectorIndex < recentSlots()) {
@@ -645,9 +673,13 @@ void HomeActivity::loop() {
   int swipeStartX = 0;
   int swipeStartY = 0;
   const auto swipe = mappedInput.wasSwipe(&swipeStartX, &swipeStartY);
-  if (singleCardMode && cardPager.canCycle() && mappedInput.hasTouch() && swipeStartY >= metrics.homeTopPadding &&
-      swipeStartY < metrics.homeTopPadding + metrics.homeCoverTileHeight - homeMenuHeroReclaim && swipeStartX >= 44 &&
-      swipeStartX < renderer.getScreenWidth() - 24 && !mappedInput.wasBackGesture()) {
+  const bool swipeInBook = gridActive
+      ? (gridAreas.bookWidget >= 0 && home_grid::interaction::inside(gridAreas.book, swipeStartX, swipeStartY))
+      : (swipeStartY >= metrics.homeTopPadding &&
+         swipeStartY < metrics.homeTopPadding + metrics.homeCoverTileHeight - homeMenuHeroReclaim &&
+         swipeStartX >= 44 && swipeStartX < renderer.getScreenWidth() - 24);
+  if (singleCardMode && cardPager.canCycle() && mappedInput.hasTouch() &&
+      swipeInBook && !mappedInput.wasBackGesture()) {
     if (swipe == MappedInputManager::SwipeDir::Left || swipe == MappedInputManager::SwipeDir::Right) {
       selectorIndex = 0;
       cycleCard(swipe == MappedInputManager::SwipeDir::Left ? 1 : -1);
@@ -657,14 +689,17 @@ void HomeActivity::loop() {
   if (!coverGridUi && mappedInput.hasTouch() &&
       (swipe == MappedInputManager::SwipeDir::Up || swipe == MappedInputManager::SwipeDir::Down)) {
     const auto& content = UITheme::getInstance().getContentArea(renderer);
-    const int top =
+    const int top = gridActive ? gridAreas.menu.y :
         metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset - homeMenuHeroReclaim;
     const auto* scene = UITheme::getInstance().activeExternalScene();
     const int footer = scene ? scene->homeMenuFooterHeight(renderer) : 0;
-    const int bottom = home_menu::safeBottom(renderer.getScreenHeight(), 0, footer);
+    const int bottom = gridActive ? gridAreas.menu.y + gridAreas.menu.height :
+        home_menu::safeBottom(renderer.getScreenHeight(), 0, footer);
+    const int left = gridActive ? gridAreas.menu.x : content.x;
+    const int right = gridActive ? gridAreas.menu.x + gridAreas.menu.width : content.x + content.width;
     const int menuBase = metrics.homeContinueReadingInMenu ? 0 : recentSlots();
     const int total = menuCount - menuBase;
-    if (swipeStartX >= content.x && swipeStartX < content.x + content.width && swipeStartY >= top &&
+    if (swipeStartX >= left && swipeStartX < right && swipeStartY >= top &&
         swipeStartY < bottom && total > homeMenuViewportRows) {
       const int step = std::max(1, homeMenuViewportRows - 1);
       const int nextTop = home_menu::scrollTopBy(
@@ -743,12 +778,19 @@ void HomeActivity::loop() {
   // targets from the drawn covers by content.x on bezel-inset panels (EEGO A4).
   const Rect content = UITheme::getInstance().getContentArea(renderer);
   const int coverColumnCount = singleCardMode ? 1 : std::max(1, metrics.homeRecentBooksCount);
-  const int recentCount = std::min(recentSlots(), coverColumnCount);
-  const int coverColumnWidth = (content.width - 2 * metrics.contentSidePadding) / coverColumnCount;
+  const int recentCount = gridActive ? (gridAreas.bookWidget >= 0 ? std::min(1, recentSlots()) : 0)
+                                     : std::min(recentSlots(), coverColumnCount);
+  const int coverColumnWidth = gridActive ? gridAreas.book.width :
+      (content.width - 2 * metrics.contentSidePadding) / coverColumnCount;
+  const int coverLeft = gridActive ? gridAreas.book.x : content.x + metrics.contentSidePadding;
+  const int coverTop = gridActive ? gridAreas.book.y : metrics.homeTopPadding;
+  const int coverBottom = gridActive ? gridAreas.book.y + gridAreas.book.height :
+      metrics.homeTopPadding + metrics.homeCoverTileHeight - homeMenuHeroReclaim;
   int touchedBook = -1;
-  const auto coverTouch = mappedInput.colTouch(
-      touchedBook, content.x + metrics.contentSidePadding, coverColumnWidth, recentCount, metrics.homeTopPadding,
-      metrics.homeTopPadding + metrics.homeCoverTileHeight - homeMenuHeroReclaim, coverColumnWidth);
+  const auto coverTouch = recentCount > 0 ?
+      mappedInput.colTouch(touchedBook, coverLeft, coverColumnWidth, recentCount,
+                           coverTop, coverBottom, coverColumnWidth)
+      : MappedInputManager::RowTouch::None;
   if (coverTouch != MappedInputManager::RowTouch::None) {
     if (coverTouch == MappedInputManager::RowTouch::Down) {
       if (selectorIndex != touchedBook) {
@@ -763,8 +805,10 @@ void HomeActivity::loop() {
     return;
   }
 
-  const int menuTop =
+  const int menuTop = gridActive ? gridAreas.menu.y :
       metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset - homeMenuHeroReclaim;
+  const int menuLeft = gridActive ? gridAreas.menu.x : content.x;
+  const int menuRight = gridActive ? gridAreas.menu.x + gridAreas.menu.width : content.x + content.width;
   const int menuBase = metrics.homeContinueReadingInMenu ? 0 : recentSlots();
   const int renderedMenuCount = home_menu::visibleRows(menuCount - menuBase, homeMenuViewportTop, homeMenuViewportRows);
   int menuRow = -1;
@@ -772,7 +816,7 @@ void HomeActivity::loop() {
   // font-derived rows and the touch grid must match the visuals exactly.
   const int menuRowHeight = GUI.getMenuRowHeight(renderer);
   const auto menuTouch = mappedInput.rowTouch(menuRow, menuTop, menuRowHeight + metrics.menuSpacing, renderedMenuCount,
-                                              content.x, content.x + content.width, menuRowHeight);
+                                              menuLeft, menuRight, menuRowHeight);
   if (menuTouch != MappedInputManager::RowTouch::None) {
     const int touchedIndex = menuBase + homeMenuViewportTop + menuRow;
     if (menuTouch == MappedInputManager::RowTouch::Down) {
@@ -791,6 +835,112 @@ void HomeActivity::loop() {
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     activateSelection();
   }
+}
+
+bool HomeActivity::renderGridHome() {
+  if (!homeGridCandidate || !homeGridCandidate->active.enabled) return false;
+  const auto& state = *homeGridCandidate;
+  home_grid::interaction::Regions areas;
+  if (!home_grid::interaction::locate(state.parsed.widgets, state.active.rectangles, areas))
+    return false;
+  auto& theme = UITheme::getInstance();
+  const ThemeScene* scene = theme.activeExternalScene();
+  if (!scene) return false;
+
+  // The Book snapshot belongs to the resolved card rectangle, never the
+  // full Home canvas. A previous theme/orientation must not reuse old pixels.
+  if (areas.bookWidget >= 0) {
+    if (coverRectX != areas.book.x || coverRectY != areas.book.y ||
+        coverRectW != areas.book.width || coverRectH != areas.book.height) {
+      freeCoverBuffer();
+      coverRendered = false;
+    }
+    coverRectX = areas.book.x;
+    coverRectY = areas.book.y;
+    coverRectW = areas.book.width;
+    coverRectH = areas.book.height;
+  }
+  if (coverBufferStored && coverBufferInverted != display.isInverted()) {
+    freeCoverBuffer();
+    coverRendered = false;
+  }
+
+  const auto& metrics = theme.getMetrics();
+  const bool menuHasResume = metrics.homeContinueReadingInMenu && !recentBooks.empty();
+  const int menuBase = menuHasResume ? 0 : recentSlots();
+  const int totalRows = static_cast<int>(homeButtons.size()) + (menuHasResume ? 1 : 0);
+  const int top = home_menu::scrollTopBy(homeMenuViewportTop, 0, totalRows, homeMenuViewportRows);
+  const int shown = home_menu::visibleRows(totalRows, top, homeMenuViewportRows);
+  const int selection = selectorIndex - menuBase - top;
+
+  std::function<std::string(int)> menuLabel = [this, menuHasResume, top](int row) {
+    const int index = top + row;
+    return menuHasResume && index == 0 ? std::string(tr(STR_CONTINUE_READING))
+                                      : homeButtons[index - (menuHasResume ? 1 : 0)].label;
+  };
+  std::function<UIIcon(int)> menuIcon = [this, menuHasResume, top](int row) {
+    const int index = top + row;
+    return menuHasResume && index == 0 ? Book : homeButtons[index - (menuHasResume ? 1 : 0)].icon;
+  };
+  std::function<bool()> storeSnapshot = [this] { return storeCoverBuffer(); };
+  std::function<bool()> restoreSnapshot = [this] { return restoreCoverBuffer(); };
+  bool bufferRestored = false;
+
+  home_widgets::firmware::View view{theme, renderer};
+  view.recentBooks = &recentBooks;
+  view.wallpaperPath = &scene->homeWallpaperPath();
+  view.headerTitle = menuHasResume && !recentBooks.empty()
+                         ? recentBooks[singleCardMode ? cardPager.current() : 0].title.c_str() : nullptr;
+  view.selectorIndex = selectorIndex;
+  view.currentBook = cardPager.current();
+  view.useExternalBookCard = areas.bookWidget >= 0 && scene->hasNativeCoverCard() &&
+                             scene->hasRegion(ThemeScene::Region::Home);
+  view.externalBookScene = areas.bookScene;
+  view.coverRendered = &coverRendered;
+  view.coverBufferStored = &coverBufferStored;
+  view.bufferRestored = &bufferRestored;
+  view.storeCoverBuffer = &storeSnapshot;
+  view.restoreCoverBuffer = &restoreSnapshot;
+  view.visibleMenuRows = shown;
+  view.selectedMenuRow = selection >= 0 && selection < shown ? selection : -1;
+  view.menuLabel = &menuLabel;
+  view.menuIcon = &menuIcon;
+  // Stage 5 supplies validated statistics sources; absent providers use the
+  // existing bounded "NO DATA" placeholder rather than guessing values.
+  view.readouts.clock = [](void*, char* value, size_t capacity) -> bool {
+    return SETTINGS.clockHasBeenSynced && halClock.isAvailable() &&
+           halClock.formatTime(value, capacity, SETTINGS.clockFormat == 1);
+  };
+
+  auto surface = home_widgets::firmware::makeSurface(view);
+  const auto report = home_widgets::paint(state.parsed.widgets, state.parsed.layout,
+                                          state.active.rectangles, home_widgets::native::hooks(surface));
+  if (report.status != home_widgets::PaintStatus::Ok || report.failedWidgets ||
+      report.failedUnderlays || report.backgroundFallback) {
+    LOG_ERR("HOME", "Grid paint failed (widgets=%u, scenes=%u, backdrop=%d); using legacy Home",
+            static_cast<unsigned>(report.failedWidgets), static_cast<unsigned>(report.failedUnderlays),
+            static_cast<int>(report.backgroundFallback));
+    return false;
+  }
+
+  // Reuse the theme's existing footer-art renderer outside the menu widget's
+  // clip, inside the firmware-reserved footer band and above physical hints.
+  if (scene->homeMenuFooterHeight(renderer) > 0)
+    scene->drawMenu(renderer, home_widgets::firmware::toThemeRect(areas.menu),
+                    0, 0, menuLabel, menuIcon);
+
+  const auto labels = mappedInput.mapLabels(recentBooks.empty() ? "" : tr(STR_RESUME),
+                                             tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  renderer.displayBuffer(cleanInitialRefresh && !firstRenderDone ? HalDisplay::HALF_REFRESH
+                                                                 : HalDisplay::FAST_REFRESH);
+  firstRenderDone = true;
+  if (!recentsLoaded && !recentsLoading) {
+    recentsLoading = true;
+    const int themeThumbHeight = GUI.homeCoverThumbHeight(renderer);
+    loadRecentCovers(themeThumbHeight > 0 ? themeThumbHeight : metrics.homeCoverHeight);
+  }
+  return true;
 }
 
 void HomeActivity::render(RenderLock&&) {
@@ -838,6 +988,25 @@ void HomeActivity::render(RenderLock&&) {
     firstRenderDone = true;
     return;
   }
+  if (homeGridCandidate && homeGridCandidate->active.enabled) {
+    if (renderGridHome()) return;
+    // Painting may have partially modified the framebuffer or the cached
+    // book tile. Never retain a broken grid nor reuse invalid snapshot bytes.
+    homeGridCandidate.reset();
+    freeCoverBuffer();
+    coverRendered = false;
+    const auto* fallbackScene = UITheme::getInstance().activeExternalScene();
+    const int hints = BoardConfig::hasTouch() ? 0 : metrics.buttonHintsHeight;
+    const int footer = fallbackScene ? fallbackScene->homeMenuFooterHeight(renderer) : 0;
+    const int menuTop = metrics.homeTopPadding + metrics.homeCoverTileHeight +
+                        metrics.homeMenuTopOffset - homeMenuHeroReclaim;
+    homeMenuViewportRows = HomeMenuRegistry::capacityFor(
+        renderer, menuTop, GUI.getMenuRowHeight(renderer), metrics.menuSpacing, hints, footer);
+    ensureHomeMenuSelectionVisible();
+    renderer.clearScreen();
+    LOG_ERR("HOME", "Grid render disabled; restored built-in Home fallback");
+  }
+
   // A cover snapshot from the other output polarity holds the other byte form (night mode keeps images pre-inverted so
   // they stay positive): pasting it back after a theme switch showed the cover as a negative. Redraw it instead.
   if (coverBufferStored && coverBufferInverted != display.isInverted()) {

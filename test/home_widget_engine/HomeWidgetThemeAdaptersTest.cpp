@@ -129,6 +129,15 @@ void testNativeFallbackBookAndSnapshot() {
   assert(theme.backgroundCalls == 0 && theme.foregroundCalls == 0);
   assert(theme.theme.bookCalls == 1 && saves == 1 && rendered && stored && !restored);
   assert(screen.pixel(3, 13) == 1);
+
+  int restoredSnapshots = 0;
+  std::function<bool()> restore = [&restoredSnapshots]() {
+    ++restoredSnapshots;
+    return true;
+  };
+  view.restoreCoverBuffer = &restore;
+  assert(paint(p, d, out, home_widgets::native::hooks(surface)).failedWidgets == 0);
+  assert(restoredSnapshots == 1); // Restore AFTER full wallpaper repaint.
 }
 
 void testMenuOverflowIsClippedToNativeRowHeight() {

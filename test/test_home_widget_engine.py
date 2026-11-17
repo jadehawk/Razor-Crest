@@ -19,6 +19,7 @@ SOURCES = (
     ROOT / "test/home_widget_engine/HomeGridActivationTest.cpp",
     ROOT / "test/home_widget_engine/HomeLayoutJsonTest.cpp",
     ROOT / "test/home_widget_engine/HomeLayoutPackageTest.cpp",
+    ROOT / "test/home_widget_engine/HomeGridInteractionTest.cpp",
 )
 STUBS = ROOT / "test/home_widget_engine/stubs"
 ARDUINOJSON = ROOT / ".pio/libdeps/default/ArduinoJson/src"
