@@ -86,12 +86,15 @@ class ChapterHtmlSlimParser {
     bool hasSub = false, sub = false;
     bool hasSmallCaps = false, smallCaps = false;
     bool hasWhiteSpace = false, preserveWhitespace = false;
+    bool hasVisibility = false, hidden = false;
+    bool hasBackground = false, backgroundBlack = false;
     // Inline font size: a multiple of the parent size, or of the body size when rem.
     bool hasFontScale = false, fontScaleRem = false;
     float fontScale = 1.0f;
   };
   std::vector<StyleStackEntry> inlineStyleStack;
   std::vector<BlockStyle> blockStyleStack;  // accumulated block styles from open ancestor elements
+  std::vector<int> cssBlockSpanDepths;      // CSS display:block spans must close like semantic blocks
   CssStyle currentCssStyle;
   // Open elements by depth, for descendant/child CSS selectors. Deeper elements
   // resolve without ancestors, so contextual rules simply don't match there.
@@ -108,6 +111,8 @@ class ChapterHtmlSlimParser {
   bool effectiveSub = false;
   bool effectiveSmallCaps = false;
   bool effectivePreserveWhitespace = false;
+  bool effectiveHidden = false;
+  bool effectiveBackgroundBlack = false;
   bool pendingPageBreak = false;  // set when a page-break-after element closes
 
   // Initial letter captured from a ::first-letter block or a leading float/initial-letter span,

@@ -389,8 +389,8 @@ int colorLuminance(const std::string_view value) {
   return result;
 }
 
-// Light backgrounds shade the box; white is invisible on paper, and dark ones
-// are skipped because the text inside would stay black.
+// Light backgrounds shade block boxes; black text backgrounds are rendered separately
+// with white or hidden glyphs, so they must not use the light box shading path.
 bool interpretShade(const std::string_view value) {
   const int luminance = colorLuminance(value);
   return luminance >= 128 && luminance < 240;
@@ -426,8 +426,7 @@ constexpr std::array STYLE_LENGTH_FIELDS = {
 };
 constexpr size_t STYLE_LENGTH_FIELD_COUNT = STYLE_LENGTH_FIELDS.size();
 constexpr size_t STYLE_WIRE_BYTES =
-    5 + STYLE_LENGTH_FIELD_COUNT * (sizeof(decltype(CssLength::value)) + 1) + 6 + 13 + sizeof(uint32_t);
-constexpr uint32_t CSS_DEFINED_BITS_MASK = (1u << 31) - 1;
+    5 + STYLE_LENGTH_FIELD_COUNT * (sizeof(decltype(CssLength::value)) + 1) + 6 + 15 + sizeof(uint32_t);
 constexpr uint8_t MAX_INITIAL_LETTER = 6;
 
 void encodeStyleWire(const CssStyle& style, uint8_t (&out)[STYLE_WIRE_BYTES]) {
@@ -461,6 +460,8 @@ void encodeStyleWire(const CssStyle& style, uint8_t (&out)[STYLE_WIRE_BYTES]) {
   out[offset++] = style.floatLeft ? 1 : 0;
   out[offset++] = style.initialLetter;
   out[offset++] = style.preserveWhitespace ? 1 : 0;
+  out[offset++] = style.backgroundBlack ? 1 : 0;
+  out[offset++] = style.visibilityHidden ? 1 : 0;
 
   uint32_t definedBits = 0;
   if (style.defined.textAlign) definedBits |= 1 << 0;
@@ -494,6 +495,7 @@ void encodeStyleWire(const CssStyle& style, uint8_t (&out)[STYLE_WIRE_BYTES]) {
   if (style.defined.floatLeft) definedBits |= 1 << 28;
   if (style.defined.initialLetter) definedBits |= 1 << 29;
   if (style.defined.whiteSpace) definedBits |= 1u << 30;
+  if (style.defined.visibility) definedBits |= 1u << 31;
   memcpy(out + offset, &definedBits, sizeof(definedBits));
 }
 
@@ -532,7 +534,8 @@ bool decodeStyleWire(const uint8_t (&in)[STYLE_WIRE_BYTES], CssStyle& style) {
   const uint8_t display = in[offset++];
   const uint8_t verticalAlign = in[offset++];
   const uint8_t listStyleType = in[offset++];
-  if (display > static_cast<uint8_t>(CssDisplay::None) || verticalAlign > static_cast<uint8_t>(CssVerticalAlign::Sub) ||
+  if (display > static_cast<uint8_t>(CssDisplay::Inline) ||
+      verticalAlign > static_cast<uint8_t>(CssVerticalAlign::Sub) ||
       listStyleType > static_cast<uint8_t>(CssListStyleType::None)) {
     return false;
   }
@@ -567,10 +570,14 @@ bool decodeStyleWire(const uint8_t (&in)[STYLE_WIRE_BYTES], CssStyle& style) {
   const uint8_t preserveWhitespace = in[offset++];
   if (preserveWhitespace > 1) return false;
   style.preserveWhitespace = preserveWhitespace != 0;
+  const uint8_t backgroundBlack = in[offset++];
+  const uint8_t visibilityHidden = in[offset++];
+  if (backgroundBlack > 1 || visibilityHidden > 1) return false;
+  style.backgroundBlack = backgroundBlack != 0;
+  style.visibilityHidden = visibilityHidden != 0;
 
   uint32_t definedBits = 0;
   memcpy(&definedBits, in + offset, sizeof(definedBits));
-  if ((definedBits & ~CSS_DEFINED_BITS_MASK) != 0) return false;
   style.defined.textAlign = (definedBits & 1 << 0) != 0;
   style.defined.fontStyle = (definedBits & 1 << 1) != 0;
   style.defined.fontWeight = (definedBits & 1 << 2) != 0;
@@ -602,6 +609,7 @@ bool decodeStyleWire(const uint8_t (&in)[STYLE_WIRE_BYTES], CssStyle& style) {
   style.defined.floatLeft = (definedBits & 1 << 28) != 0;
   style.defined.initialLetter = (definedBits & 1 << 29) != 0;
   style.defined.whiteSpace = (definedBits & 1u << 30) != 0;
+  style.defined.visibility = (definedBits & 1u << 31) != 0;
   return true;
 }
 
@@ -1026,8 +1034,15 @@ void CssParser::parseDeclarationIntoStyle(std::string_view decl, CssStyle& style
       style.defined.imageWidth = 1;
     }
   } else if (iequalsAscii(name, "display")) {
-    style.display = iequalsAscii(value, "none") ? CssDisplay::None : CssDisplay::Block;
+    style.display = iequalsAscii(value, "none")     ? CssDisplay::None
+                    : iequalsAscii(value, "inline") ? CssDisplay::Inline
+                                                    : CssDisplay::Block;
     style.defined.display = 1;
+  } else if (iequalsAscii(name, "visibility")) {
+    if (iequalsAscii(value, "hidden") || iequalsAscii(value, "visible")) {
+      style.visibilityHidden = iequalsAscii(value, "hidden");
+      style.defined.visibility = 1;
+    }
   } else if (iequalsAscii(name, "direction")) {
     if (iequalsAscii(value, "rtl")) {
       style.direction = CssTextDirection::Rtl;
@@ -1067,6 +1082,8 @@ void CssParser::parseDeclarationIntoStyle(std::string_view decl, CssStyle& style
     parseBorderDeclaration(name, value, style);
   } else if (iequalsAscii(name, "background-color") || iequalsAscii(name, "background")) {
     style.shaded = interpretShade(value);
+    const int luminance = colorLuminance(value);
+    style.backgroundBlack = luminance >= 0 && luminance < 32;
     style.defined.shaded = 1;
   } else if (iequalsAscii(name, "float")) {
     style.floatLeft = iequalsAscii(value, "left");

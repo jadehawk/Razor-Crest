@@ -44,6 +44,10 @@ class TextBlock final : public Block {
   static constexpr uint8_t DISCRETIONARY_HYPHEN_FLAG = 0x80;
   // Word font slot bit for CSS small caps; the style byte's high bit is the hyphen flag.
   static constexpr uint8_t SMALL_CAPS_SLOT_FLAG = 0x80;
+  // Spare bits in optional per-word font slots; no extra arena or page allocation for plain text.
+  static constexpr uint8_t WORD_FLAG_INVISIBLE = 0x40;
+  static constexpr uint8_t WORD_FLAG_BLACK_BACKGROUND = 0x20;
+  static constexpr uint8_t WORD_FONT_SLOT_MASK = 0x1f;
   struct SourceRange {
     uint32_t start = UINT32_MAX;
     uint32_t end = UINT32_MAX;
@@ -76,8 +80,8 @@ class TextBlock final : public Block {
   const uint8_t* focusBoundaryArr = nullptr;  // null when !focusPresent
   const char* textArr = nullptr;
   std::vector<std::string> rubyTexts;
-  // Words sized apart from the line (CSS font-size spans): MAX_WORD_FONTS int32 font ids,
-  // then one slot per word (0 = block font, n = font n-1). Null when every word uses the
+  // Optional per-word fonts and presentation flags: MAX_WORD_FONTS int32 font ids,
+  // then one slot/flag byte per word (0 = block font, n = font n-1). Null when every word uses the
   // block font, so ordinary lines pay only this pointer.
   std::unique_ptr<uint8_t[]> wordFontData;
   // Layout-only metadata. ChapterHtmlSlimParser moves it into Page::links
@@ -111,6 +115,11 @@ class TextBlock final : public Block {
   // marks small caps. Returns false on OOM.
   bool setWordFonts(const uint8_t* slots, const int32_t (&fonts)[MAX_WORD_FONTS]);
   int wordFontId(uint16_t i, int sectionFontId) const;
+  uint8_t wordPresentationFlags(uint16_t i) const {
+    return wordFontData
+               ? wordFontData[sizeof(int32_t) * MAX_WORD_FONTS + i] & (WORD_FLAG_INVISIBLE | WORD_FLAG_BLACK_BACKGROUND)
+               : 0;
+  }
   bool wordHasSmallCaps(uint16_t i) const {
     return wordFontData && (wordFontData[sizeof(int32_t) * MAX_WORD_FONTS + i] & SMALL_CAPS_SLOT_FLAG);
   }

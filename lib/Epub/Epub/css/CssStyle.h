@@ -66,8 +66,8 @@ constexpr CssTextDecoration operator&(const CssTextDecoration a, const CssTextDe
 constexpr uint8_t CSS_TEXT_DECORATION_MASK =
     static_cast<uint8_t>(CssTextDecoration::Underline) | static_cast<uint8_t>(CssTextDecoration::LineThrough);
 
-// Display options - only None and Block are relevant for e-ink rendering
-enum class CssDisplay : uint8_t { Block = 0, None = 1 };
+// Track explicit inline/block display for styled EPUB spans and images.
+enum class CssDisplay : uint8_t { Block = 0, None = 1, Inline = 2 };
 
 // Vertical alignment options for inline elements (e.g. superscript/subscript)
 enum class CssVerticalAlign : uint8_t { Baseline = 0, Super = 1, Sub = 2 };
@@ -118,6 +118,7 @@ struct CssPropertyFlags {
   uint16_t floatLeft : 1;
   uint16_t initialLetter : 1;
   uint16_t whiteSpace : 1;
+  uint16_t visibility : 1;
 
   CssPropertyFlags()
       : textAlign(0),
@@ -150,21 +151,22 @@ struct CssPropertyFlags {
         shaded(0),
         floatLeft(0),
         initialLetter(0),
-        whiteSpace(0) {}
+        whiteSpace(0),
+        visibility(0) {}
 
   [[nodiscard]] bool anySet() const {
     return textAlign || fontStyle || fontWeight || textDecoration || textIndent || marginTop || marginBottom ||
            marginLeft || marginRight || paddingTop || paddingBottom || paddingLeft || paddingRight || imageHeight ||
            imageWidth || display || direction || verticalAlign || listStyleType || fontSize || smallCaps ||
            pageBreakBefore || pageBreakAfter || borderTop || borderRight || borderBottom || borderLeft || shaded ||
-           floatLeft || initialLetter || whiteSpace;
+           floatLeft || initialLetter || whiteSpace || visibility;
   }
 };
 
-// Cache serializes defined flags as uint32_t with bit indices 0..30.
+// Cache serializes defined flags as uint32_t with bit indices 0..31.
 static_assert(sizeof(CssPropertyFlags) <= sizeof(uint32_t),
               "CssPropertyFlags exceeds 32 bits; update cache read/write in CssParser.cpp");
-static_assert(sizeof(CssPropertyFlags) * 8 >= 31,
+static_assert(sizeof(CssPropertyFlags) * 8 >= 32,
               "CssPropertyFlags has fewer bits than properties; update bitfield widths");
 
 // Represents a collection of CSS style properties
@@ -199,6 +201,8 @@ struct CssStyle {
   uint8_t borderWidthsDefined = 0;  // one bit per side, top/right/bottom/left
   uint8_t borderStylesDefined = 0;
   bool shaded = false;        // light background-color, drawn as a gray fill
+  bool backgroundBlack = false;   // dark backgrounds on text runs, including redactions
+  bool visibilityHidden = false;  // visibility:hidden reserves layout width but suppresses glyphs
   bool floatLeft = false;     // float: left (marks drop-cap spans and ::first-letter rules)
   uint8_t initialLetter = 0;  // initial-letter: lines a drop cap spans, 0 = normal
 
@@ -325,6 +329,7 @@ struct CssStyle {
     }
     if (base.defined.shaded) {
       shaded = base.shaded;
+      backgroundBlack = base.backgroundBlack;
       defined.shaded = 1;
     }
     if (base.defined.floatLeft) {
@@ -338,6 +343,10 @@ struct CssStyle {
     if (base.defined.initialLetter) {
       initialLetter = base.initialLetter;
       defined.initialLetter = 1;
+    }
+    if (base.defined.visibility) {
+      visibilityHidden = base.visibilityHidden;
+      defined.visibility = 1;
     }
   }
 
@@ -357,6 +366,8 @@ struct CssStyle {
   [[nodiscard]] bool hasImageHeight() const { return defined.imageHeight; }
   [[nodiscard]] bool hasImageWidth() const { return defined.imageWidth; }
   [[nodiscard]] bool hasDisplay() const { return defined.display; }
+  [[nodiscard]] bool hasVisibility() const { return defined.visibility; }
+  [[nodiscard]] bool hasBackgroundBlack() const { return defined.shaded && backgroundBlack; }
   [[nodiscard]] bool hasDirection() const { return defined.direction; }
   [[nodiscard]] bool hasVerticalAlign() const { return defined.verticalAlign; }
   [[nodiscard]] bool hasListStyleType() const { return defined.listStyleType; }

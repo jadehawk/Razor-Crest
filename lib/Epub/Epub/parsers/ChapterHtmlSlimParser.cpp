@@ -186,6 +186,14 @@ void ChapterHtmlSlimParser::applyInlinePresentationToEntry(StyleStackEntry& entr
     entry.hasSmallCaps = true;
     entry.smallCaps = css.smallCaps;
   }
+  if (css.hasVisibility()) {
+    entry.hasVisibility = true;
+    entry.hidden = css.visibilityHidden;
+  }
+  if (css.defined.shaded) {
+    entry.hasBackground = true;
+    entry.backgroundBlack = css.backgroundBlack;
+  }
 }
 
 void ChapterHtmlSlimParser::applyVerticalAlignToEntry(StyleStackEntry& entry, const CssStyle& css) {
@@ -266,6 +274,8 @@ void ChapterHtmlSlimParser::updateEffectiveInlineStyle() {
       currentCssStyle.hasTextDecoration() ? currentCssStyle.textDecoration : CssTextDecoration::None;
   effectiveSmallCaps = currentCssStyle.hasSmallCaps() && currentCssStyle.smallCaps;
   effectivePreserveWhitespace = currentCssStyle.defined.whiteSpace && currentCssStyle.preserveWhitespace;
+  effectiveHidden = currentCssStyle.hasVisibility() && currentCssStyle.visibilityHidden;
+  effectiveBackgroundBlack = currentCssStyle.hasBackgroundBlack();
   bool paragraphDirectionDefined = false;
   bool paragraphIsRtl = false;
   if (!blockStyleStack.empty()) {
@@ -294,6 +304,8 @@ void ChapterHtmlSlimParser::updateEffectiveInlineStyle() {
       effectiveTextDecoration = effectiveTextDecoration | entry.textDecoration;
     }
     if (entry.hasWhiteSpace) effectivePreserveWhitespace = entry.preserveWhitespace;
+    if (entry.hasVisibility) effectiveHidden = entry.hidden;
+    if (entry.hasBackground) effectiveBackgroundBlack = entry.backgroundBlack;
     if (entry.hasSmallCaps) {
       effectiveSmallCaps = entry.smallCaps;
     }
@@ -747,8 +759,11 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
       inlineScale > 0.0f && (inlineSize.valid || inlineScale != currentTextBlock->getBlockStyle().fontScale)
           ? currentTextBlock->sizeSlotFor(std::clamp(inlineScale, 0.5f, 3.0f))
           : 0;
-  currentTextBlock->addWord(partWordBuffer, fontStyle, false, nextWordContinues, partWordVisibleOffset, linkId,
-                            sizeSlot, effectivePreserveWhitespace);
+  currentTextBlock->addWord(
+      partWordBuffer, fontStyle, false, nextWordContinues, partWordVisibleOffset, linkId, sizeSlot,
+      effectivePreserveWhitespace,
+      static_cast<uint8_t>((effectiveBackgroundBlack ? TextBlock::WORD_FLAG_BLACK_BACKGROUND : 0) |
+                           (effectiveHidden ? TextBlock::WORD_FLAG_INVISIBLE : 0)));
   if (insideTableCell && !tableRowStacked) {
     tableRowTextBytes += wordBytes;
     size_t rowWords = currentTextBlock->size();
@@ -2114,7 +2129,9 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     self->armFirstLetterDropCap(name, classAttr, idAttr);
     self->boldUntilDepth = std::min(self->boldUntilDepth, self->depth);
     self->updateEffectiveInlineStyle();
-  } else if (matches(name, BLOCK_TAGS, std::size(BLOCK_TAGS))) {
+  } else if (matches(name, BLOCK_TAGS, std::size(BLOCK_TAGS)) ||
+             (strcmp(name, "span") == 0 && cssStyle.hasDisplay() && cssStyle.display == CssDisplay::Block)) {
+    if (strcmp(name, "span") == 0) self->cssBlockSpanDepths.push_back(self->depth);
     if (strcmp(name, "br") == 0) {
       if (self->partWordBufferIndex > 0) {
         // flush word preceding <br/> to currentTextBlock before calling startNewTextBlock
@@ -2133,6 +2150,8 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
         blockStyle.alignment = CssTextAlign::Center;
       }
       self->applyBlockFontScale(blockStyle, cssStyle, name);
+      // Decorative block spans inside a heading stay with the remaining opener and body.
+      if (strcmp(name, "span") == 0 && self->headingDepth != INT_MAX) blockStyle.keepWithNext = true;
       self->openBoxScope(blockStyle, cssStyle);
       const auto accumulated =
           self->blockStyleStack.back().getCombinedBlockStyle(blockStyle, BlockStyle::CombineAxis::Horizontal);
@@ -2279,7 +2298,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     const bool sized = cssStyle.hasFontSize() || tagScale > 0.0f;
     if (sized || cssStyle.hasFontWeight() || cssStyle.hasFontStyle() || cssStyle.hasTextDecoration() ||
         cssStyle.hasSmallCaps() || cssStyle.defined.whiteSpace || cssStyle.hasDirection() ||
-        cssStyle.hasVerticalAlign() || inheritedTableTextAlign) {
+        cssStyle.hasVerticalAlign() || cssStyle.hasVisibility() || cssStyle.defined.shaded || inheritedTableTextAlign) {
       // Flush buffer before style change so preceding text gets current style
       if (self->partWordBufferIndex > 0) {
         self->flushPartWordBuffer();
@@ -2668,7 +2687,9 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
   const bool willClearItalic = self->italicUntilDepth == self->depth - 1;
 
   const bool styleWillChange = willPopStyleStack || willClearBold || willClearItalic;
-  const bool headerOrBlockTag = isHeaderOrBlock(name);
+  const bool headerOrBlockTag =
+      isHeaderOrBlock(name) || (strcmp(name, "span") == 0 && !self->cssBlockSpanDepths.empty() &&
+                                self->cssBlockSpanDepths.back() == self->depth - 1);
   const bool tableStructuralTag = isTableStructuralTag(name);
   const bool insideSkippedSubtree = self->depth - 1 >= self->skipUntilDepth;
 
@@ -2823,6 +2844,10 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
       if (breakAfter) self->pendingPageBreak = true;
     }
 
+    if (!self->cssBlockSpanDepths.empty() && self->cssBlockSpanDepths.back() == self->depth) {
+      self->cssBlockSpanDepths.pop_back();
+    }
+
     // </li> closes: if the bullet never got inline text (empty <li> or <li> with only
     // block children that were flushed), clear the flag so the next sibling doesn't
     // merge into this block.
@@ -2863,6 +2888,7 @@ bool ChapterHtmlSlimParser::beginParse() {
                                  : static_cast<CssTextAlign>(this->paragraphAlignment);
   blockStyleStack.clear();
   blockStyleStack.reserve(8);
+  cssBlockSpanDepths.clear();
   blockStyleStack.push_back(rootBlockStyle);
   boxScopes.clear();
   boxScopes.reserve(MAX_BOX_SCOPES);

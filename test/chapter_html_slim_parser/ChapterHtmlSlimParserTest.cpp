@@ -654,6 +654,103 @@ class ChapterBlockDecorationTest : public ChapterHtmlSlimParserTest {
   }
 };
 
+TEST_F(ChapterBlockDecorationTest, PublisherStyledChapterOpenerKeepsSeparateCenteredLinesAndRedaction) {
+  // Reduced XHTML/CSS from Victorious chapter 20: h2.CHAPTER > span.CN, span.CT, span.CST.
+  parser.paragraphAlignment = static_cast<uint8_t>(CssTextAlign::Left);
+  parser.beginParse();
+  open("h2", "font-size: 100%; display: inline");
+  open("span", "display: block; font-size: 2.083em; margin-top: 100px; margin-bottom: 20px; text-align: center");
+  text("II");
+  close("span");
+  open("span", "display: block; font-size: 1.25em; text-align: center");
+  text("NOW. ");
+  open("span", "background-color: #000");
+  open("span", "visibility: hidden");
+  text("THEN.");
+  close("span");
+  close("span");
+  close("span");
+  open("span", "display: block; font-size: 0.75em; margin-top: 1em; text-align: center");
+  text("MEANWHILE, AT HERALD DINER");
+  close("span");
+  close("h2");
+  open("p", "text-align: justify");
+  text("Mitch was at it again.");
+  close("p");
+
+  const auto lines = elementsWithTag(TAG_PageLine);
+  ASSERT_GE(lines.size(), 4u);
+  const auto& numeral = *static_cast<const PageLine*>(lines[0])->getBlock();
+  const auto& title = *static_cast<const PageLine*>(lines[1])->getBlock();
+  const auto& subtitle = *static_cast<const PageLine*>(lines[2])->getBlock();
+  const auto& body = *static_cast<const PageLine*>(lines[3])->getBlock();
+  ASSERT_EQ(numeral.wordCount(), 1u);
+  EXPECT_STREQ(numeral.wordText(0), "II");
+  EXPECT_EQ(numeral.getBlockStyle().alignment, CssTextAlign::Center);
+  EXPECT_EQ(numeral.getBlockStyle().marginTop, 100);
+  EXPECT_TRUE(numeral.getBlockStyle().keepWithNext);
+  EXPECT_TRUE(title.getBlockStyle().keepWithNext);
+  EXPECT_TRUE(subtitle.getBlockStyle().keepWithNext);
+  EXPECT_EQ(title.getBlockStyle().alignment, CssTextAlign::Center);
+  ASSERT_EQ(title.wordCount(), 2u);
+  EXPECT_STREQ(title.wordText(0), "NOW.");
+  EXPECT_STREQ(title.wordText(1), "THEN.");
+  EXPECT_EQ(title.wordPresentationFlags(0), 0);
+  EXPECT_EQ(title.wordPresentationFlags(1), TextBlock::WORD_FLAG_INVISIBLE | TextBlock::WORD_FLAG_BLACK_BACKGROUND);
+  EXPECT_GT(title.wordSourceRange(1).end, title.wordSourceRange(1).start);
+  // The section cache must retain both rendering flags and text/source geometry.
+  const auto path = std::filesystem::temp_directory_path() / "rc-epub-chapter-redaction-line.bin";
+  HalFile file;
+  ASSERT_TRUE(file.open(path.string().c_str(), "wb"));
+  ASSERT_TRUE(title.serialize(file));
+  file.close();
+  ASSERT_TRUE(file.open(path.string().c_str(), "rb"));
+  auto restored = TextBlock::deserialize(file);
+  file.close();
+  std::filesystem::remove(path);
+  ASSERT_NE(restored, nullptr);
+  ASSERT_EQ(restored->wordCount(), title.wordCount());
+  EXPECT_STREQ(restored->wordText(1), "THEN.");
+  EXPECT_EQ(restored->wordPresentationFlags(1), title.wordPresentationFlags(1));
+  EXPECT_EQ(restored->wordSourceRange(1).end, title.wordSourceRange(1).end);
+  EXPECT_EQ(subtitle.getBlockStyle().alignment, CssTextAlign::Center);
+  EXPECT_EQ(body.getBlockStyle().alignment, CssTextAlign::Left);
+  EXPECT_EQ(parser.cssBlockSpanDepths.size(), 0u);
+}
+
+TEST_F(ChapterBlockDecorationTest, VisibilityCanBeRestoredInNestedSpansWithoutDroppingWords) {
+  open("p", nullptr);
+  open("span", "visibility: hidden");
+  text("Hidden ");
+  open("span", "visibility: visible");
+  text("Shown");
+  close("span");
+  close("span");
+  text(" After");
+  close("p");
+  const auto lines = elementsWithTag(TAG_PageLine);
+  ASSERT_EQ(lines.size(), 1u);
+  const auto& block = *static_cast<const PageLine*>(lines[0])->getBlock();
+  ASSERT_EQ(block.wordCount(), 3u);
+  EXPECT_EQ(block.wordPresentationFlags(0), TextBlock::WORD_FLAG_INVISIBLE);
+  EXPECT_EQ(block.wordPresentationFlags(1), 0);
+  EXPECT_EQ(block.wordPresentationFlags(2), 0);
+}
+
+TEST_F(ChapterBlockDecorationTest, LongLinePreservesVisibilityFlagsBeyondSmallFontSlotBuffer) {
+  ParsedText textBlock(false, false, BlockStyle{}, 0);
+  for (uint32_t i = 0; i < 140; ++i) {
+    textBlock.addWord("x", EpdFontFamily::REGULAR, false, false, i * 2, 0, 0, false, TextBlock::WORD_FLAG_INVISIBLE);
+  }
+  std::vector<std::unique_ptr<TextBlock>> lines;
+  textBlock.layoutAndExtractLines(renderer, 0, 4096,
+                                  [&](std::unique_ptr<TextBlock> line, uint32_t) { lines.push_back(std::move(line)); });
+  ASSERT_EQ(lines.size(), 1u);
+  ASSERT_EQ(lines[0]->wordCount(), 140u);
+  EXPECT_EQ(lines[0]->wordPresentationFlags(0), TextBlock::WORD_FLAG_INVISIBLE);
+  EXPECT_EQ(lines[0]->wordPresentationFlags(139), TextBlock::WORD_FLAG_INVISIBLE);
+}
+
 TEST_F(ChapterBlockDecorationTest, CenteredDisplayParagraphsKeepBookAlignmentWithLeftReadingPreference) {
   parser.paragraphAlignment = static_cast<uint8_t>(CssTextAlign::Left);
   parser.beginParse();

@@ -166,6 +166,37 @@ TEST_F(CssParserTest, IncompleteInputMarksParsePartial) {
   }
 }
 
+TEST_F(CssParserTest, PublisherChapterSpanAndRedactionStylesSurviveCache) {
+  CssParser writer(cachePath());
+  ASSERT_EQ(loadCss(writer,
+                    "h2.CHAPTER { display: inline; font-size: 100%; }\n"
+                    "span.CN { display: block; font-size: 2.083em; margin-top: 100px; }\n"
+                    "span.CT { display: block; font-size: 1.25em; }\n"
+                    "span.CST { display: block; text-align: center; }\n"
+                    "span.ePub-STRK { background-color: #000; }\n"
+                    "span.red1 { visibility: hidden; }\n"),
+            CssParser::ParseResult::Complete);
+  ASSERT_TRUE(writer.saveToCache(true));
+  CssParser reader(cachePath());
+  ASSERT_EQ(reader.loadFromCache(), CssParser::CacheLoadResult::Complete);
+  for (const CssParser* parser : {&writer, &reader}) {
+    EXPECT_EQ(parser->resolveStyle("h2", "CHAPTER").display, CssDisplay::Inline);
+    const auto numeral = parser->resolveStyle("span", "CN");
+    EXPECT_TRUE(numeral.hasDisplay());
+    EXPECT_EQ(numeral.display, CssDisplay::Block);
+    EXPECT_EQ(numeral.marginTop.value, 100.0f);
+    EXPECT_TRUE(parser->resolveStyle("span", "ePub-STRK").hasBackgroundBlack());
+    const auto redacted = parser->resolveStyle("span", "red1");
+    EXPECT_TRUE(redacted.hasVisibility());
+    EXPECT_TRUE(redacted.visibilityHidden);
+    const auto visible = CssParser::parseInlineStyle("visibility: visible");
+    EXPECT_TRUE(visible.hasVisibility());
+    EXPECT_FALSE(visible.visibilityHidden);
+    EXPECT_FALSE(CssParser::parseInlineStyle("visibility: nonsense").hasVisibility());
+    EXPECT_FALSE(CssParser::parseInlineStyle("background-color: #eee").hasBackgroundBlack());
+  }
+}
+
 TEST_F(CssParserTest, CanonicalCacheRoundTripPreservesStyles) {
   CssParser writer(cachePath());
   ASSERT_EQ(loadCss(writer,

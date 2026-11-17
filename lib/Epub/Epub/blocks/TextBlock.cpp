@@ -159,7 +159,7 @@ int TextBlock::renderFontId(const GfxRenderer& renderer, const int fontId, const
 
 int TextBlock::wordFontId(const uint16_t i, const int sectionFontId) const {
   if (!wordFontData) return blockFontId(sectionFontId);
-  const uint8_t slot = wordFontData[sizeof(int32_t) * MAX_WORD_FONTS + i] & ~SMALL_CAPS_SLOT_FLAG;
+  const uint8_t slot = wordFontData[sizeof(int32_t) * MAX_WORD_FONTS + i] & WORD_FONT_SLOT_MASK;
   if (slot == 0) return blockFontId(sectionFontId);
   int32_t font = 0;
   memcpy(&font, wordFontData.get() + sizeof(int32_t) * (slot - 1), sizeof(font));
@@ -342,6 +342,16 @@ void TextBlock::render(const GfxRenderer& renderer, const int sectionFontId, con
     }
 
     const int drawX = wordX;
+    const uint8_t presentation = wordPresentationFlags(i);
+    const bool blackBackground = (presentation & WORD_FLAG_BLACK_BACKGROUND) != 0;
+    // Visibility hides ink, not layout: retain the word width/source range for selections.
+    if (blackBackground && !scanning) {
+      const int width = renderer.getTextAdvanceX(wordFont, word, currentStyle, tracking, baseDir,
+                                                 GfxRenderer::TextMeasureMode::Rendered);
+      if (width > 0) renderer.fillRect(drawX, wordY, width, wordAscender, true);
+    }
+    if ((presentation & WORD_FLAG_INVISIBLE) != 0) continue;
+    const bool foregroundBlack = !blackBackground;
 
     if (boundary > 0) {
       // Place the logical prefix on the right for RTL words. Each run is reordered by drawText.
@@ -361,10 +371,10 @@ void TextBlock::render(const GfxRenderer& renderer, const int sectionFontId, con
       const bool rtl = BidiUtils::startsWithRtl(word);
       const int prefixX = drawX + (rtl ? focusSplitXArr[i] : 0);
       const int suffixX = drawX + (rtl ? 0 : focusSplitXArr[i]);
-      renderer.drawText(wordFont, prefixX, wordY, boldBuf, true, boldStyle, baseDir, tracking);
-      renderer.drawText(wordFont, suffixX, wordY, word + boldLen, true, currentStyle, baseDir, tracking);
+      renderer.drawText(wordFont, prefixX, wordY, boldBuf, foregroundBlack, boldStyle, baseDir, tracking);
+      renderer.drawText(wordFont, suffixX, wordY, word + boldLen, foregroundBlack, currentStyle, baseDir, tracking);
     } else {
-      renderer.drawText(wordFont, drawX, wordY, word, true, currentStyle, baseDir, tracking);
+      renderer.drawText(wordFont, drawX, wordY, word, foregroundBlack, currentStyle, baseDir, tracking);
     }
 
     // Horizontal ruby text rendering
@@ -628,7 +638,7 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(HalFile& file) {
     }
     const uint8_t* slots = block->wordFontData.get() + sizeof(int32_t) * MAX_WORD_FONTS;
     for (uint16_t i = 0; i < wc; ++i) {
-      const uint8_t slot = slots[i] & ~SMALL_CAPS_SLOT_FLAG;
+      const uint8_t slot = slots[i] & WORD_FONT_SLOT_MASK;
       int32_t font = 1;
       if (slot > 0 && slot <= MAX_WORD_FONTS) {
         memcpy(&font, block->wordFontData.get() + sizeof(int32_t) * (slot - 1), sizeof(font));

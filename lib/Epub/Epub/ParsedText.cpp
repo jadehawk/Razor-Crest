@@ -440,7 +440,7 @@ bool ParsedText::storeWord(const std::string_view text, WordStore::StoredWord& o
 
 void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle, const bool underline,
                          const bool attachToPrevious, const uint32_t visibleTextOffset, const uint8_t linkId,
-                         const uint8_t sizeSlot, const bool noSpaceBefore) {
+                         const uint8_t sizeSlot, const bool noSpaceBefore, const uint8_t presentationFlags) {
   if (word.empty()) return;
 
   // The device fonts carry no combining-mark positioning, so EPUB text stored in NFD
@@ -485,8 +485,8 @@ void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle,
     wordNoSpaceBefore.push_back(noSpaceBefore);
     wordFocusBoundary.push_back(focusBoundary);
     wordLinkIds.push_back(linkId);
-    wordSizeSlots.push_back(
-        static_cast<uint8_t>(sizeSlot | ((style & EpdFontFamily::SMALL_CAPS) ? TextBlock::SMALL_CAPS_SLOT_FLAG : 0)));
+    wordSizeSlots.push_back(static_cast<uint8_t>(
+        sizeSlot | presentationFlags | ((style & EpdFontFamily::SMALL_CAPS) ? TextBlock::SMALL_CAPS_SLOT_FLAG : 0)));
     pushVisibleOffset(tokenOffset);
     if (padRuby && !rubyTexts.empty()) {
       rubyTexts.push_back("");
@@ -962,7 +962,7 @@ int ParsedText::calculateRubyExtraEndOffset(const size_t lineStartIdx, const siz
 }
 
 int ParsedText::wordFontId(const size_t wordIndex, const int blockFontId) const {
-  const uint8_t slot = wordSizeSlots[wordIndex] & ~TextBlock::SMALL_CAPS_SLOT_FLAG;
+  const uint8_t slot = wordSizeSlots[wordIndex] & TextBlock::WORD_FONT_SLOT_MASK;
   return slot == 0 || sizeSlotFontIds[slot] == 0 ? blockFontId : sizeSlotFontIds[slot];
 }
 
@@ -1827,12 +1827,19 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
     }
   }
 
-  // Lines mixing sizes or using small caps carry per-word fonts; slots resolving to the block
-  // font collapse to 0.
+  // Lines mixing font sizes, small caps, or visibility/background flags carry per-word
+  // metadata; slots resolving to the block font collapse to 0.
   const auto attachWordFonts = [&](TextBlock& block) {
     int32_t fonts[TextBlock::MAX_WORD_FONTS] = {};
-    uint8_t slots[128];
-    if (lineWordCount > sizeof(slots)) return true;  // pathological line: keep the block font
+    uint8_t fixedSlots[128];
+    std::unique_ptr<uint8_t[]> overflowSlots;
+    uint8_t* slots = fixedSlots;
+    if (lineWordCount > sizeof(fixedSlots)) {
+      // Unusually long lines must not silently discard hidden/redacted word flags.
+      overflowSlots = makeUniqueNoThrow<uint8_t[]>(lineWordCount);
+      if (!overflowSlots) return false;
+      slots = overflowSlots.get();
+    }
     bool mixed = false;
     for (size_t i = 0; i < lineWordCount; ++i) {
       const size_t logical = lastBreakAt + (willReorder ? visualOrderScratch[i] : i);
@@ -1845,7 +1852,7 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
         if (slot > TextBlock::MAX_WORD_FONTS) slot = 0;
         if (slot > 0) fonts[slot - 1] = wordFont;
       }
-      slots[i] = static_cast<uint8_t>(slot | (wordSizeSlots[logical] & TextBlock::SMALL_CAPS_SLOT_FLAG));
+      slots[i] = static_cast<uint8_t>(slot | (wordSizeSlots[logical] & ~TextBlock::WORD_FONT_SLOT_MASK));
       mixed = mixed || slots[i] != 0;
     }
     return !mixed || block.setWordFonts(slots, fonts);

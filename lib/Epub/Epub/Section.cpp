@@ -85,7 +85,8 @@ namespace {
 // v75: Razor-Crest preserved centered paragraphs and deferred TrueType advance rounding;
 //      upstream disabled heading hyphenation using this same cache version.
 // v76: Combine both layout behaviors, invalidating caches written by either v75 build.
-constexpr uint8_t SECTION_FILE_VERSION = 76;
+// v77: CSS block spans and hidden/black-background word flags change EPUB layout and cached line data.
+constexpr uint8_t SECTION_FILE_VERSION = 77;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
