@@ -826,6 +826,8 @@ std::string PluginCatalogActivity::substituted(std::string tpl, const Item* item
   substituteAll(tpl, "{firmware_family}", firmwareidentity::FAMILY);
   substituteAll(tpl, "{firmware_id}", firmwareidentity::ID);
   substituteAll(tpl, "{firmware_version}", CROSSPOINT_VERSION);
+  // Public hardware profile; do not expose serial numbers or device secrets.
+  substituteAll(tpl, "{device_model}", devicehardware::model());
   substituteAll(tpl, "{plugin_capabilities}", firmwareidentity::PLUGIN_CAPABILITIES);
   char num[16];
   snprintf(num, sizeof(num), "%d", firmwareidentity::PLUGIN_API_VERSION);

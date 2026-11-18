@@ -271,6 +271,7 @@ download filename/username/password; and sidecar path/body.
 | `{firmware_family}` | stable firmware family (`crosspoint` on stock CrossPoint) | template fields |
 | `{firmware_id}` | exact firmware implementation ID (`crosspoint` on stock CrossPoint) | template fields |
 | `{firmware_version}` | current `CROSSPOINT_VERSION` value | template fields |
+| `{device_model}` | stable public hardware profile from `devicehardware::model()` (for example `x3`, `x4pro`); no serial numbers | template fields |
 | `{plugin_api}` | numeric plugin API level | template fields |
 | `{plugin_capabilities}` | comma-separated advertised capability names | template fields |
 | `{page}` | current 1-based page | browse |
