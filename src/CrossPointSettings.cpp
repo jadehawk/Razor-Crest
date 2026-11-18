@@ -280,13 +280,15 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   longPressMenuFunction = clamp(doc["longPressMenuFunction"] | (uint8_t)LP_MENU_DISABLED,
                                 (uint8_t)LONG_PRESS_MENU_FUNCTION_COUNT, (uint8_t)LP_MENU_DISABLED);
   shortPwrBtn = clamp(doc["shortPwrBtn"] | (uint8_t)IGNORE, (uint8_t)SHORT_PWRBTN_COUNT, (uint8_t)IGNORE);
-  const uint8_t storedDoublePwrBtn =
-      doc["doublePwrBtn"] | (uint8_t)((doc["doubleClickPwrLight"] | (uint8_t)1) ? PWR_FRONTLIGHT : IGNORE);
+  const uint8_t legacyDoublePwrBtn = doc["doubleClickPwrLight"].isNull()         ? defaultDoublePwrBtn()
+                                     : (doc["doubleClickPwrLight"] | (uint8_t)1) ? (uint8_t)PWR_FRONTLIGHT
+                                                                                 : (uint8_t)IGNORE;
+  const uint8_t storedDoublePwrBtn = doc["doublePwrBtn"] | legacyDoublePwrBtn;
   // Upstream assigned action 10 to Frontlight, but Razor-Crest already uses
   // 10 for Dictionary. Double-click has no Dictionary option: migrate it.
   doublePwrBtn = storedDoublePwrBtn == PWR_DICTIONARY
                      ? PWR_FRONTLIGHT
-                     : clamp(storedDoublePwrBtn, (uint8_t)SHORT_PWRBTN_COUNT, (uint8_t)PWR_FRONTLIGHT);
+                     : clamp(storedDoublePwrBtn, (uint8_t)SHORT_PWRBTN_COUNT, defaultDoublePwrBtn());
   if (storedDoublePwrBtn == PWR_DICTIONARY) needsResave = true;
   if (BoardConfig::hasHomeKey() && doc["homeButtonLongPressAction"].isNull() &&
       !doc["longPressMenuFunction"].isNull()) {

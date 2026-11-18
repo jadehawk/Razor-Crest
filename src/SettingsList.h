@@ -240,8 +240,9 @@ inline std::vector<ShortPowerButtonOption> shortPowerButtonOptions() {
     options.push_back({StrId::STR_SAVE_CLIPPING, CrossPointSettings::CREATE_CLIPPING});
     options.push_back({StrId::STR_DICTIONARY, CrossPointSettings::PWR_DICTIONARY});
   }
-  // Touch boards without a home key have no button for these shortcuts.
-  if (BoardConfig::hasTouch() && !BoardConfig::hasHomeKey()) {
+  // Touch boards without a home key have no button for these shortcuts; the
+  // EEGO A4 offers them on the power button as well.
+  if (BoardConfig::hasTouch() && (!BoardConfig::hasHomeKey() || BoardConfig::isEegoA4())) {
     options.push_back({StrId::STR_BOOKMARK_OPTION, CrossPointSettings::PWR_BOOKMARK});
     options.push_back({StrId::STR_KOSYNC, CrossPointSettings::PWR_SYNC});
     options.push_back({StrId::STR_READER_MENU, CrossPointSettings::PWR_READER_MENU});
@@ -275,7 +276,7 @@ inline SettingInfo buildShortPowerButtonSetting() {
 
 inline std::vector<ShortPowerButtonOption> doublePowerButtonOptions() {
   auto options = shortPowerButtonOptions();
-  options.push_back({StrId::STR_FRONTLIGHT, CrossPointSettings::PWR_FRONTLIGHT});
+  if (Frontlight.present()) options.push_back({StrId::STR_FRONTLIGHT, CrossPointSettings::PWR_FRONTLIGHT});
   return options;
 }
 
