@@ -52,6 +52,10 @@ int main() {
   assert(bookAt(0, entry) && std::string(entry.title) == "One");
   Snapshot book{};
   assert(loadBook("/Books/one.epub", book) && book.totalSeconds() == 3600 && book.sessions == 3);
+  // Legacy imports have no trustworthy hour-of-day history to backfill.
+  TimeBuckets importedTime{};
+  assert(!loadTimeGlobal(importedTime));
+  assert(!loadTimeBook("/Books/one.epub", importedTime));
 
   auto second = importSource(Source::VCodex);
   assert(second.success && second.imported == 0 && second.alreadyImported == 2);

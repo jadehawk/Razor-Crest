@@ -47,10 +47,10 @@ void drawScrollBar(const GfxRenderer& renderer, Rect rect, int itemCount, int pa
 int coverWidth = 0;
 
 void RoundedRaffTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* title, const char* subtitle,
-                                  const bool backButton) const {
+                                  const bool backButton, const int titleFontId) const {
   // Keep the status indicators on Home as well as titled screens. The
   // RoundedRaff cover and menu still own only the area below this band.
-  BaseTheme::drawHeader(renderer, rect, title, subtitle, backButton);
+  BaseTheme::drawHeader(renderer, rect, title, subtitle, backButton, titleFontId);
 }
 
 void RoundedRaffTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,

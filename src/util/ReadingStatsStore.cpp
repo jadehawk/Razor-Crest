@@ -16,6 +16,7 @@ namespace readingstats {
 namespace {
 constexpr char kDir[] = "/.crosspoint/reading-stats";
 constexpr char kGlobal[] = "/.crosspoint/reading-stats/global_v2.bin";
+constexpr char kTimeGlobal[] = "/.crosspoint/reading-stats/time_global_v1.bin";
 constexpr char kPending[] = "/.crosspoint/reading-stats/pending_v1.bin";
 constexpr char kLegacyPending[] = "/.crosspoint/reading-stats/import_pending_v1.bin";
 constexpr char kLegacyReceipts[] = "/.crosspoint/reading-stats/import_receipts_v1.bin";
@@ -77,6 +78,12 @@ std::string bookFile(const uint64_t hash) {
   return name;
 }
 
+std::string timeBookFile(const uint64_t hash) {
+  char name[96];
+  snprintf(name, sizeof(name), "%s/time_%016llx_v1.bin", kDir, static_cast<unsigned long long>(hash));
+  return name;
+}
+
 template <typename Record>
 bool readValid(const std::string& path, Record& out) {
   HalFile file;
@@ -89,6 +96,12 @@ bool readValid(const std::string& path, Record& out) {
 bool loadPath(const std::string& path, Snapshot& out) {
   if (readValid(path, out) || readValid(path + ".bak", out)) return true;
   out = Snapshot{};
+  return false;
+}
+
+bool loadTimePath(const std::string& path, TimeBuckets& out) {
+  if (readValid(path, out) || readValid(path + ".bak", out)) return true;
+  out = TimeBuckets{};
   return false;
 }
 
@@ -110,7 +123,8 @@ bool writeTemp(const std::string& path, const Record& value) {
   return false;
 }
 
-bool savePath(const std::string& path, Snapshot& stats) {
+template <typename Record>
+bool savePath(const std::string& path, Record& stats) {
   if (!ensureDir()) return false;
   stats.seal();
   if (!writeTemp(path, stats)) return false;
@@ -144,12 +158,34 @@ uint32_t localDayOrdinal(const int64_t epoch) {
   const unsigned doy = (153 * shiftedMonth + 2) / 5 + day - 1;
   const unsigned yoeDays = yoe * 365 + yoe / 4 - yoe / 100 + doy;
   const int64_t days = static_cast<int64_t>(era) * 146097 + yoeDays - 719468;
-  return days >= 0 && days < UINT32_MAX - 1 ? static_cast<uint32_t>(days + 1) : 0;
+  return days >= 0 && days < kDayOrdinalMask ? static_cast<uint32_t>(days + 1) : 0;
+}
+
+uint32_t localDayAndPeriod(const int64_t epoch) {
+  const uint32_t day = localDayOrdinal(epoch);
+  if (!day || epoch <= 0) return day;
+  const time_t time = static_cast<time_t>(epoch);
+  struct tm local{};
+  // Keep the old local-day behavior even when the RTC is not trustworthy.
+  if (!localtime_r(&time, &local) || local.tm_year + 1900 < 2020) return day;
+  return packDayPeriod(day, periodForHour(static_cast<uint8_t>(local.tm_hour)));
 }
 
 bool apply(const Pending& txn, Snapshot& stats, const std::string& path) {
   if (!applyOnce(stats, txn)) return true;
   return savePath(path, stats);
+}
+
+bool applyTime(const Pending& txn, const std::string& path) {
+  const int8_t period = txn.dayPeriod();
+  if (period < 0) return true;
+  TimeBuckets buckets{};
+  if (!loadTimePath(path, buckets) && (Storage.exists(path.c_str()) || Storage.exists((path + ".bak").c_str())))
+    return false;
+  if (buckets.lastSequence >= txn.sequence) return true;
+  buckets.addSession(txn.seconds, txn.localDay(), static_cast<uint8_t>(period));
+  buckets.lastSequence = txn.sequence;
+  return savePath(path, buckets);
 }
 
 // One persistent transaction marker is applied to both snapshots by sequence.
@@ -168,6 +204,9 @@ bool recoverPending() {
   Snapshot global;
   loadPath(kGlobal, global);
   if (!apply(txn, global, kGlobal)) return false;
+  // Reuse the native journal for both time profiles, so a sleep-time power
+  // loss cannot double-count a session or omit one profile on replay.
+  if (!applyTime(txn, timeBookFile(txn.bookHash())) || !applyTime(txn, kTimeGlobal)) return false;
   return Storage.remove(kPending) && recoverImportPending();
 }
 
@@ -304,6 +343,28 @@ bool loadGlobal(Snapshot& out) {
   return loadPath(kGlobal, out);
 }
 
+bool loadTimeGlobal(TimeBuckets& out) {
+  if (!recoverPending()) LOG_ERR("RST", "Failed to recover pending time statistics");
+  return loadTimePath(kTimeGlobal, out);
+}
+
+bool loadTimeBookHash(uint64_t hash, TimeBuckets& out) {
+  if (!recoverPending()) LOG_ERR("RST", "Failed to recover pending book time statistics");
+  if (!hash) {
+    out = TimeBuckets{};
+    return false;
+  }
+  return loadTimePath(timeBookFile(hash), out);
+}
+
+bool loadTimeBook(const char* bookPath, TimeBuckets& out) {
+  if (!bookPath || !*bookPath) {
+    out = TimeBuckets{};
+    return false;
+  }
+  return loadTimeBookHash(pathHash(bookPath), out);
+}
+
 bool loadBookHash(const uint64_t hash, Snapshot& out) {
   if (!recoverPending()) LOG_ERR("RST", "Failed to recover pending book stats");
   return loadPath(bookFile(hash), out);
@@ -383,7 +444,8 @@ bool removeBookRecord(const uint64_t hash) {
   if (!removeIndexedBook(hash)) return false;
   const std::string path = bookFile(hash);
   bool ok = true;
-  for (const std::string& filename : {path, path + ".bak", path + ".tmp"}) {
+  for (const std::string& filename : {path, path + ".bak", path + ".tmp", timeBookFile(hash),
+                                      timeBookFile(hash) + ".bak", timeBookFile(hash) + ".tmp"}) {
     if (Storage.exists(filename.c_str()) && !Storage.remove(filename.c_str())) ok = false;
   }
   if (!ok) LOG_ERR("RST", "Could not remove every snapshot for book %016llx", static_cast<unsigned long long>(hash));
@@ -408,7 +470,7 @@ bool record(const char* bookPath, const uint32_t seconds, const uint32_t turns, 
   txn.sequence = global.lastSequence + 1;
   txn.seconds = seconds;
   txn.turns = turns;
-  txn.day = localDayOrdinal(trustedStartEpoch);
+  txn.day = localDayAndPeriod(trustedStartEpoch);
   txn.setBookHash(pathHash(bookPath));
   if (!writePending(txn)) {
     LOG_ERR("RST", "Failed to persist reading transaction");

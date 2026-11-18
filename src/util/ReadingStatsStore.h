@@ -26,6 +26,11 @@ bool bookAt(uint32_t index, BookEntry& out);
 // mutate the independent cumulative global snapshot or the source EPUB.
 bool removeBookRecord(uint64_t hash);
 bool loadBookHash(uint64_t hash, Snapshot& out);
+// Local-clock reading time grouped by the session's starting period.
+// Stored separately so the original lifetime/daily history stays unchanged.
+bool loadTimeGlobal(TimeBuckets& out);
+bool loadTimeBookHash(uint64_t hash, TimeBuckets& out);
+bool loadTimeBook(const char* bookPath, TimeBuckets& out);
 
 // A source record is a one-time historical snapshot. It is never imported a
 // second time, even if the original source file remains or changes later.

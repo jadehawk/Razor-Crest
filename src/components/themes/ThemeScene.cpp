@@ -19,10 +19,10 @@
 #include <utility>
 
 #include "CrossPointSettings.h"
-#include "components/home/HomeLayoutPackage.h"
 #include "RecentBooksStore.h"
 #include "ThemeFonts.h"
 #include "components/UITheme.h"
+#include "components/home/HomeLayoutPackage.h"
 #include "components/icons/book.h"
 #include "components/icons/headerIcons.h"
 #include "fontIds.h"
@@ -402,8 +402,8 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
     break;
   }
   if (declaredSettingsLayout != advertisedSettingsLayout) return false;
-  if (advertisedHomeWidgets != advertisedHomeLayout ||
-      (advertisedHomeBackground && !advertisedHomeLayout)) return false;
+  if (advertisedHomeWidgets != advertisedHomeLayout || (advertisedHomeBackground && !advertisedHomeLayout))
+    return false;
   homeBackgroundCapability = advertisedHomeBackground;
   if ((!assets["sleep_art"].isNull()) != advertisedSleepGallery) return false;
   if ((!assets["usb_art"].isNull()) != advertisedUsbScene) return false;
@@ -504,12 +504,10 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
   if (hasHomeLayout != advertisedHomeLayout) return false;
   if (hasHomeLayout) {
     const char* relative = layoutField.as<const char*>();
-    if (!home_grid::package::validLayoutPath(id.c_str(), relative) || !isDeclared(files, relative))
-      return false;
+    if (!home_grid::package::validLayoutPath(id.c_str(), relative) || !isDeclared(files, relative)) return false;
     const std::string absolute = base + "/" + relative;
     HalFile layoutFile;
-    if (!Storage.openFileForRead("THEME", absolute, layoutFile) ||
-        layoutFile.fileSize64() == 0 ||
+    if (!Storage.openFileForRead("THEME", absolute, layoutFile) || layoutFile.fileSize64() == 0 ||
         layoutFile.fileSize64() > home_grid::package::kMaxLayoutBytes)
       return false;
     homeLayoutFile = absolute;
@@ -693,15 +691,13 @@ bool ThemeScene::load(const std::string& themeJsonPath) {
   // future Home layout capability; older firmware rejects that capability.
   JsonObjectConst named = doc["home_scenes"].as<JsonObjectConst>();
   if (!doc["home_scenes"].isNull()) {
-    if (!advertisedHomeLayout || named.isNull() || named.size() == 0 ||
-        named.size() > home_scenes::kMaxNamed)
+    if (!advertisedHomeLayout || named.isNull() || named.size() == 0 || named.size() > home_scenes::kMaxNamed)
       return false;
     for (JsonPairConst item : named) {
       const uint8_t handle = homeSceneNames.add(item.key().c_str());
       if (!handle) return false;
       auto& operations = namedHomeScenes[handle - home_scenes::kFirstNamedHandle];
-      if (!parseSceneList(item.value().as<JsonArrayConst>(), static_cast<size_t>(Region::Home),
-                          operations, true))
+      if (!parseSceneList(item.value().as<JsonArrayConst>(), static_cast<size_t>(Region::Home), operations, true))
         return false;
     }
   }
@@ -743,27 +739,26 @@ bool ThemeScene::supportsBookCarousel() const {
 
 bool ThemeScene::draw(const GfxRenderer& renderer, Region region, Rect area, const char* screenTitle,
                       const std::vector<RecentBook>* recentBooks, const int selectorIndex, const Phase phase,
-                      const size_t bookIndex) const {
-  return drawOperations(renderer, region, regions[static_cast<size_t>(region)], area,
-                        screenTitle, recentBooks, selectorIndex, phase, bookIndex);
+                      const size_t bookIndex, const int headerTitleFontId) const {
+  return drawOperations(renderer, region, regions[static_cast<size_t>(region)], area, screenTitle, recentBooks,
+                        selectorIndex, phase, bookIndex, headerTitleFontId);
 }
 
-bool ThemeScene::drawHomeScene(const GfxRenderer& renderer, uint16_t handle, Rect area,
-                               const char* screenTitle, const std::vector<RecentBook>* recentBooks,
-                               int selectorIndex, Phase phase, size_t bookIndex) const {
+bool ThemeScene::drawHomeScene(const GfxRenderer& renderer, uint16_t handle, Rect area, const char* screenTitle,
+                               const std::vector<RecentBook>* recentBooks, int selectorIndex, Phase phase,
+                               size_t bookIndex) const {
   if (handle == home_scenes::kLegacyHome)
     return draw(renderer, Region::Home, area, screenTitle, recentBooks, selectorIndex, phase, bookIndex);
   const int index = homeSceneNames.index(handle);
   if (index < 0) return false;
-  return drawOperations(renderer, Region::Home, namedHomeScenes[index], area,
-                        screenTitle, recentBooks, selectorIndex, phase, bookIndex);
+  return drawOperations(renderer, Region::Home, namedHomeScenes[index], area, screenTitle, recentBooks, selectorIndex,
+                        phase, bookIndex);
 }
 
-bool ThemeScene::drawOperations(const GfxRenderer& renderer, Region region,
-                                const std::vector<Op>& operations, Rect area,
-                                const char* screenTitle, const std::vector<RecentBook>* recentBooks,
-                                const int selectorIndex, const Phase phase,
-                                const size_t bookIndex) const {
+bool ThemeScene::drawOperations(const GfxRenderer& renderer, Region region, const std::vector<Op>& operations,
+                                Rect area, const char* screenTitle, const std::vector<RecentBook>* recentBooks,
+                                const int selectorIndex, const Phase phase, const size_t bookIndex,
+                                const int headerTitleFontId) const {
   if (area.width <= 0 || area.height <= 0) return false;
   const auto clip = renderer.getClipRect();
   const int left = std::max(clip[0], area.x);
@@ -875,13 +870,15 @@ bool ThemeScene::drawOperations(const GfxRenderer& renderer, Region region,
                  : op.font == "ui_small"                                                     ? SMALL_FONT_ID
                  : op.font == "ui_bold"                                                      ? UI_12_FONT_ID
                                                                                              : UI_10_FONT_ID;
+      if (region == Region::Header && op.source == "screen_title" && headerTitleFontId) font = headerTitleFontId;
       // Short theme headers, especially X3 Home, keep the title inside the
       // remaining band rather than clipping a large UI font or moving content.
       if (region == Region::Header && op.source == "screen_title" && renderer.getLineHeight(font) > area.height) {
         font = renderer.getLineHeight(UI_10_FONT_ID) <= area.height ? UI_10_FONT_ID : SMALL_FONT_ID;
         if (renderer.getLineHeight(font) > area.height) continue;
       }
-      const auto style = op.font == "ui_bold" ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
+      const bool overrideTitle = region == Region::Header && op.source == "screen_title" && headerTitleFontId;
+      const auto style = overrideTitle || op.font == "ui_bold" ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
       int limit = std::max(1, op.maxWidth > 0 ? std::min(area.width, op.maxWidth) : area.width - 24);
       // The optional arrow shifts the heading right; keep battery/status
       // chrome clear instead of stretching the title into its reserved lane.
@@ -889,7 +886,7 @@ bool ThemeScene::drawOperations(const GfxRenderer& renderer, Region region,
         limit = std::max(1, std::min(limit, area.width - op.offsetX - headerShift - 112));
       const int reserve = static_cast<int>(strlen(text)) * op.tracking;
       const auto shortened = renderer.truncatedText(font, text, std::max(1, limit - reserve), style);
-      const auto title = upperAscii(shortened);
+      const auto title = overrideTitle ? shortened : upperAscii(shortened);
       const int width = renderer.getTextAdvanceX(font, title.c_str(), style, op.tracking);
       const int height = renderer.getLineHeight(font);
       const int y = anchored(area.y, area.height, height, op.anchorY, op.offsetY);

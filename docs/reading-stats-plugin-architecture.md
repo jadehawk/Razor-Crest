@@ -59,6 +59,13 @@ FNV-1a-checked binary snapshots:
 - `global_v2.bin`: all-time totals and rolling 366-day history.
 - `book_<path_hash>_v2.bin`: matching per-book data.
 - `pending_v1.bin`: recoverable transaction between per-book and global updates.
+  High day bits optionally encode the local session-start time period, while old
+  journal entries keep their exact previous meaning.
+- `time_global_v1.bin` and `time_<path_hash>_v1.bin`: separate 148-byte
+  lifetime morning/afternoon/evening/night totals with a rolling seven-day
+  per-period history. These files are populated only for newly recorded sessions
+  with a trustworthy local start hour; older and imported records are preserved
+  without invented hourly data.
 - `import_pending_v1.bin`: recoverable one-record legacy import transaction.
 - `import_receipts_v1.bin`: checksummed, append-only per-source/book receipts
   preventing repeated imports, even after reboot.
@@ -67,9 +74,10 @@ FNV-1a-checked binary snapshots:
 - `.bak` companions preserve the last good snapshot if the primary is
   incomplete or damaged.
 
-Each snapshot is 1500 bytes. Session recording writes a durable pending
-marker, applies the transaction to both files with monotonically increasing
-sequences, then removes the marker. A pending transaction is replayed
+Each main snapshot is 1500 bytes. Session recording writes a durable pending
+marker, applies the transaction to both main snapshots and, when the timestamp
+is trusted, both time-of-day profiles with monotonically increasing sequences,
+then removes the marker. A pending transaction is replayed
 idempotently on the next save/load. A damaged pending marker is logged
 rather than silently discarded; writing stops until repaired. All updates
 are bounded and the renderer uses a cached snapshot instead of reading SD

@@ -141,10 +141,10 @@ const std::string& UITheme::usbGrayscalePath() const {
 
 bool UITheme::renderExternalScene(ThemeScene::Region region, const GfxRenderer& renderer, Rect area, const char* title,
                                   const std::vector<RecentBook>* books, int selection, ThemeScene::Phase phase,
-                                  size_t bookIndex) const {
+                                  size_t bookIndex, int headerTitleFontId) const {
   const ThemeScene* scene = activeExternalScene();
   return scene && scene->hasRegion(region) &&
-         scene->draw(renderer, region, area, title, books, selection, phase, bookIndex);
+         scene->draw(renderer, region, area, title, books, selection, phase, bookIndex, headerTitleFontId);
 }
 
 uint8_t UITheme::homeSceneHandle(const char* name) const {
@@ -152,9 +152,9 @@ uint8_t UITheme::homeSceneHandle(const char* name) const {
   return scene ? scene->homeSceneHandle(name) : 0;
 }
 
-bool UITheme::renderExternalHomeScene(uint16_t handle, const GfxRenderer& renderer, Rect area,
-                                      const char* title, const std::vector<RecentBook>* books,
-                                      int selection, ThemeScene::Phase phase, size_t bookIndex) const {
+bool UITheme::renderExternalHomeScene(uint16_t handle, const GfxRenderer& renderer, Rect area, const char* title,
+                                      const std::vector<RecentBook>* books, int selection, ThemeScene::Phase phase,
+                                      size_t bookIndex) const {
   const ThemeScene* scene = activeExternalScene();
   return scene && scene->drawHomeScene(renderer, handle, area, title, books, selection, phase, bookIndex);
 }

@@ -37,6 +37,8 @@ class StatsDashboardActivity final : public Activity {
     std::string field;
     bool currentBook = false;
     bool showValue = true;
+    bool compact = false;
+    bool recentWeek = false;
     int8_t iconIndex = -1;
     dashboardcards::Border border = dashboardcards::Border::Square;
     uint8_t cornerRadius = 8;
@@ -69,6 +71,8 @@ class StatsDashboardActivity final : public Activity {
   singlecard::Pager carouselPager{};
   readingstats::Snapshot stats;
   readingstats::Snapshot bookStats;
+  readingstats::TimeBuckets timeGlobal;
+  readingstats::TimeBuckets timeBook;
   readingstats::BookEntry bookInfo{};
   struct BookRow {
     readingstats::BookEntry entry{};
@@ -126,7 +130,9 @@ class StatsDashboardActivity final : public Activity {
   void advance(int delta);
   void drawMetric(const Widget& widget, int x, int y, int width, int height) const;
   void drawWeek(const Widget& widget, int x, int y, int width, int height) const;
-  void drawHeatmap(const Widget& widget, int x, int y, int width, int height) const;
+  void drawTimeOfDay(const Widget& widget, int x, int y, int width, int height) const;
+  void drawMonthCalendar(const Widget& widget, int x, int y, int width, int height) const;
+  void drawMonthInsights(const Widget& widget, int x, int y, int width, int height) const;
   void drawWidget(const Widget& widget, int x, int y, int width, int height) const;
   const readingstats::Snapshot& statsFor(const Widget& widget) const;
   bool statsPresentFor(const Widget& widget) const;

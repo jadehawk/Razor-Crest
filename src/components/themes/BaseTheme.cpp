@@ -191,11 +191,19 @@ void BaseTheme::drawHintLabel(const GfxRenderer& renderer, const int fontId, con
   constexpr int textPadding = 4;  // keeps a wrapped label off the button's border
   const int maxTextWidth = boxWidth - (textPadding * 2);
 
-  const int textHeight = renderer.getTextHeight(fontId);
-  const int textWidth = renderer.getTextWidth(fontId, label);
+  // Keep the theme font when it fits. Wide SD theme lettering can overflow
+  // labels such as "Previous"; use a narrower built-in font before wrapping.
+  // This fallback affects only oversized labels, leaving other theme hints alone.
+  int textFont = fontId;
+  if (renderer.getTextWidth(fontId, label) > maxTextWidth &&
+      renderer.getTextWidth(NOTOSANS_12_FONT_ID, label) <= maxTextWidth &&
+      renderer.getTextHeight(NOTOSANS_12_FONT_ID) <= boxHeight - 4)
+    textFont = NOTOSANS_12_FONT_ID;
+  const int textHeight = renderer.getTextHeight(textFont);
+  const int textWidth = renderer.getTextWidth(textFont, label);
   if (textWidth <= maxTextWidth) {
     const int textY = boxTop + std::max(1, (boxHeight - textHeight) / 2);
-    renderer.drawText(fontId, x + (boxWidth - 1 - textWidth) / 2, textY, label);
+    renderer.drawText(textFont, x + (boxWidth - 1 - textWidth) / 2, textY, label);
     return;
   }
 
@@ -204,12 +212,12 @@ void BaseTheme::drawHintLabel(const GfxRenderer& renderer, const int fontId, con
   // button and clips the second one.
   constexpr int lineGap = 2;
   const int step = textHeight + lineGap;
-  const auto lines = renderer.wrappedText(fontId, label, maxTextWidth, 2);
+  const auto lines = renderer.wrappedText(textFont, label, maxTextWidth, 2);
   const int block = static_cast<int>(lines.size()) * step - lineGap;
   int lineY = boxTop + std::max(1, (boxHeight - block) / 2);
   for (const auto& line : lines) {
-    const int lineWidth = renderer.getTextWidth(fontId, line.c_str());
-    renderer.drawText(fontId, x + (boxWidth - 1 - lineWidth) / 2, lineY, line.c_str());
+    const int lineWidth = renderer.getTextWidth(textFont, line.c_str());
+    renderer.drawText(textFont, x + (boxWidth - 1 - lineWidth) / 2, lineY, line.c_str());
     lineY += step;
   }
 }
@@ -227,14 +235,16 @@ void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
 
   const int pageHeight = renderer.getScreenHeight();
-  constexpr int buttonWidth = 106;
   constexpr int buttonHeight = BaseMetrics::values.buttonHintsHeight;
   constexpr int buttonY = BaseMetrics::values.buttonHintsHeight;  // Distance from bottom
-  // Keyed to the portrait panel width: the 528-wide X3 gets more spacing than
-  // the 480-wide boards (X4, X4 Pro, and the other 800x480 panels).
+  // Use the available X3 width instead of leaving 38px unused on each side.
+  // Four 120px hint boxes fit with 8px gaps and 12px side margins at 528px;
+  // keep the existing compact placement on 480px boards.
+  const bool wide = renderer.getScreenWidth() >= 528;
+  const int buttonWidth = wide ? 120 : 106;
   constexpr int narrowButtonPositions[] = {25, 130, 245, 350};
-  constexpr int wideButtonPositions[] = {38, 154, 268, 384};
-  const int* buttonPositions = renderer.getScreenWidth() >= 528 ? wideButtonPositions : narrowButtonPositions;
+  constexpr int wideButtonPositions[] = {12, 140, 268, 396};
+  const int* buttonPositions = wide ? wideButtonPositions : narrowButtonPositions;
   const char* labels[] = {btn1, btn2, btn3, btn4};
   const bool grayscale = renderer.getRenderMode() != GfxRenderer::BW && !renderer.grayPlanesAreAbsolute();
 
@@ -411,7 +421,8 @@ freeink::ui::Rect BaseTheme::headerBand(const GfxRenderer& renderer, const freei
                            static_cast<int16_t>(rect.width - l - r), static_cast<int16_t>(rect.height - offset)};
 }
 
-bool BaseTheme::drawExternalHeaderScene(const GfxRenderer& renderer, Rect area, const char* title, bool backButton) {
+bool BaseTheme::drawExternalHeaderScene(const GfxRenderer& renderer, Rect area, const char* title, bool backButton,
+                                        int titleFontId) {
   namespace fui = freeink::ui;
   const ThemeScene* scene = UITheme::getInstance().activeExternalScene();
   if (!scene || !scene->hasRegion(ThemeScene::Region::Header)) return false;
@@ -426,7 +437,8 @@ bool BaseTheme::drawExternalHeaderScene(const GfxRenderer& renderer, Rect area, 
   renderer.fillRect(area.x, area.y, area.width, contentTop - area.y, dark);
   if (!UITheme::getInstance().renderExternalScene(
           ThemeScene::Region::Header, renderer, Rect{area.x, contentTop, area.width, headerBottom - contentTop},
-          title ? title : I18N.get(StrId::STR_HOME_SHORTCUT), nullptr, backButton && gpio.hasTouch() ? 1 : 0))
+          title ? title : I18N.get(StrId::STR_HOME_SHORTCUT), nullptr, backButton && gpio.hasTouch() ? 1 : 0,
+          ThemeScene::Phase::Full, 0, titleFontId))
     return false;
 
   // Reuse the stock FreeInkUI status compositor, including its charging icon,
@@ -451,12 +463,12 @@ bool BaseTheme::drawExternalHeaderScene(const GfxRenderer& renderer, Rect area, 
 }
 
 void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* title, const char* subtitle,
-                           const bool backButton) const {
+                           const bool backButton, const int titleFontId) const {
   // Theme-owned chrome is used on both button and touch screens.
   // Its emblem serves as the touch Back target; the banner is never
   // replaced by the generic FreeInkUI Back arrow.
   const Rect sceneArea{0, 0, renderer.getScreenWidth(), rect.y + rect.height};
-  if (drawExternalHeaderScene(renderer, sceneArea, title, backButton)) {
+  if (drawExternalHeaderScene(renderer, sceneArea, title, backButton, titleFontId)) {
     if (gpio.hasTouch() && backButton && title)
       HeaderBackTapTarget::set(0, 0, 58, sceneArea.height);
     else
@@ -465,7 +477,8 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
   }
   namespace fui = freeink::ui;
   const auto spec = uiScaleSpec();
-  fui::GfxRendererFrame<1> ui(renderer, spec.smallFontId, spec.bodyFontId, spec.titleFontId);
+  fui::GfxRendererFrame<1> ui(renderer, spec.smallFontId, spec.bodyFontId,
+                              titleFontId ? titleFontId : spec.titleFontId);
   // Refresh the app-wide shared tokens instead of copying ~1.5KB of
   // ThemeTokens onto this render-path stack frame; the values derived here
   // are identical to what every FreeInkApp screen derives. Goes through the
@@ -512,6 +525,7 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
   }
   props.borderEdges = fui::EdgeBottom;
   props.titleText = tokens.titleText;
+  if (titleFontId) props.titleText.font = fui::GfxRendererTarget::FONT_TITLE;
   props.titleText.align = tokens.headerTitleAlign;
   props.subtitleText = tokens.smallText;
   props.styles = tokens.popup;

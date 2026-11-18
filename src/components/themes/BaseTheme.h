@@ -259,10 +259,10 @@ class BaseTheme {
   // tappable theme emblem (or stock Back icon) leads the band; root
   // screens that own their stack bottom pass backButton = false.
   virtual void drawHeader(const GfxRenderer& renderer, Rect rect, const char* title, const char* subtitle = nullptr,
-                          bool backButton = true) const;
+                          bool backButton = true, int titleFontId = 0) const;
   // Declarative header and status, also used by FUI-native touch screens.
-  static bool drawExternalHeaderScene(const GfxRenderer& renderer, Rect area, const char* title,
-                                      bool backButton = true);
+  static bool drawExternalHeaderScene(const GfxRenderer& renderer, Rect area, const char* title, bool backButton = true,
+                                      int titleFontId = 0);
   // Fill the battery/clock status chrome (settings + theme metrics) into
   // header props, so FUI-native screens drawing their own interactive header
   // carry the same band as drawHeader. Status text is styled with the

@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <iterator>
 #include <utility>
 #include <vector>
 
@@ -31,6 +32,8 @@
 namespace {
 constexpr int kMargin = 12;
 constexpr int kGap = 7;
+// Statistic content keeps a consistent built-in font under SD UI themes.
+constexpr int kStatsFont = NOTOSANS_12_FONT_ID;
 constexpr size_t kManifestLimit = 8192;
 
 std::string duration(uint64_t seconds) {
@@ -41,6 +44,37 @@ std::string duration(uint64_t seconds) {
   else
     snprintf(buffer, sizeof(buffer), "%llum", static_cast<unsigned long long>(seconds / 60));
   return buffer;
+}
+
+struct CalendarContext {
+  dashboardcalendar::Month summary{};
+  unsigned month = 0;
+  int year = 0;
+};
+
+CalendarContext currentCalendar(const readingstats::Snapshot& stats) {
+  CalendarContext calendar;
+  const time_t now = time(nullptr);
+  struct tm local{};
+  if (now <= 0 || !localtime_r(&now, &local) || local.tm_year + 1900 < 2020) return calendar;
+  calendar.year = local.tm_year + 1900;
+  calendar.month = static_cast<unsigned>(local.tm_mon + 1);
+  calendar.summary =
+      dashboardcalendar::summarizeMonth(stats, calendar.year, calendar.month, static_cast<unsigned>(local.tm_mday));
+  return calendar;
+}
+
+Color calendarColor(uint8_t intensity) {
+  switch (intensity) {
+    case 1:
+      return Color::LightGray;
+    case 2:
+      return Color::DarkGray;
+    case 3:
+      return Color::Black;
+    default:
+      return Color::White;
+  }
 }
 
 bool knownMetric(const std::string& field) {
@@ -142,6 +176,17 @@ bool StatsDashboardActivity::loadManifest() {
       }
       widget.field = widgetJson["field"] | "";
       widget.showValue = widgetJson["show_value"] | true;
+      if (!widgetJson["compact"].isNull() && (!widgetJson["compact"].is<bool>() || widget.type != "metric"))
+        return false;
+      widget.compact = widgetJson["compact"] | false;
+      if (!widgetJson["period"].isNull() && !widgetJson["period"].is<const char*>()) return false;
+      const char* period = widgetJson["period"] | "all";
+      if (widget.type == "time_of_day") {
+        if (strcmp(period, "all") != 0 && strcmp(period, "week") != 0) return false;
+        widget.recentWeek = strcmp(period, "week") == 0;
+      } else if (!widgetJson["period"].isNull()) {
+        return false;
+      }
       widget.label = widgetJson["label"] | "";
       const char* border = widgetJson["border"] | (widget.type == "hero" ? "rounded" : "square");
       if (!dashboardcards::parseBorder(border, widget.border)) return false;
@@ -162,8 +207,9 @@ bool StatsDashboardActivity::loadManifest() {
       if ((widget.type == "hero" || widget.type == "metric") && !knownMetric(widget.field)) return false;
       if (widget.type == "reading_snapshot" && widget.currentBook) return false;
       if (widget.type != "card_carousel" && widget.type != "metric" && widget.type != "week_bars" &&
-          widget.type != "heatmap_28" && widget.type != "book_list" && widget.type != "legacy_import" &&
-          widget.type != "hero" && widget.type != "reading_snapshot")
+          widget.type != "month_calendar" && widget.type != "month_insights" && widget.type != "book_list" &&
+          widget.type != "legacy_import" && widget.type != "hero" && widget.type != "reading_snapshot" &&
+          widget.type != "time_of_day")
         return false;
     }
   }
@@ -248,9 +294,18 @@ void StatsDashboardActivity::loadSeries() {
 void StatsDashboardActivity::refresh() {
   recordedBookCount = readingstats::bookCount();
   statsAvailable = readingstats::loadGlobal(stats);
+  readingstats::loadTimeGlobal(timeGlobal);
   bookStatsAvailable =
       hasBookInfo && (bookInfo.hash() != 0 ? readingstats::loadBookHash(bookInfo.hash(), bookStats)
                                            : readingstats::loadBook(APP_STATE.openEpubPath.c_str(), bookStats));
+  if (hasBookInfo) {
+    if (bookInfo.hash() != 0)
+      readingstats::loadTimeBookHash(bookInfo.hash(), timeBook);
+    else
+      readingstats::loadTimeBook(APP_STATE.openEpubPath.c_str(), timeBook);
+  } else {
+    timeBook = readingstats::TimeBuckets{};
+  }
 }
 
 void StatsDashboardActivity::onEnter() {
@@ -311,7 +366,7 @@ void StatsDashboardActivity::refreshLegacyPreviews() {
 
 int StatsDashboardActivity::dashboardContentTop() const {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  return metrics.topPadding + metrics.headerHeight + 7 + renderer.getLineHeight(UI_12_FONT_ID) + 9;
+  return metrics.topPadding + metrics.headerHeight + 7;
 }
 
 int StatsDashboardActivity::listCapacity() const {
@@ -570,7 +625,7 @@ bool StatsDashboardActivity::statsPresentFor(const Widget& widget) const {
 
 int StatsDashboardActivity::drawBookIdentity(int y, const int width) const {
   const int availableWidth = width - 2 * kMargin;
-  const int smallStep = renderer.getLineHeight(UI_12_FONT_ID) + 2;
+  const int smallStep = renderer.getLineHeight(kStatsFont) + 2;
   const auto drawLines = [&](const int font, const std::string& text, const int maxLines,
                              const EpdFontFamily::Style style, const int step) {
     for (const auto& line : renderer.wrappedText(font, text.c_str(), availableWidth, maxLines, style)) {
@@ -581,11 +636,11 @@ int StatsDashboardActivity::drawBookIdentity(int y, const int width) const {
   drawLines(NOTOSANS_14_FONT_ID, hasBookInfo && bookInfo.title[0] ? bookInfo.title : "No book selected", 3,
             EpdFontFamily::BOLD, renderer.getLineHeight(NOTOSANS_14_FONT_ID) + 2);
   if (hasBookInfo && bookInfo.author[0]) {
-    drawLines(UI_12_FONT_ID, std::string("Author: ") + bookInfo.author, 2, EpdFontFamily::REGULAR, smallStep);
+    drawLines(kStatsFont, std::string("Author: ") + bookInfo.author, 2, EpdFontFamily::REGULAR, smallStep);
   }
   if (!seriesName.empty()) {
     const std::string series = "Series: " + seriesName + (seriesIndex.empty() ? "" : " #" + seriesIndex);
-    drawLines(UI_12_FONT_ID, series, 3, EpdFontFamily::REGULAR, smallStep);
+    drawLines(kStatsFont, series, 3, EpdFontFamily::REGULAR, smallStep);
   }
   return y + 8;
 }
@@ -703,7 +758,7 @@ void StatsDashboardActivity::drawHero(const Widget& widget, int x, int y, int w,
   const int bodyY = y + 12;
   if (widget.currentBook) {
     if (!hasBookInfo) {
-      renderer.drawText(UI_12_FONT_ID, x + inset, bodyY, "No book selected");
+      renderer.drawText(kStatsFont, x + inset, bodyY, "No book selected");
       return;
     }
 
@@ -719,23 +774,22 @@ void StatsDashboardActivity::drawHero(const Widget& widget, int x, int y, int w,
     int cursor = bodyY;
 
     const char* bookTitle = bookInfo.title[0] ? bookInfo.title : "Untitled";
-    const int titleLine = renderer.getLineHeight(UI_12_FONT_ID);
-    for (const auto& line : renderer.wrappedText(UI_12_FONT_ID, bookTitle, textW, 2, EpdFontFamily::BOLD)) {
+    const int titleLine = renderer.getLineHeight(kStatsFont);
+    for (const auto& line : renderer.wrappedText(kStatsFont, bookTitle, textW, 2, EpdFontFamily::BOLD)) {
       if (cursor + titleLine > textBottom) break;
-      renderer.drawText(UI_12_FONT_ID, textX, cursor, line.c_str(), true, EpdFontFamily::BOLD);
+      renderer.drawText(kStatsFont, textX, cursor, line.c_str(), true, EpdFontFamily::BOLD);
       cursor += titleLine + 2;
     }
     const std::string& bookAuthor = currentAuthor;
-    const int authorLine = renderer.getLineHeight(UI_12_FONT_ID);
+    const int authorLine = renderer.getLineHeight(kStatsFont);
     if (!bookAuthor.empty() && cursor + authorLine <= textBottom) {
-      renderer.drawText(UI_12_FONT_ID, textX, cursor,
-                        renderer.truncatedText(UI_12_FONT_ID, bookAuthor.c_str(), textW).c_str());
+      renderer.drawText(kStatsFont, textX, cursor,
+                        renderer.truncatedText(kStatsFont, bookAuthor.c_str(), textW).c_str());
       cursor += authorLine + 2;
     }
     const std::string series = seriesName + (seriesIndex.empty() ? "" : " #" + seriesIndex);
-    if (!seriesName.empty() && cursor + renderer.getLineHeight(UI_10_FONT_ID) <= textBottom) {
-      renderer.drawText(UI_10_FONT_ID, textX, cursor,
-                        renderer.truncatedText(UI_10_FONT_ID, series.c_str(), textW).c_str());
+    if (!seriesName.empty() && cursor + renderer.getLineHeight(kStatsFont) <= textBottom) {
+      renderer.drawText(kStatsFont, textX, cursor, renderer.truncatedText(kStatsFont, series.c_str(), textW).c_str());
     }
 
     const int barX = x + inset;
@@ -749,8 +803,8 @@ void StatsDashboardActivity::drawHero(const Widget& widget, int x, int y, int w,
     else
       snprintf(percentage, sizeof(percentage), "--");
     // Text is taller than the 11px bar; raise it to align the visual centers.
-    const int textY = barY - (renderer.getLineHeight(UI_12_FONT_ID) - 11) / 2 - 6;
-    renderer.drawText(UI_12_FONT_ID, barX + barW + 9, textY, percentage, true, EpdFontFamily::BOLD);
+    const int textY = barY - (renderer.getLineHeight(kStatsFont) - 11) / 2 - 6;
+    renderer.drawText(kStatsFont, barX + barW + 9, textY, percentage, true, EpdFontFamily::BOLD);
   } else if (widget.showValue) {
     const std::string value = metricValue(widget);
     renderer.drawText(
@@ -783,27 +837,34 @@ void StatsDashboardActivity::drawReadingSnapshot(const Widget& widget, const int
     renderer.drawText(font, centerX - renderer.getTextWidth(font, fitted.c_str(), style) / 2, top, fitted.c_str(), true,
                       style);
   };
-  center(UI_12_FONT_ID, "THIS MONTH", x + w / 2, y + 12, w - 20, EpdFontFamily::BOLD);
+  center(kStatsFont, "THIS MONTH", x + w / 2, y + 12, w - 20, EpdFontFamily::BOLD);
   center(NOTOSANS_18_FONT_ID, summary.dateKnown ? duration(summary.monthSeconds) : "--", x + w / 2,
-         y + 19 + renderer.getLineHeight(UI_12_FONT_ID), w - 20, EpdFontFamily::BOLD);
+         y + 19 + renderer.getLineHeight(kStatsFont), w - 20, EpdFontFamily::BOLD);
   if (!summary.dateKnown)
-    center(UI_10_FONT_ID, "Set device date to see monthly activity", x + w / 2, y + h / 2 - 14, w - 20,
+    center(kStatsFont, "Set device date to see monthly activity", x + w / 2, y + h / 2 - 14, w - 20,
            EpdFontFamily::REGULAR);
 
-  const int dividerY = y + h / 2 + 10;
+  // Keep the three labels comfortably inside the card's bottom border on
+  // both X3 and Picco. The old 13px/5px offsets let the final text line touch
+  // the rounded border even though the row has enough room above it.
+  const int dividerY = y + h / 2 + 8;
   renderer.drawLine(x + 12, dividerY, x + w - 12, dividerY);
   const int columnWidth = (w - 24) / 3;
-  const int valueY = dividerY + 13;
-  const int labelY = valueY + renderer.getLineHeight(NOTOSANS_14_FONT_ID) + 5;
+  const int valueY = dividerY + 8;
+  const int labelY = valueY + renderer.getLineHeight(NOTOSANS_14_FONT_ID) + 2;
   const std::string values[] = {summary.dateKnown ? std::to_string(summary.streak) : "--",
                                 summary.dateKnown ? std::to_string(summary.activeDays) : "--",
                                 std::to_string(recordedBookCount)};
   const char* labels[] = {"Day Streak", "Active Days", "Books"};
   const int labelWidth = columnWidth - 4;
+  for (int i = 1; i < 3; ++i) {
+    const int dividerX = x + 12 + i * columnWidth;
+    renderer.drawLine(dividerX, dividerY + 10, dividerX, y + h - 10);
+  }
   for (int i = 0; i < 3; ++i) {
     const int cx = x + 12 + i * columnWidth + columnWidth / 2;
     center(NOTOSANS_14_FONT_ID, values[i], cx, valueY, labelWidth, EpdFontFamily::BOLD);
-    center(UI_10_FONT_ID, labels[i], cx, labelY, labelWidth, EpdFontFamily::REGULAR);
+    center(kStatsFont, labels[i], cx, labelY, labelWidth, EpdFontFamily::REGULAR);
   }
 }
 
@@ -811,16 +872,50 @@ void StatsDashboardActivity::drawMetric(const Widget& widget, const int x, const
                                         const int height) const {
   if (height <= 0 || w <= 0) return;
   drawCardBorder(widget, x, y, w, height);
+  if (widget.compact) {
+    // Give compact labels the full text column; reserve a common two-line
+    // heading slot so values align even when one heading wraps.
+    const int dividerX = x + std::min(w * 3 / 10, 76);
+    const int iconSide = std::max(0, std::min({height - 16, dividerX - x - 14, 68}));
+    if (widget.iconIndex >= 0 && iconSide > 0)
+      drawCardIcon(widget, x + (dividerX - x - iconSide) / 2, y + (height - iconSide) / 2, iconSide);
+    renderer.drawLine(dividerX, y + 12, dividerX, y + height - 12);
+    const int textX = dividerX + 5, textWidth = std::max(1, x + w - textX - 5);
+    const bool labelFits = renderer.getTextWidth(kStatsFont, widget.label.c_str(), EpdFontFamily::BOLD) <= textWidth;
+    const auto labelLines =
+        labelFits ? std::vector<std::string>{widget.label}
+                  : renderer.wrappedText(kStatsFont, widget.label.c_str(), textWidth, 2, EpdFontFamily::BOLD);
+    const std::string value = metricValue(widget);
+    const int valueFont = renderer.getTextWidth(NOTOSANS_14_FONT_ID, value.c_str(), EpdFontFamily::BOLD) <= textWidth
+                              ? NOTOSANS_14_FONT_ID
+                              : kStatsFont;
+    const std::string fitted = renderer.truncatedText(valueFont, value.c_str(), textWidth, EpdFontFamily::BOLD);
+    const int labelH = renderer.getLineHeight(kStatsFont);
+    const int valueH = renderer.getLineHeight(valueFont);
+    const int labelSlotH = labelH * 2 + 2;
+    const int top = y + std::max(4, (height - labelSlotH - valueH - 4) / 2);
+    const int labelTop = top + (labelLines.size() == 1 ? (labelSlotH - labelH) / 2 : 0);
+    for (size_t i = 0; i < labelLines.size(); ++i) {
+      const std::string& line = labelLines[i];
+      renderer.drawText(kStatsFont,
+                        textX + (textWidth - renderer.getTextWidth(kStatsFont, line.c_str(), EpdFontFamily::BOLD)) / 2,
+                        labelTop + static_cast<int>(i) * (labelH + 2), line.c_str(), true, EpdFontFamily::BOLD);
+    }
+    renderer.drawText(valueFont,
+                      textX + (textWidth - renderer.getTextWidth(valueFont, fitted.c_str(), EpdFontFamily::BOLD)) / 2,
+                      top + labelSlotH + 4, fitted.c_str(), true, EpdFontFamily::BOLD);
+    return;
+  }
   if (widget.iconIndex >= 0) {
     constexpr int inset = 10;
     constexpr int valueGap = 9;
     constexpr int minValueWidth = 64;
-    const int labelHeight = renderer.getLineHeight(UI_12_FONT_ID);
+    const int labelHeight = renderer.getLineHeight(kStatsFont);
     const int labelY = y + 11;
     const std::string label =
-        renderer.truncatedText(UI_12_FONT_ID, widget.label.c_str(), w - 2 * inset, EpdFontFamily::BOLD);
-    const int labelWidth = renderer.getTextWidth(UI_12_FONT_ID, label.c_str(), EpdFontFamily::BOLD);
-    renderer.drawText(UI_12_FONT_ID, x + (w - labelWidth) / 2, labelY, label.c_str(), true, EpdFontFamily::BOLD);
+        renderer.truncatedText(kStatsFont, widget.label.c_str(), w - 2 * inset, EpdFontFamily::BOLD);
+    const int labelWidth = renderer.getTextWidth(kStatsFont, label.c_str(), EpdFontFamily::BOLD);
+    renderer.drawText(kStatsFont, x + (w - labelWidth) / 2, labelY, label.c_str(), true, EpdFontFamily::BOLD);
 
     // The centered heading owns the card's top row. The icon fills as much
     // of the remaining height as possible, leaving room for a readable value.
@@ -834,7 +929,7 @@ void StatsDashboardActivity::drawMetric(const Widget& widget, const int x, const
     const std::string value = metricValue(widget);
     const int valueFont = renderer.getTextWidth(NOTOSANS_14_FONT_ID, value.c_str(), EpdFontFamily::BOLD) <= valueWidth
                               ? NOTOSANS_14_FONT_ID
-                              : UI_12_FONT_ID;
+                              : kStatsFont;
     const std::string fitted = renderer.truncatedText(valueFont, value.c_str(), valueWidth, EpdFontFamily::BOLD);
     const int fittedWidth = renderer.getTextWidth(valueFont, fitted.c_str(), EpdFontFamily::BOLD);
     const int fittedHeight = renderer.getLineHeight(valueFont);
@@ -844,18 +939,18 @@ void StatsDashboardActivity::drawMetric(const Widget& widget, const int x, const
     return;
   }
   constexpr int inset = 8;
-  const int labelStep = renderer.getLineHeight(UI_12_FONT_ID) + 1;
-  const auto labels = renderer.wrappedText(UI_12_FONT_ID, widget.label.c_str(), std::max(1, w - 2 * inset), 2);
+  const int labelStep = renderer.getLineHeight(kStatsFont) + 1;
+  const auto labels = renderer.wrappedText(kStatsFont, widget.label.c_str(), std::max(1, w - 2 * inset), 2);
   int labelY = y + 8;
   for (const auto& line : labels) {
-    const int lineWidth = renderer.getTextWidth(UI_12_FONT_ID, line.c_str());
-    renderer.drawText(UI_12_FONT_ID, x + (w - lineWidth) / 2, labelY, line.c_str());
+    const int lineWidth = renderer.getTextWidth(kStatsFont, line.c_str());
+    renderer.drawText(kStatsFont, x + (w - lineWidth) / 2, labelY, line.c_str());
     labelY += labelStep;
   }
   const std::string value = metricValue(widget);
   const int valueFont = renderer.getTextWidth(NOTOSANS_14_FONT_ID, value.c_str(), EpdFontFamily::BOLD) <= w - 2 * inset
                             ? NOTOSANS_14_FONT_ID
-                            : UI_12_FONT_ID;
+                            : kStatsFont;
   const std::string fitted =
       renderer.truncatedText(valueFont, value.c_str(), std::max(1, w - 2 * inset), EpdFontFamily::BOLD);
   const int valueWidth = renderer.getTextWidth(valueFont, fitted.c_str(), EpdFontFamily::BOLD);
@@ -867,15 +962,59 @@ void StatsDashboardActivity::drawMetric(const Widget& widget, const int x, const
   }
 }
 
+void StatsDashboardActivity::drawTimeOfDay(const Widget& widget, const int x, const int y, const int w,
+                                           const int h) const {
+  if (w < 130 || h < 82) return;
+  drawCardBorder(widget, x, y, w, h);
+  const std::string heading = widget.label.empty() ? "Time of Day" : widget.label;
+  const std::string title = renderer.truncatedText(kStatsFont, heading.c_str(), w - 20, EpdFontFamily::BOLD);
+  renderer.drawText(kStatsFont, x + (w - renderer.getTextWidth(kStatsFont, title.c_str(), EpdFontFamily::BOLD)) / 2,
+                    y + 7, title.c_str(), true, EpdFontFamily::BOLD);
+  const int titleBottom = y + 9 + renderer.getLineHeight(kStatsFont);
+  renderer.drawLine(x + 10, titleBottom, x + w - 10, titleBottom);
+
+  const auto& buckets = widget.currentBook ? timeBook : timeGlobal;
+  uint64_t seconds[4] = {};
+  if (widget.recentWeek) {
+    // The companion seven-day chart ends on the last recorded reading day.
+    const uint32_t latestDay = statsFor(widget).latestDay;
+    for (int i = 0; i < 4; ++i) seconds[i] = buckets.secondsInLastDays(latestDay, static_cast<uint8_t>(i));
+  } else {
+    for (int i = 0; i < 4; ++i) seconds[i] = buckets.total[i];
+  }
+  const uint64_t maxSeconds = *std::max_element(std::begin(seconds), std::end(seconds));
+  if (!maxSeconds) {
+    const char* empty = widget.recentWeek ? "No timed sessions in 7 days" : "No timed sessions yet";
+    renderer.drawText(kStatsFont, x + (w - renderer.getTextWidth(kStatsFont, empty)) / 2, y + (h + titleBottom - y) / 2,
+                      empty);
+    return;
+  }
+  constexpr const char* labels[] = {"Morning", "Afternoon", "Evening", "Night"};
+  int labelWidth = 0;
+  for (const char* label : labels) labelWidth = std::max(labelWidth, renderer.getTextWidth(kStatsFont, label));
+  const int labelX = x + 11;
+  const int barX = labelX + labelWidth + 11;
+  const int barWidth = std::max(1, x + w - 12 - barX);
+  const int chartTop = titleBottom + 7;
+  const int rowHeight = std::max(12, (y + h - 8 - chartTop) / 4);
+  const int barHeight = std::min(12, std::max(4, rowHeight / 2));
+  for (int i = 0; i < 4; ++i) {
+    const int centerY = chartTop + i * rowHeight + rowHeight / 2;
+    if (centerY + barHeight / 2 > y + h - 5) break;
+    renderer.drawText(kStatsFont, labelX, centerY - renderer.getLineHeight(kStatsFont) / 2, labels[i]);
+    const int filled = static_cast<int>((seconds[i] * barWidth) / maxSeconds);
+    if (filled > 0) renderer.fillRect(barX, centerY - barHeight / 2, filled, barHeight, true);
+  }
+}
+
 void StatsDashboardActivity::drawWeek(const Widget& widget, const int x, const int y, const int w, const int h) const {
   if (w <= 24 || h <= 52) return;
-  renderer.drawRect(x, y, w, h, true);
-  const std::string label = renderer.truncatedText(UI_10_FONT_ID, widget.label.c_str(), w - 16);
-  renderer.drawText(UI_10_FONT_ID, x + (w - renderer.getTextWidth(UI_10_FONT_ID, label.c_str())) / 2, y + 7,
-                    label.c_str());
+  drawCardBorder(widget, x, y, w, h);
+  const std::string label = renderer.truncatedText(kStatsFont, widget.label.c_str(), w - 16);
+  renderer.drawText(kStatsFont, x + (w - renderer.getTextWidth(kStatsFont, label.c_str())) / 2, y + 7, label.c_str());
   const auto& stats = statsFor(widget);
-  const int chartTop = y + renderer.getLineHeight(UI_10_FONT_ID) + 17;
-  const int baseline = y + h - renderer.getLineHeight(UI_10_FONT_ID) - 12;
+  const int chartTop = y + renderer.getLineHeight(kStatsFont) + 17;
+  const int baseline = y + h - renderer.getLineHeight(kStatsFont) - 12;
   const int chartHeight = std::max(0, baseline - chartTop);
   const int slotWidth = (w - 20) / 7;
   const int barWidth = std::max(3, slotWidth / 2);
@@ -896,60 +1035,158 @@ void StatsDashboardActivity::drawWeek(const Widget& widget, const int x, const i
     }
     if (day) {
       const char* name = days[(day + 3) % 7];  // Local-day ordinal: 1970-01-01 is Thursday.
-      renderer.drawText(UI_10_FONT_ID, centerX - renderer.getTextWidth(UI_10_FONT_ID, name) / 2, baseline + 5, name);
+      renderer.drawText(kStatsFont, centerX - renderer.getTextWidth(kStatsFont, name) / 2, baseline + 5, name);
     }
   }
 }
 
-void StatsDashboardActivity::drawHeatmap(const Widget& widget, const int x, const int y, const int w,
-                                         const int h) const {
-  if (w <= 24 || h <= 90) return;
-  renderer.drawRect(x, y, w, h, true);
-  const std::string label = renderer.truncatedText(UI_10_FONT_ID, widget.label.c_str(), w - 16);
-  renderer.drawText(UI_10_FONT_ID, x + (w - renderer.getTextWidth(UI_10_FONT_ID, label.c_str())) / 2, y + 7,
-                    label.c_str());
-  const auto& stats = statsFor(widget);
-  constexpr int gap = 4;
-  const int legendHeight = renderer.getLineHeight(UI_10_FONT_ID);
-  const int gridTop = y + renderer.getLineHeight(UI_10_FONT_ID) + 29;
-  const int cellW = std::max(5, std::min(42, (w - 24 - gap * 6) / 7));
-  const int cellH = std::max(5, std::min(cellW, (y + h - gridTop - legendHeight - 15 - gap * 3) / 4));
-  const int gridWidth = cellW * 7 + gap * 6;
-  const int gridX = x + (w - gridWidth) / 2;
-  constexpr const char* days[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
-  const uint32_t firstDay = dashboardcalendar::fourWeekMonday(stats.latestDay);
+void StatsDashboardActivity::drawMonthCalendar(const Widget& widget, const int x, const int y, const int w,
+                                               const int h) const {
+  if (w < 180 || h < 190) return;
+  drawCardBorder(widget, x, y, w, h);
+  const CalendarContext calendar = currentCalendar(statsFor(widget));
+  if (!calendar.summary.valid()) {
+    renderer.drawText(kStatsFont, x + 12, y + 20, "Set device date to see calendar");
+    return;
+  }
+  constexpr const char* months[] = {"January", "February", "March",     "April",   "May",      "June",
+                                    "July",    "August",   "September", "October", "November", "December"};
+  constexpr const char* weekdays[] = {"Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"};
+  constexpr const char* legend[] = {"None", "<15m", "15-44m", "45m+"};
+  char heading[32];
+  snprintf(heading, sizeof(heading), "%s %d", months[calendar.month - 1], calendar.year);
+  const int fontH = renderer.getLineHeight(kStatsFont);
+  const int headingY = y + 6;
+  const int headingW = renderer.getTextWidth(kStatsFont, heading, EpdFontFamily::BOLD);
+  renderer.drawText(kStatsFont, x + (w - headingW) / 2, headingY, heading, true, EpdFontFamily::BOLD);
+  const int dividerY = headingY + fontH + 3;
+  renderer.drawLine(x + 10, dividerY, x + w - 10, dividerY);
+
+  const int headerY = dividerY + 5;
+  const int gridTop = headerY + fontH + 2;
+  const int legendY = y + h - fontH - 6;
+  constexpr int gap = 3;
+  const int cellW = (w - 24 - 6 * gap) / 7;
+  const int spaceH = legendY - gridTop - 4 - (calendar.summary.rows - 1) * gap;
+  const int cellH = std::min(cellW, spaceH / calendar.summary.rows);
+  if (cellW < 21 || cellH < fontH) return;
+
+  const int gridW = cellW * 7 + 6 * gap;
+  const int gridX = x + (w - gridW) / 2;
   for (int col = 0; col < 7; ++col) {
-    // Always display Monday-through-Sunday headers, even without dated sessions.
-    const char* labelDay = days[col];
-    const int cellX = gridX + col * (cellW + gap);
-    renderer.drawText(UI_10_FONT_ID, cellX + (cellW - renderer.getTextWidth(UI_10_FONT_ID, labelDay)) / 2,
-                      gridTop - legendHeight - 3, labelDay);
+    const int cx = gridX + col * (cellW + gap) + cellW / 2;
+    renderer.drawText(kStatsFont, cx - renderer.getTextWidth(kStatsFont, weekdays[col]) / 2, headerY, weekdays[col]);
   }
-  for (int day = 0; day < 28; ++day) {
-    const int col = day % 7;
-    const int row = day / 7;
-    const int cellX = gridX + col * (cellW + gap);
-    const int cellY = gridTop + row * (cellH + gap);
-    const uint32_t seconds = (firstDay && firstDay + static_cast<uint32_t>(day) <= stats.latestDay)
-                                 ? stats.secondsOnDay(firstDay + static_cast<uint32_t>(day))
-                                 : 0;
-    renderer.drawRect(cellX, cellY, cellW, cellH, true);
-    const int innerWidth = std::max(1, cellW - 4);
-    if (seconds >= 2700)
-      renderer.fillRect(cellX + 2, cellY + 2, innerWidth, std::max(1, cellH - 4), true);
-    else if (seconds >= 900)
-      renderer.fillRect(cellX + 2, cellY + 2, std::max(1, innerWidth / 2), std::max(1, cellH - 4), true);
-    else if (seconds > 0)
-      renderer.fillRect(cellX + 2, cellY + 2, std::max(1, innerWidth / 3), std::max(1, cellH - 4), true);
+  const auto& month = calendar.summary;
+  for (int date = 1; date <= month.days; ++date) {
+    const int index = month.offset + date - 1;
+    const int boxX = gridX + (index % 7) * (cellW + gap);
+    const int boxY = gridTop + (index / 7) * (cellH + gap);
+    const uint32_t seconds = date <= month.elapsedDays ? statsFor(widget).secondsOnDay(month.firstDay + date - 1) : 0;
+    const uint8_t shade = dashboardcalendar::intensity(seconds);
+    if (shade != 0) renderer.fillRectDither(boxX + 2, boxY + 2, cellW - 4, cellH - 4, calendarColor(shade));
+    renderer.drawRect(boxX, boxY, cellW, cellH, date == month.elapsedDays ? 2 : 1, true);
+    char day[4];
+    snprintf(day, sizeof(day), "%d", date);
+    renderer.drawText(kStatsFont, boxX + (cellW - renderer.getTextWidth(kStatsFont, day)) / 2,
+                      boxY + (cellH - fontH) / 2, day, shade < 2);
   }
-  renderer.drawText(UI_10_FONT_ID, gridX, gridTop + 4 * cellH + 3 * gap + 6, "Less shading = less reading");
+
+  const int groupW = (w - 20) / 4;
+  for (int i = 0; i < 4; ++i) {
+    const int legendX = x + 10 + groupW * i;
+    const int boxY = legendY + (fontH - 13) / 2;
+    if (i != 0) renderer.fillRectDither(legendX, boxY, 13, 13, calendarColor(i));
+    renderer.drawRect(legendX, boxY, 13, 13);
+    renderer.drawText(kStatsFont, legendX + 17, legendY, legend[i]);
+  }
+}
+
+void StatsDashboardActivity::drawMonthInsights(const Widget& widget, const int x, const int y, const int w,
+                                               const int h) const {
+  if (w < 180 || h < 120) return;
+  const CalendarContext calendar = currentCalendar(statsFor(widget));
+  const auto& month = calendar.summary;
+  const int gap = kGap;
+  const int halfW = (w - gap) / 2;
+  const int labelH = renderer.getLineHeight(kStatsFont);
+  const int valueH = renderer.getLineHeight(NOTOSANS_14_FONT_ID);
+  const int fullBlockH = labelH * 2 + valueH + 8;
+  const int minBottomH = labelH * 2 + 30;
+  const int topH = std::min(fullBlockH + 12, std::max(72, h - minBottomH - gap));
+  const int bottomY = y + topH + gap;
+  const int bottomH = h - topH - gap;
+  const bool fullLabels = topH >= fullBlockH + 10;
+  const int blockH = fullLabels ? fullBlockH : labelH + valueH + 4;
+  const int cardY = y + std::max(4, (topH - blockH) / 2);
+  const int valueY = cardY + labelH + 4;
+
+  const auto centered = [&](const int font, const std::string& value, const int left, const int top, const int width,
+                            const EpdFontFamily::Style style) {
+    const std::string fitted = renderer.truncatedText(font, value.c_str(), width - 12, style);
+    renderer.drawText(font, left + (width - renderer.getTextWidth(font, fitted.c_str(), style)) / 2, top,
+                      fitted.c_str(), true, style);
+  };
+  constexpr const char* months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+  char bestDate[24];
+  if (month.bestDay != 0)
+    snprintf(bestDate, sizeof(bestDate), "%s %u", months[calendar.month - 1], static_cast<unsigned>(month.bestDay));
+  else
+    snprintf(bestDate, sizeof(bestDate), "No reading yet");
+
+  drawCardBorder(widget, x, y, halfW, topH);
+  const int rightX = x + halfW + gap;
+  const int rightW = w - halfW - gap;
+  drawCardBorder(widget, rightX, y, rightW, topH);
+  centered(kStatsFont, "Best Day", x, cardY, halfW, EpdFontFamily::BOLD);
+  centered(kStatsFont, "Daily Average", rightX, cardY, rightW, EpdFontFamily::BOLD);
+
+  if (fullLabels) {
+    centered(NOTOSANS_14_FONT_ID, month.bestDay ? duration(month.bestSeconds) : "--", x, valueY, halfW,
+             EpdFontFamily::BOLD);
+    centered(kStatsFont, month.valid() ? bestDate : "--", x, valueY + valueH + 4, halfW, EpdFontFamily::REGULAR);
+    centered(NOTOSANS_14_FONT_ID, month.activeDays ? duration(month.averageSeconds()) : "--", rightX, valueY, rightW,
+             EpdFontFamily::BOLD);
+    centered(kStatsFont, "Per active day", rightX, valueY + valueH + 4, rightW, EpdFontFamily::REGULAR);
+  } else {
+    // Two lines fit even in the shorter X3 cards; no caption is painted
+    // across the adjacent consistency card.
+    const std::string best = month.bestDay ? std::string(bestDate) + " - " + duration(month.bestSeconds) : "--";
+    const int bestFont = renderer.getTextWidth(NOTOSANS_14_FONT_ID, best.c_str(), EpdFontFamily::BOLD) <= halfW - 12
+                             ? NOTOSANS_14_FONT_ID
+                             : kStatsFont;
+    centered(bestFont, best, x, valueY, halfW, EpdFontFamily::BOLD);
+    const std::string average = month.activeDays ? duration(month.averageSeconds()) + " / read day" : "--";
+    centered(kStatsFont, average, rightX, valueY, rightW, EpdFontFamily::BOLD);
+  }
+
+  if (bottomH < 65) return;
+  drawCardBorder(widget, x, bottomY, w, bottomH);
+  const int contentH = labelH * 2 + 17;
+  const int contentY = bottomY + std::max(3, (bottomH - contentH) / 2);
+  renderer.drawText(kStatsFont, x + 13, contentY, "Reading Consistency", true, EpdFontFamily::BOLD);
+  const std::string percent = month.valid() ? std::to_string(month.consistencyPercent()) + "%" : "--";
+  renderer.drawText(NOTOSANS_14_FONT_ID,
+                    x + w - 13 - renderer.getTextWidth(NOTOSANS_14_FONT_ID, percent.c_str(), EpdFontFamily::BOLD),
+                    contentY - 2, percent.c_str(), true, EpdFontFamily::BOLD);
+  const int barX = x + 13, barW = w - 26, barY = contentY + labelH + 4;
+  renderer.drawRect(barX, barY, barW, 10);
+  const int filled = month.valid() ? (barW - 4) * month.consistencyPercent() / 100 : 0;
+  if (filled > 0) renderer.fillRect(barX + 2, barY + 2, filled, 6, true);
+  char note[48];
+  if (month.valid())
+    snprintf(note, sizeof(note), "%u of %u days read", static_cast<unsigned>(month.activeDays),
+             static_cast<unsigned>(month.elapsedDays));
+  else
+    snprintf(note, sizeof(note), "Set device date");
+  centered(kStatsFont, note, x, barY + 13, w, EpdFontFamily::REGULAR);
 }
 
 void StatsDashboardActivity::drawLegacyImport(const int x, const int y, const int w, const int h) const {
   if (h <= 0) return;
   renderer.drawRect(x, y, w, h, true);
   constexpr int inset = 9;
-  const int step = renderer.getLineHeight(UI_12_FONT_ID) + 3;
+  const int step = renderer.getLineHeight(kStatsFont) + 3;
   const int rowHeight = std::max(54, (h - 3 * inset - 2 * step - 12) / 2);
   auto source = [&](int top, const char* name, const char* filename, const readingstats::legacy::Preview& preview,
                     bool showTurns) {
@@ -958,8 +1195,8 @@ void StatsDashboardActivity::drawLegacyImport(const int x, const int y, const in
     auto textLine = [&](const char* text, bool bold = false) {
       if (line + step > top + rowHeight - 2) return;
       const auto style = bold ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
-      const std::string fitted = renderer.truncatedText(UI_12_FONT_ID, text, w - 4 * inset, style);
-      renderer.drawText(UI_12_FONT_ID, x + inset * 2, line, fitted.c_str(), true, style);
+      const std::string fitted = renderer.truncatedText(kStatsFont, text, w - 4 * inset, style);
+      renderer.drawText(kStatsFont, x + inset * 2, line, fitted.c_str(), true, style);
       line += step;
     };
     textLine(name, true);
@@ -988,15 +1225,15 @@ void StatsDashboardActivity::drawLegacyImport(const int x, const int y, const in
   source(y + 2 * inset + rowHeight, "vCodex", "reading_stats.json", vCodexPreview, false);
   const int footer = y + 3 * inset + 2 * rowHeight;
   if (footer + 2 * step < y + h) {
-    renderer.drawText(UI_10_FONT_ID, x + inset, footer, "Preview only; sources are unchanged.");
-    renderer.drawText(UI_10_FONT_ID, x + inset, footer + step, "Select to review / import history.");
+    renderer.drawText(kStatsFont, x + inset, footer, "Preview only; sources are unchanged.");
+    renderer.drawText(kStatsFont, x + inset, footer + step, "Select to review / import history.");
   }
 }
 
 void StatsDashboardActivity::drawBookList(int top, int bottom) const {
   const int width = renderer.getScreenWidth();
   if (!recordedBookCount) {
-    renderer.drawText(UI_12_FONT_ID, kMargin, top + 20, "No recorded books yet");
+    renderer.drawText(kStatsFont, kMargin, top + 20, "No recorded books yet");
     return;
   }
   for (uint8_t i = 0; i < visibleCount; ++i) {
@@ -1019,27 +1256,27 @@ void StatsDashboardActivity::drawBookList(int top, int bottom) const {
     const int textW = std::max(20, w - 77);
     const char* name = row.entry.title[0] ? row.entry.title : "Unnamed Book";
     int cursor = y + 7;
-    for (const auto& line : renderer.wrappedText(UI_12_FONT_ID, name, textW, 2, EpdFontFamily::BOLD)) {
-      if (cursor + renderer.getLineHeight(UI_12_FONT_ID) > y + h - 31) break;
-      renderer.drawText(UI_12_FONT_ID, textX, cursor, line.c_str(), true, EpdFontFamily::BOLD);
-      cursor += renderer.getLineHeight(UI_12_FONT_ID);
+    for (const auto& line : renderer.wrappedText(kStatsFont, name, textW, 2, EpdFontFamily::BOLD)) {
+      if (cursor + renderer.getLineHeight(kStatsFont) > y + h - 31) break;
+      renderer.drawText(kStatsFont, textX, cursor, line.c_str(), true, EpdFontFamily::BOLD);
+      cursor += renderer.getLineHeight(kStatsFont);
     }
-    if (row.displayAuthor[0] && cursor + renderer.getLineHeight(UI_10_FONT_ID) <= y + h - 19)
-      renderer.drawText(UI_10_FONT_ID, textX, cursor,
-                        renderer.truncatedText(UI_10_FONT_ID, row.displayAuthor, textW).c_str());
+    if (row.displayAuthor[0] && cursor + renderer.getLineHeight(kStatsFont) <= y + h - 19)
+      renderer.drawText(kStatsFont, textX, cursor,
+                        renderer.truncatedText(kStatsFont, row.displayAuthor, textW).c_str());
     const std::string details =
         duration(row.seconds) + " read  |  " + (row.progress >= 0 ? std::to_string(row.progress) + "%" : "--");
-    renderer.drawText(UI_12_FONT_ID, textX, y + h - renderer.getLineHeight(UI_12_FONT_ID) - 6,
-                      renderer.truncatedText(UI_12_FONT_ID, details.c_str(), textW).c_str());
+    renderer.drawText(kStatsFont, textX, y + h - renderer.getLineHeight(kStatsFont) - 6,
+                      renderer.truncatedText(kStatsFont, details.c_str(), textW).c_str());
   }
   char count[56];
   snprintf(count, sizeof(count), "%lu-%lu of %lu books", static_cast<unsigned long>(visibleStart + 1),
            static_cast<unsigned long>(visibleStart + visibleCount), static_cast<unsigned long>(recordedBookCount));
   const int footer = top + visibleCount * kBookRowStep + 3;
-  const int noteHeight = renderer.getLineHeight(UI_10_FONT_ID);
-  if (footer + noteHeight < bottom) renderer.drawText(UI_10_FONT_ID, kMargin, footer, count);
+  const int noteHeight = renderer.getLineHeight(kStatsFont);
+  if (footer + noteHeight < bottom) renderer.drawText(kStatsFont, kMargin, footer, count);
   if (footer + noteHeight * 2 + 4 < bottom)
-    renderer.drawText(UI_10_FONT_ID, kMargin, footer + noteHeight + 4, "Hold Open to remove selected book history");
+    renderer.drawText(kStatsFont, kMargin, footer + noteHeight + 4, "Hold Open to remove selected book history");
 }
 
 void StatsDashboardActivity::cyclePluginCard(const int direction) {
@@ -1054,22 +1291,22 @@ void StatsDashboardActivity::drawPluginCard(const Widget& widget, const int x, c
   const auto& item = carouselCards[carouselPager.current()];
   drawCardBorder(widget, x, y, w, h);
   const int left = x + 17, maxText = std::max(10, w - 34);
-  renderer.drawText(UI_12_FONT_ID, left, y + 20,
-                    renderer.truncatedText(UI_12_FONT_ID, item.title.c_str(), maxText, EpdFontFamily::BOLD).c_str(),
-                    true, EpdFontFamily::BOLD);
+  renderer.drawText(kStatsFont, left, y + 20,
+                    renderer.truncatedText(kStatsFont, item.title.c_str(), maxText, EpdFontFamily::BOLD).c_str(), true,
+                    EpdFontFamily::BOLD);
   if (!item.subtitle.empty())
-    renderer.drawText(UI_10_FONT_ID, left, y + 54,
-                      renderer.truncatedText(UI_10_FONT_ID, item.subtitle.c_str(), maxText).c_str(), true);
+    renderer.drawText(kStatsFont, left, y + 54,
+                      renderer.truncatedText(kStatsFont, item.subtitle.c_str(), maxText).c_str(), true);
   if (!item.value.empty())
-    renderer.drawText(UI_10_FONT_ID, left, y + 88,
-                      renderer.truncatedText(UI_10_FONT_ID, item.value.c_str(), maxText).c_str(), true);
+    renderer.drawText(kStatsFont, left, y + 88, renderer.truncatedText(kStatsFont, item.value.c_str(), maxText).c_str(),
+                      true);
   if (item.progress >= 0) {
     const int barW = std::max(20, w - 104), barY = y + h - 38;
     renderer.drawRect(left, barY, barW, 12, true);
     if (item.progress > 0) renderer.fillRect(left + 2, barY + 2, (barW - 4) * item.progress / 100, 8, true);
     char percent[8];
     snprintf(percent, sizeof(percent), "%d%%", item.progress);
-    renderer.drawText(UI_10_FONT_ID, left + barW + 8, barY - 4, percent);
+    renderer.drawText(kStatsFont, left + barW + 8, barY - 4, percent);
   }
   if (carouselPager.canCycle()) {
     // Thick focus rails frame ONE complete card; never partial neighbors.
@@ -1078,7 +1315,7 @@ void StatsDashboardActivity::drawPluginCard(const Widget& widget, const int x, c
     char count[24];
     snprintf(count, sizeof(count), "%u / %u", static_cast<unsigned>(carouselPager.current() + 1),
              static_cast<unsigned>(carouselPager.size));
-    renderer.drawText(UI_10_FONT_ID, x + w - 76, y + h - 25, count);
+    renderer.drawText(kStatsFont, x + w - 76, y + h - 25, count);
   }
 }
 
@@ -1094,8 +1331,12 @@ void StatsDashboardActivity::drawWidget(const Widget& widget, const int x, const
     drawPluginCard(widget, x, y, w, height);
   else if (widget.type == "week_bars")
     drawWeek(widget, x, y, w, height);
-  else if (widget.type == "heatmap_28")
-    drawHeatmap(widget, x, y, w, height);
+  else if (widget.type == "time_of_day")
+    drawTimeOfDay(widget, x, y, w, height);
+  else if (widget.type == "month_calendar")
+    drawMonthCalendar(widget, x, y, w, height);
+  else if (widget.type == "month_insights")
+    drawMonthInsights(widget, x, y, w, height);
   else if (widget.type == "legacy_import")
     drawLegacyImport(x, y, w, height);
 }
@@ -1107,18 +1348,23 @@ void StatsDashboardActivity::drawDashboardPage(bool interactive) {
   // Sleep is a noninteractive wallpaper: no navigation header, Back control,
   // or bottom button-hint bar. Use their space for the actual statistics.
   const int bottom = renderer.getScreenHeight() - (interactive ? metrics.buttonHintsHeight : 0) - 6;
-  if (interactive) GUI.drawHeader(renderer, Rect{0, metrics.topPadding, width, metrics.headerHeight}, title.c_str());
   if (!pageCount) return;
   const Page& page = pages[activePage];
-  // Keep the centered page title in both modes; sleep moves it up into the
-  // header-free area, while the interactive plugin keeps its normal chrome.
-  const int titleY = metrics.topPadding + (interactive ? metrics.headerHeight : 0) + 7;
-  const std::string pageTitle =
-      renderer.truncatedText(UI_12_FONT_ID, page.title.c_str(), width - kMargin * 2, EpdFontFamily::BOLD);
-  renderer.drawText(UI_12_FONT_ID,
-                    (width - renderer.getTextWidth(UI_12_FONT_ID, pageTitle.c_str(), EpdFontFamily::BOLD)) / 2, titleY,
-                    pageTitle.c_str(), true, EpdFontFamily::BOLD);
-  int y = titleY + renderer.getLineHeight(UI_12_FONT_ID) + 9;
+  // The interactive page title belongs to the native header; the normal
+  // theme still paints its emblem/Back target and the clock/battery strip.
+  // Sleep has no header, so retain its centered title above the widgets.
+  int y = metrics.topPadding + (interactive ? metrics.headerHeight : 0) + 7;
+  if (interactive) {
+    GUI.drawHeader(renderer, Rect{0, metrics.topPadding, width, metrics.headerHeight}, page.title.c_str(), nullptr,
+                   true, kStatsFont);
+  } else {
+    const std::string pageTitle =
+        renderer.truncatedText(kStatsFont, page.title.c_str(), width - kMargin * 2, EpdFontFamily::BOLD);
+    renderer.drawText(kStatsFont,
+                      (width - renderer.getTextWidth(kStatsFont, pageTitle.c_str(), EpdFontFamily::BOLD)) / 2, y,
+                      pageTitle.c_str(), true, EpdFontFamily::BOLD);
+    y += renderer.getLineHeight(kStatsFont) + 9;
+  }
   if (booksPage()) {
     drawBookList(y, bottom);
     // Front Previous/Next move the selected book; side Up/Down switch pages.
@@ -1135,9 +1381,11 @@ void StatsDashboardActivity::drawDashboardPage(bool interactive) {
   for (uint8_t i = 0; i < page.count; ++i)
     if (page.widgets[i].type == "hero" || page.widgets[i].type == "reading_snapshot") hasFeaturedCard = true;
   if (isBookMetrics && !hasFeaturedCard) y = drawBookIdentity(y, width);
-  if (!statsAvailable && !isBookMetrics && !importPage() && !genericCardDashboard) {
-    renderer.drawText(UI_10_FONT_ID, kMargin, y, "No saved reading sessions");
-    y += renderer.getLineHeight(UI_10_FONT_ID) + 5;
+  const bool monthPage =
+      page.count == 2 && page.widgets[0].type == "month_calendar" && page.widgets[1].type == "month_insights";
+  if (!statsAvailable && !isBookMetrics && !importPage() && !genericCardDashboard && !monthPage) {
+    renderer.drawText(kStatsFont, kMargin, y, "No saved reading sessions");
+    y += renderer.getLineHeight(kStatsFont) + 5;
   }
   int widgetRows = 0;
   for (int i = 0; i < page.count; ++i) {
@@ -1156,6 +1404,7 @@ void StatsDashboardActivity::drawDashboardPage(bool interactive) {
   const bool chartAndMetric = page.count == 2 && page.widgets[0].type != "metric" && page.widgets[1].type == "metric";
   const int contentWidth = width - kMargin * 2;
   const int halfWidth = (contentWidth - kGap) / 2;
+  const int monthHeight = monthPage ? std::max(0, std::min({available * 59 / 100, available - 160 - kGap, 360})) : 0;
   for (int i = 0; i < page.count && y < bottom; ++i) {
     const auto& widget = page.widgets[i];
     if (widget.type == "metric") {
@@ -1168,7 +1417,9 @@ void StatsDashboardActivity::drawDashboardPage(bool interactive) {
       }
       y += h + kGap;
     } else {
-      const int desired = widget.type == "card_carousel"                               ? 195
+      const int desired = widget.type == "month_calendar"                              ? monthHeight
+                          : widget.type == "month_insights"                            ? bottom - y
+                          : widget.type == "card_carousel"                             ? 195
                           : widget.type == "hero" || widget.type == "reading_snapshot" ? featuredHeight
                           : chartAndMetric                 ? std::min(260, std::max(0, available - 150 - kGap))
                           : widget.type == "legacy_import" ? 390

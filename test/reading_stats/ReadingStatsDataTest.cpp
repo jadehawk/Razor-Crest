@@ -66,4 +66,54 @@ int main() {
   assert(current.totalSeconds() == 90);  // Restart/replay cannot double-count.
   txn.turns++;
   assert(!txn.valid());
+
+  // Old journal files do not encode an hour and must keep their day ordinal.
+  readingstats::Pending oldTxn{};
+  oldTxn.day = 20005;
+  assert(oldTxn.localDay() == 20005);
+  assert(oldTxn.dayPeriod() == -1);
+  assert(readingstats::periodForHour(0) == 3);
+  assert(readingstats::periodForHour(5) == 3);
+  assert(readingstats::periodForHour(6) == 0);
+  assert(readingstats::periodForHour(11) == 0);
+  assert(readingstats::periodForHour(12) == 1);
+  assert(readingstats::periodForHour(16) == 1);
+  assert(readingstats::periodForHour(17) == 2);
+  assert(readingstats::periodForHour(20) == 2);
+  assert(readingstats::periodForHour(21) == 3);
+  oldTxn.day = readingstats::packDayPeriod(20005, 2);
+  assert(oldTxn.localDay() == 20005);
+  assert(oldTxn.dayPeriod() == 2);
+  assert(readingstats::packDayPeriod(0, 1) == 0);
+  assert(readingstats::packDayPeriod(20005, 4) == 20005);
+
+  readingstats::TimeBuckets hours{};
+  assert(!hours.valid());
+  hours.addSession(60, 20000, 0);  // Morning, old day.
+  hours.addSession(90, 20000, 3);  // Night, same day.
+  hours.addSession(30, 20001, 1);
+  assert(hours.total[0] == 60);
+  assert(hours.total[1] == 30);
+  assert(hours.total[3] == 90);
+  assert(hours.secondsInLastDays(20001, 0) == 60);
+  assert(hours.secondsInLastDays(20001, 3) == 90);
+  assert(hours.secondsInLastDays(20001, 1) == 30);
+  assert(hours.secondsInLastDays(20001, 2) == 0);
+  assert(hours.secondsInLastDays(20002, 0, 1) == 0);
+  hours.addSession(120, 20007, 2);  // Expire day 20000 on rollover.
+  assert(hours.secondsInLastDays(20007, 0) == 0);
+  assert(hours.secondsInLastDays(20007, 2) == 120);
+  assert(hours.total[0] == 60);    // Lifetime totals survive the rollover.
+  hours.addSession(50, 20000, 1);  // Expired day does not re-enter the week.
+  assert(hours.total[1] == 80);
+  assert(hours.secondsInLastDays(20007, 1) == 30);
+  hours.addSession(100, 0, 0);  // Unknown clock must not invent a period.
+  assert(hours.total[0] == 60);
+  hours.total[3] = UINT32_MAX - 10;
+  hours.addSession(20, 20008, 3);
+  assert(hours.total[3] == UINT32_MAX);
+  hours.seal();
+  assert(hours.valid());
+  hours.recent[20008 % readingstats::kTimeHistoryDays][3]++;
+  assert(!hours.valid());
 }

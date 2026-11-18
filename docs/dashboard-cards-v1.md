@@ -27,8 +27,22 @@ backward-compatibility branches for development builds.
   with title, author and series/index aligned at right. The progress bar and
   vertically centered percentage appear below the cover/text columns. When
   there is no active reader path, use the most recently opened book if known.
-- `week_bars`: latest seven recorded day buckets.
-- `heatmap_28`: four complete Monday–Sunday rows of activity.
+- `week_bars`: latest seven recorded day buckets, with configurable border.
+- `time_of_day`: four local session-start time buckets (Morning 06:00-11:59,
+  Afternoon 12:00-16:59, Evening 17:00-20:59, Night 21:00-05:59). By default,
+  show all recorded timed sessions; `"period": "week"` shows the latest seven
+  recorded reading days, matching the seven-day bar chart. `"scope": "current-book"` uses the selected book.
+  Timed data starts accumulating only after this firmware change; earlier and
+  imported sessions are preserved without inferred time-of-day details.
+- `month_calendar`: current device-local month, Monday-first numbered dates with
+  4 Bayer-dither shading levels (none, <15m, 15–44m, 45m+) and a thicker outline
+  for today. Weeks expand to four, five, or six rows as needed; future dates
+  remain unshaded. Uses only the existing daily reading-seconds history.
+- `month_insights`: Best Day (duration and date), Daily Average (per active day),
+  and Reading Consistency (active days divided by elapsed days, rounded percent).
+  If the local date is not trustworthy, calendar and insights show no fabricated
+  readings. These two widgets share a full-height, responsive Reading Calendar
+  page with rounded borders.
 - `book_list`: directly renders a compact, vertically paginated list of
   book-cover thumbnails alongside title, author, recorded reading time and
   percentage completed. Select/tap opens the same Current Book detail view.
@@ -72,6 +86,15 @@ and unknown progress appears as `--`.
 
 Widget fields `label`, `field`, `scope`, `show_value`, `icon`,
 `icon_size`, `border`, and `corner_radius` configure the host renderer.
+`"compact": true` on a metric places its icon at left and separates it from
+stacked label/value with a vertical rule. The snapshot also separates its
+three summary columns. The dashboard body uses the firmware's built-in
+Noto Sans 12 for headings and labels, and Noto Sans 14/18 for large figures;
+SD theme fonts remain active for the normal navigation chrome but do not alter
+statistics typography. Compact labels use one line when they fit, or wrap to
+two lines while numeric values stay aligned across a row.
+`time_of_day` accepts `"period": "all"` (default) or
+`"period": "week"`; rounded chart borders are available for `week_bars`.
 Valid borders are `square`, `rounded`, `chamfered`, and radius is 0–16.
 The `icon` name must match `[a-z0-9_-]{1,32}` and is loaded from the
 plugin's `icons/<name>.pbm`. New icons must be binary PBM P4 at 80 × 80,
@@ -88,8 +111,10 @@ same first page before returning to deep sleep, even if statistics did not
 change. This is a live scheduled display source, not a static bitmap pool.
 
 Neither the cover renderer nor the progress provider requires a network
-connection. Each page now shows one centered page title beneath the persistent
-Reading Statistics header, with no numeric `(n/6)` counter. Page one is
+connection. The interactive header shows the current page title in built-in Noto Sans,
+using the existing theme emblem/Back target and clock/battery status chrome.
+There is no duplicate title row or numeric `(n/6)` counter. The headerless
+sleep-screen overview retains a centered title above its statistics. Page one is
 Overall Statistics (global totals); page two is Current Book (book totals).
 The book hero card has no redundant heading; the new Reading Snapshot is
 a separate type with its own monthly label. Small-device geometry and controls
