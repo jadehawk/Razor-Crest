@@ -40,7 +40,6 @@ struct CrossPointSettings {
   enum class SHORT_PWRBTN { IGNORE, SLEEP };
   SHORT_PWRBTN shortPwrBtn = SHORT_PWRBTN::IGNORE;
 } SETTINGS;
-static bool wakePowerReleasePending = false;
 struct {
   void deepSleep() { inject(Phase::DisplaySleep); }
   void setInverted(bool) {}
@@ -90,7 +89,8 @@ static bool runTimer() {
   return false;
 }
 
-[[maybe_unused]] static bool runPowerResume(HalGPIO::PowerWakeRequest request, bool wakeHoldVerified) {
+[[maybe_unused]] static bool runPowerResume(HalGPIO::PowerWakeRequest request, bool wakeHoldVerified,
+                                             bool eegoWakeHeld = true) {
   [[maybe_unused]] const auto resumedTimerPower = request;
   try {
     switch (HalGPIO::WakeupReason::PowerButton) {
@@ -101,7 +101,8 @@ static bool runTimer() {
   } catch (const Slept&) {
     return false;
   }
-  return wakePowerReleasePending;
+  // Returning from the production PowerButton case without sleeping resumes boot.
+  return true;
 }
 
 static void reset(Phase at = Phase::None) {
@@ -112,7 +113,6 @@ static void reset(Phase at = Phase::None) {
   timerPowerCaptureReady = true;
   isSilentReboot = rebootedFromPanic = false;
   clockMs = 0;
-  wakePowerReleasePending = false;
   SETTINGS.shortPwrBtn = CrossPointSettings::SHORT_PWRBTN::IGNORE;
 }
 
@@ -156,6 +156,14 @@ int main(int argc, char**) {
   assert(runPowerResume(HalGPIO::PowerWakeRequest::Pressed, false) && sleeps == 0);
   reset();
   assert(!runPowerResume(HalGPIO::PowerWakeRequest::None, false) && sleptInterval == 0);
+  reset();
+  assert(runPowerResume(HalGPIO::PowerWakeRequest::Verified, true, true) && sleeps == 0);
+  reset();
+  assert(!runPowerResume(HalGPIO::PowerWakeRequest::Verified, true, false) && sleeps == 1 &&
+         sleptInterval == 0);
+  reset();
+  SETTINGS.shortPwrBtn = CrossPointSettings::SHORT_PWRBTN::SLEEP;
+  assert(runPowerResume(HalGPIO::PowerWakeRequest::Verified, true, false) && sleeps == 0);
   for (const uint32_t stamp : {TIMED_POWER_PRESS, TIMED_POWER_VERIFIED, uint32_t{0xffffffff}}) {
     timedPowerWakeStamp = stamp;
     resetReason = 1;

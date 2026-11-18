@@ -1,2 +1,5 @@
 #pragma once
-class InputManager {};
+class InputManager {
+ public:
+  bool isPowerButtonPhysicallyPressed() const { return false; }
+};
