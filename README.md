@@ -25,7 +25,7 @@ Razor-Crest also serves as a place to develop and test ideas. **My hope is that,
 
 ## Screenshots
 
-A look at Razor-Crest's installed plugins, HALO theme, and native Reading Statistics dashboard. **The HALO appearance is based on [IOSDEC's original CrossPoint HALO project](https://github.com/iosdec/crosspoint-halo).** Click any screenshot to open the full-size image.
+A look at Razor-Crest's installed plugins, HALO theme, Paper Guides decorators, and native Reading Statistics dashboard. **The HALO appearance is based on [IOSDEC's original CrossPoint HALO project](https://github.com/iosdec/crosspoint-halo).** Click any screenshot to open the full-size image.
 
 ### Plugins and themes
 
@@ -33,21 +33,34 @@ A look at Razor-Crest's installed plugins, HALO theme, and native Reading Statis
 | :---: | :---: |
 | <a href="docs/images/razor-crest/plugins-page.png"><img src="docs/images/razor-crest/plugins-page.png" alt="Razor-Crest Plugins screen" width="280"></a> | <a href="docs/images/razor-crest/halo-theme.png"><img src="docs/images/razor-crest/halo-theme.png" alt="Razor-Crest HALO theme" width="280"></a> |
 
+### Paper Guides (Decorators)
+
+Ruled Paper and Graph Paper add optional guides behind EPUB text. Adjust the line darkness, thickness, and other style settings from **Settings → Reader → Decorators → Paper Guides**, or directly from the open-book Reader menu. Both photographs show the two styles side by side on actual readers.
+
+| Ruled and Graph Paper while reading | Paper Guides settings |
+| :---: | :---: |
+| <a href="docs/images/razor-crest/decorators-paper-guides-reading.jpg"><img src="docs/images/razor-crest/decorators-paper-guides-reading.jpg" alt="Two e-readers displaying Ruled Paper and Graph Paper behind book text" width="330"></a> | <a href="docs/images/razor-crest/decorators-paper-guides-settings.jpg"><img src="docs/images/razor-crest/decorators-paper-guides-settings.jpg" alt="Two e-readers displaying Ruled Paper and Graph Paper settings" width="330"></a> |
+
 ### Reading Statistics
 
-Six views of the native, on-device statistics dashboard:
+The latest Reading Statistics plugin dashboard, photographed on a device. Select the contact sheet to enlarge it, or open the individual photos below.
 
-| Page 1 | Page 2 | Page 3 |
+<a href="docs/images/razor-crest/reading-statistics-contact-sheet.jpg"><img src="docs/images/razor-crest/reading-statistics-contact-sheet.jpg" alt="Contact sheet of five photographed Reading Statistics screens" width="720"></a>
+
+| Overall Statistics | Current Book | Reading Calendar |
 | :---: | :---: | :---: |
-| <a href="docs/images/razor-crest/reading-stats-01.png"><img src="docs/images/razor-crest/reading-stats-01.png" alt="Reading Statistics page 1" width="205"></a> | <a href="docs/images/razor-crest/reading-stats-02.png"><img src="docs/images/razor-crest/reading-stats-02.png" alt="Reading Statistics page 2" width="205"></a> | <a href="docs/images/razor-crest/reading-stats-03.png"><img src="docs/images/razor-crest/reading-stats-03.png" alt="Reading Statistics page 3" width="205"></a> |
-| **Page 4** | **Page 5** | **Page 6** |
-| <a href="docs/images/razor-crest/reading-stats-04.png"><img src="docs/images/razor-crest/reading-stats-04.png" alt="Reading Statistics page 4" width="205"></a> | <a href="docs/images/razor-crest/reading-stats-05.png"><img src="docs/images/razor-crest/reading-stats-05.png" alt="Reading Statistics page 5" width="205"></a> | <a href="docs/images/razor-crest/reading-stats-06.png"><img src="docs/images/razor-crest/reading-stats-06.png" alt="Reading Statistics page 6" width="205"></a> |
+| <a href="docs/images/razor-crest/01-overall-statistics.jpg"><img src="docs/images/razor-crest/01-overall-statistics.jpg" alt="Overall Statistics photographed on a reader" width="205"></a> | <a href="docs/images/razor-crest/02-current-book.jpg"><img src="docs/images/razor-crest/02-current-book.jpg" alt="Current Book statistics photographed on a reader" width="205"></a> | <a href="docs/images/razor-crest/03-reading-calendar.jpg"><img src="docs/images/razor-crest/03-reading-calendar.jpg" alt="Reading Calendar photographed on a reader" width="205"></a> |
+| **All Books** | **Import Statistics** | |
+| <a href="docs/images/razor-crest/04-all-books.jpg"><img src="docs/images/razor-crest/04-all-books.jpg" alt="All Books statistics photographed on a reader" width="205"></a> | <a href="docs/images/razor-crest/05-import-statistics.jpg"><img src="docs/images/razor-crest/05-import-statistics.jpg" alt="Import Statistics photographed on a reader" width="205"></a> | |
+
+These five photos cover five of the dashboard's six pages; **Your Week** is not photographed in this set.
 
 ## What Razor-Crest Adds to CrossPoint
 
 Razor-Crest retains the original CrossPoint reading experience while introducing additional customization, statistics, and plugin capabilities not currently included in stock CrossPoint firmware.
 
 - **Installable UI Themes** — Customize the reader's interface, including the home screen, headers, settings, artwork, and compatible UI fonts. Install or switch themes without reflashing firmware. Includes support for the [HALO theme](https://github.com/jadehawk/halo.crosspoint-theme), inspired by [IOSDEC's original CrossPoint HALO](https://github.com/iosdec/crosspoint-halo).
+- **Reader Decorators / Paper Guides** — Display optional Ruled Paper or Graph Paper behind EPUB text, with adjustable darkness, line thickness, spacing, and dotted styling. Configure it from Reader settings or the menu inside an open book.
 - **Standalone Wallpaper Packs** — Install and manage complete wallpaper collections directly from Plugin Hub. Select individual collections for the sleep screen, independently of the active UI theme.
 - **Timed Sleep-Screen Refresh** — Automatically rotate wallpapers while the reader is asleep, with configurable intervals ranging from 1 minute to 24 hours. Includes device-specific wake handling and battery-consumption warnings on the X3.
 - **Native Reading Statistics** — Collect persistent reading activity directly on the device, including reading time, sessions, and qualified page turns. Statistics are stored locally on the SD card and do not require Wi-Fi or an external server.
