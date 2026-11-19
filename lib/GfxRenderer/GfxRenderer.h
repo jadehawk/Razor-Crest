@@ -71,7 +71,6 @@ class GfxRenderer {
   // Only theme-owned UI fonts request per-string resident glyphs. The reader
   // continues using its existing page-scan prewarm strategy.
   std::set<int> directSdUiFontIds_;
-  mutable std::map<int, uint16_t> sdCardFontScales_;  // fontId -> 8.8 fixed point scale (256=1.0x)
   // TTF (vector) fonts: rebuilt per page by ensureSdCardFontReady(). Mutable for
   // the same reason as sdCardFonts_ (const layout path triggers a rebuild).
   mutable std::map<int, TtfEpdFont*> ttfFonts_;
@@ -159,7 +158,6 @@ class GfxRenderer {
     fontMap.erase(fontId);
     sdCardFonts_.erase(fontId);
     directSdUiFontIds_.erase(fontId);
-    sdCardFontScales_.erase(fontId);
   }
   void setFontCacheManager(FontCacheManager* m) { fontCacheManager_ = m; }
   FontCacheManager* getFontCacheManager() const { return fontCacheManager_; }
@@ -185,13 +183,6 @@ class GfxRenderer {
   void clearSdCardFonts() {
     sdCardFonts_.clear();
     directSdUiFontIds_.clear();
-    sdCardFontScales_.clear();
-  }
-  void registerSdCardFontScale(int fontId, uint16_t scale) { sdCardFontScales_[fontId] = scale; }
-  void clearSdCardFontScales() { sdCardFontScales_.clear(); }
-  uint16_t getSdCardFontScale(int fontId) const {
-    auto it = sdCardFontScales_.find(fontId);
-    return (it != sdCardFontScales_.end()) ? it->second : 256;
   }
   const std::map<int, SdCardFont*>& getSdCardFonts() const { return sdCardFonts_; }
   bool isSdCardFont(int fontId) const { return sdCardFonts_.count(fontId) > 0; }
