@@ -96,7 +96,7 @@ From there, the capability-aware Community catalog can present compatible extens
 | Extension type | What it does | Examples |
 | --- | --- | --- |
 | **Plugins** | Add on-device catalogs, dashboards, network workflows, or browser-side features without reflashing the firmware. | [Reading Statistics](https://github.com/jadehawk/reading-statistics.crosspoint-plugin), [Wallpapers](https://github.com/jadehawk/wallpapers.crosspoint-plugin), [Send2Ereader](https://github.com/jadehawk/send2ereader.crosspoint-plugin) |
-| **Themes** | Change the appearance of supported firmware screens: layouts, headers, artwork, and compatible UI fonts. | [HALO theme](https://github.com/jadehawk/halo.crosspoint-theme) |
+| **Themes** | Change the appearance of supported firmware screens: layouts, headers, artwork, and compatible UI fonts. | [HALO theme](https://github.com/jadehawk/halo.crosspoint-theme), [Snoopy theme](https://github.com/jadehawk/snoopy.crosspoint-theme) |
 | **Wallpaper packs** | Supply named, device-resolution-compatible BMP collections for Custom sleep screens. These are independent of UI themes. | [Star Wars wallpaper collections](https://github.com/jadehawk/starwars.crosspoint-wallpaper) |
 
 The native installer uses declared package contents and staged updates, with compatibility filtering. Installed extensions can display update status and be managed from the reader. A press-and-hold on a plugin entry offers uninstall with confirmation; active themes must be deselected before removal.
