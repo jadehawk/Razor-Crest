@@ -138,6 +138,21 @@ void testNativeFallbackBookAndSnapshot() {
   view.restoreCoverBuffer = &restore;
   assert(paint(p, d, out, home_widgets::native::hooks(surface)).failedWidgets == 0);
   assert(restoredSnapshots == 1); // Restore AFTER full wallpaper repaint.
+  const int snapshotStoresBeforeSplit = saves;
+
+  // Split-column Book widget: redraw the cover instead of restoring whole
+  // physical bytes that might corrupt a neighboring widget's pixels.
+  view.allowCachedBook = false;
+  rendered = false;
+  stored = false;
+  assert(paint(p, d, out, home_widgets::native::hooks(surface)).failedWidgets == 0);
+  assert(restoredSnapshots == 1);
+  assert(saves == snapshotStoresBeforeSplit); // No new unsafe snapshot.
+  assert(!stored);
+  const int bookCallsBefore = theme.theme.bookCalls;
+  assert(paint(p, d, out, home_widgets::native::hooks(surface)).failedWidgets == 0);
+  assert(theme.theme.bookCalls == bookCallsBefore + 1); // Repaint each time.
+  assert(restoredSnapshots == 1 && saves == snapshotStoresBeforeSplit);
 }
 
 void testMenuOverflowIsClippedToNativeRowHeight() {

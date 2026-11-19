@@ -41,6 +41,7 @@ struct View {
   // Hero+Book rectangle, not relative to the new Book-only widget viewport.
   home_grid::Rect externalBookScene{};
   bool useExternalBookCard = false;
+  bool allowCachedBook = true;  // False for split-row or rotated book widgets.
 
   bool* coverRendered = nullptr;
   bool* coverBufferStored = nullptr;
@@ -81,7 +82,7 @@ inline bool drawNative(void* owner, Kind kind, uint16_t resource, home_grid::Rec
     case Kind::Header:
       view.theme.getTheme().drawHeader(view.renderer, nativeArea, view.headerTitle, nullptr, false);
       return true;
-    case Kind::Book:
+    case Kind::Book: {
       if (view.useExternalBookCard) {
         if (!view.recentBooks || view.externalBookScene.width <= 0 || view.externalBookScene.height <= 0)
           return false;
@@ -96,21 +97,35 @@ inline bool drawNative(void* owner, Kind kind, uint16_t resource, home_grid::Rec
       if (!view.recentBooks || !view.coverRendered || !view.coverBufferStored ||
           !view.bufferRestored || !view.storeCoverBuffer)
         return false;
+      if (!view.allowCachedBook) {
+        // A previously drawn card cannot be treated as a cached cover when
+        // the next grid frame must repaint its own wallpaper and neighbors.
+        *view.coverRendered = false;
+        *view.coverBufferStored = false;
+      }
       // The compositor repaints its wallpaper first. Restore the existing
       // Book-only cached region *inside* this clipped widget, not before
       // painting the whole grid or through a second framebuffer.
-      if (*view.coverRendered && *view.coverBufferStored && view.restoreCoverBuffer) {
+      if (view.allowCachedBook && *view.coverRendered && *view.coverBufferStored &&
+          view.restoreCoverBuffer) {
         *view.bufferRestored = (*view.restoreCoverBuffer)();
         if (!*view.bufferRestored) {
           *view.coverRendered = false;
           *view.coverBufferStored = false;
         }
       }
+      // Also block *new* cached snapshots on split-column/rotated cards.
+      // Otherwise the renderer could mark an uncached cover as cached and skip
+      // drawing it on the next wallpaper repaint.
+      const std::function<bool()> saveIfSafe = [&view] {
+        return view.allowCachedBook && (*view.storeCoverBuffer)();
+      };
       view.theme.getTheme().drawRecentBookCover(view.renderer, nativeArea, *view.recentBooks,
                                                 view.selectorIndex, *view.coverRendered,
                                                 *view.coverBufferStored, *view.bufferRestored,
-                                                *view.storeCoverBuffer);
+                                                saveIfSafe);
       return true;
+    }
     case Kind::Shortcuts: {
       if (view.visibleMenuRows < 0 || !view.menuLabel || !view.menuIcon) return false;
       const int rowHeight = view.theme.getTheme().getMenuRowHeight(view.renderer);

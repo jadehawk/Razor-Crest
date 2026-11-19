@@ -860,7 +860,11 @@ bool HomeActivity::renderGridHome() {
     coverRectW = areas.book.width;
     coverRectH = areas.book.height;
   }
-  if (coverBufferStored && coverBufferInverted != display.isInverted()) {
+  // Region snapshots copy whole physical bytes: split-row or rotated
+  // Book cards could overwrite pixels belonging to neighboring widgets.
+  const bool snapshotAllowed = areas.bookCacheSafe &&
+      renderer.getOrientation() == GfxRenderer::Orientation::Portrait;
+  if (coverBufferStored && (!snapshotAllowed || coverBufferInverted != display.isInverted())) {
     freeCoverBuffer();
     coverRendered = false;
   }
@@ -882,8 +886,12 @@ bool HomeActivity::renderGridHome() {
     const int index = top + row;
     return menuHasResume && index == 0 ? Book : homeButtons[index - (menuHasResume ? 1 : 0)].icon;
   };
-  std::function<bool()> storeSnapshot = [this] { return storeCoverBuffer(); };
-  std::function<bool()> restoreSnapshot = [this] { return restoreCoverBuffer(); };
+  std::function<bool()> storeSnapshot = [this, snapshotAllowed] {
+    return snapshotAllowed && storeCoverBuffer();
+  };
+  std::function<bool()> restoreSnapshot = [this, snapshotAllowed] {
+    return snapshotAllowed && restoreCoverBuffer();
+  };
   bool bufferRestored = false;
 
   home_widgets::firmware::View view{theme, renderer};
@@ -896,6 +904,7 @@ bool HomeActivity::renderGridHome() {
   view.useExternalBookCard = areas.bookWidget >= 0 && scene->hasNativeCoverCard() &&
                              scene->hasRegion(ThemeScene::Region::Home);
   view.externalBookScene = areas.bookScene;
+  view.allowCachedBook = snapshotAllowed;
   view.coverRendered = &coverRendered;
   view.coverBufferStored = &coverBufferStored;
   view.bufferRestored = &bufferRestored;

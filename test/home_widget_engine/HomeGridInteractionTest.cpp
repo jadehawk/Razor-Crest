@@ -35,6 +35,7 @@ void testHaloBookUnderlayAndMenu() {
   assert(areas.bookScene.y == rects.rows[1].y);
   assert(areas.bookScene.height == rects.rows[1].height + rects.rows[2].height);
   assert(areas.book.y == rects.rows[2].y);
+  assert(areas.bookCacheSafe); // Full-row book has no neighboring widget.
   assert(areas.bookScene.y < areas.book.y);
   assert(areas.menu.y == rects.rows[3].y);
   assert(areas.menu.y + areas.menu.height <= rects.canvas.y + rects.canvas.height);
@@ -88,6 +89,7 @@ void testMixedColumnBookAndScrollableShortcuts() {
   assert(areas.bookScene.x == areas.book.x);
   assert(areas.bookScene.width == areas.book.width);
   assert(areas.book.width < rects.rows[1].width);
+  assert(!areas.bookCacheSafe); // Byte-wide snapshot restore could spill into the clock.
   assert(visibleMenuCapacity(areas.menu, 54, 3) >= 1);
 
   plan.widgets[2].kind = Kind::Book;
@@ -96,6 +98,7 @@ void testMixedColumnBookAndScrollableShortcuts() {
   plan.widgets[3].kind = Kind::Empty;
   assert(!locate(plan, rects, areas));
   assert(areas.menuWidget == -1);
+  assert(!areas.bookCacheSafe); // Inactive/incomplete layouts never cache.
 }
 
 void testMinimumOneRowAndBounds() {

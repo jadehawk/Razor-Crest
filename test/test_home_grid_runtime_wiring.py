@@ -53,6 +53,10 @@ assert "home_widgets::paint(" in paint
 assert "home_widgets::firmware::makeSurface(" in paint
 assert "view.externalBookScene = areas.bookScene;" in paint
 assert "view.restoreCoverBuffer = &restoreSnapshot;" in paint
+assert "areas.bookCacheSafe" in paint
+assert "view.allowCachedBook = snapshotAllowed;" in paint
+assert "snapshotAllowed && storeCoverBuffer()" in paint
+assert "snapshotAllowed && restoreCoverBuffer()" in paint
 assert "GUI.drawButtonHints(" in paint
 assert "scene->drawMenu(" in paint
 assert "if (renderGridHome()) return;" in render

@@ -17,6 +17,10 @@ struct Regions {
   home_grid::Rect bookScene{};
   int menuWidget = -1;
   int bookWidget = -1;
+  // GfxRenderer's cached region restore copies complete physical bytes. A
+  // split-column book could overwrite pixels in its adjacent widget, so only
+  // a Book occupying an entire row may use the existing cover snapshot.
+  bool bookCacheSafe = false;
 };
 
 // Grid input V1 has one logical book-card and one scrolling shortcut list.
@@ -42,6 +46,17 @@ inline bool locate(const home_widgets::Plan& plan,
   }
   if (out.menuWidget < 0 || out.menu.width <= 0 || out.menu.height <= 0)
     return false;
+
+  if (out.bookWidget >= 0) {
+    for (int row = 0; row < result.rowCount; ++row) {
+      const home_grid::Rect& area = result.rows[row];
+      if (area.x == out.book.x && area.y == out.book.y &&
+          area.width == out.book.width && area.height == out.book.height) {
+        out.bookCacheSafe = true;
+        break;
+      }
+    }
+  }
 
   // Preserve legacy foreground BookCard's original Hero+Book anchor when
   // the decorative theme underlay spans its slot. Never move input bounds.

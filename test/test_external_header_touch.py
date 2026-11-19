@@ -25,7 +25,7 @@ assert "Rect{area.x, contentTop, area.width, headerBottom - contentTop}" in scen
 assert "const int contentTop = statusTop + HEADER_STATUS_HEIGHT;" in scene
 assert 'renderer.getLineHeight(font) > area.height' in read('src/components/themes/ThemeScene.cpp')
 assert 'font = renderer.getLineHeight(UI_10_FONT_ID) <= area.height ? UI_10_FONT_ID : SMALL_FONT_ID;' in read('src/components/themes/ThemeScene.cpp')
-assert "drawExternalHeaderScene(renderer, sceneArea, title, backButton)" in header
+assert "drawExternalHeaderScene(renderer, sceneArea, title, backButton, titleFontId)" in header
 assert "backButton && gpio.hasTouch() ? 1 : 0" in scene
 scene_renderer = read("src/components/themes/ThemeScene.cpp")
 assert 'HeaderBackStyle::Both' in scene_renderer
@@ -58,7 +58,7 @@ rounded = read("src/components/themes/roundedraff/RoundedRaffTheme.cpp")
 rounded_header = rounded.split("void RoundedRaffTheme::drawHeader(", 1)[1].split(
     "void RoundedRaffTheme::drawRecentBookCover(", 1
 )[0]
-assert "BaseTheme::drawHeader(renderer, rect, title, subtitle, backButton);" in rounded_header
+assert "BaseTheme::drawHeader(renderer, rect, title, subtitle, backButton, titleFontId);" in rounded_header
 assert "if (title == nullptr)" not in rounded_header
 
 # Bottom edges remain unchanged; nothing pushes X3 content down.
