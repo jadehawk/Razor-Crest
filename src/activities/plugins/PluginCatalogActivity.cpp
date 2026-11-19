@@ -3714,6 +3714,17 @@ void PluginCatalogActivity::downloadItem(const int itemIndex) {
     std::vector<Item>().swap(items);
   }
   requestUpdateAndWait();
+  // The download screen no longer references picker metadata. Release its
+  // backing storage before TLS; enterPluginPicker() rescans SD on return.
+  const auto beforePickerReclaim = HalMemory::getInternalHeap();
+  std::vector<PluginRef>().swap(installedPlugins);
+  std::vector<InstalledExtension>().swap(installedExtensions);
+  if (HalMemory::getPsramHeap().totalBytes == 0) {
+    const auto afterPickerReclaim = HalMemory::getInternalHeap();
+    LOG_INF("PCAT", "download picker reclaim: free=%u->%u max=%u->%u", (unsigned)beforePickerReclaim.freeBytes,
+            (unsigned)afterPickerReclaim.freeBytes, (unsigned)beforePickerReclaim.largestBlockBytes,
+            (unsigned)afterPickerReclaim.largestBlockBytes);
+  }
   const bool extension = currentList >= 0 && currentList < static_cast<int>(manifest.browseLists.size()) &&
                          manifest.browseLists[currentList].kind != "plugin";
   const auto result = extension
@@ -4920,6 +4931,16 @@ void PluginCatalogActivity::showItemDetails(const int itemIndex) {
 
   const bool updateAvailable = item.status == tr(STR_UPDATE_AVAILABLE);
   spec.actionLabel = updateAvailable ? tr(STR_UPDATE) : (manifest.tracksInstalls() ? tr(STR_INSTALL) : tr(STR_FETCH));
+  // Details renders fetched text locally; close the idle TLS connection
+  // before its XHTML parser allocates, retaining the client for later browsing.
+  if (HalMemory::getPsramHeap().totalBytes == 0 && session) {
+    const auto beforeDetailsReclaim = HalMemory::getInternalHeap();
+    session->end();
+    const auto afterDetailsReclaim = HalMemory::getInternalHeap();
+    LOG_INF("PCAT", "details TLS reclaim: free=%u->%u max=%u->%u", (unsigned)beforeDetailsReclaim.freeBytes,
+            (unsigned)afterDetailsReclaim.freeBytes, (unsigned)beforeDetailsReclaim.largestBlockBytes,
+            (unsigned)afterDetailsReclaim.largestBlockBytes);
+  }
   auto detailsActivity = makeUniqueNoThrow<DetailsActivity>(renderer, mappedInput, std::move(spec));
   if (!detailsActivity) {
     LOG_ERR("PCAT", "OOM: item details");
