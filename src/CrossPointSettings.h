@@ -321,6 +321,16 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t characterSpacing = CHARACTER_SPACING_OFFSET;
   int8_t getCharacterSpacing() const { return static_cast<int8_t>(characterSpacing - CHARACTER_SPACING_OFFSET); }
   uint8_t textAntiAliasing = 1;
+  // Procedural reading-page guides; do not alter EPUB layout or cached pagination.
+  uint8_t paperGuidesMode = 0;       // 0=off, 1=ruled, 2=graph
+  uint8_t paperGuidesDarkness = 0;   // 0=25%, 1=50%, 2=75%, 3=100%
+  uint8_t paperGuidesThickness = 1;  // 1..4 logical pixels
+  uint8_t paperGuidesOffset = 5;     // 0..10 maps to -5..+5 logical pixels
+  uint8_t paperGuidesInset = 0;      // 0..20 logical pixels
+  uint8_t paperGuidesDotted = 0;
+  uint8_t paperGuidesDashLength = 4;  // 1..16 pixels
+  uint8_t paperGuidesGap = 4;         // 1..16 pixels
+  uint8_t paperGuidesGridSize = 24;   // 16..32 pixels in steps of four
   // Short power button click behaviour
   uint8_t shortPwrBtn = IGNORE;
   // Power double click (see hasPowerDoubleClick()); Ignore disables the

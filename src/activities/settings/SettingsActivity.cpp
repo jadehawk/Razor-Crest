@@ -31,6 +31,7 @@
 #include "MappedInputManager.h"
 #include "OpdsServerListActivity.h"
 #include "OtaUpdateActivity.h"
+#include "PaperGuidesActivity.h"
 #include "SdCardFontSystem.h"
 #include "SdFirmwareUpdateActivity.h"
 #include "SettingsList.h"
@@ -228,6 +229,7 @@ void SettingsActivity::rebuildSettings() {
   addAction(SettingsSection::General, StrId::STR_LANGUAGE, SettingAction::Language);
   addAction(SettingsSection::General, StrId::STR_KEYBOARD_LAYOUTS, SettingAction::KeyboardLayouts);
   addAction(SettingsSection::Reader, StrId::STR_TEXT_SETTINGS, SettingAction::TextSettings);
+  addAction(SettingsSection::Reader, StrId::STR_DECORATORS, SettingAction::Decorators);
   addAction(SettingsSection::Reader, StrId::STR_MANAGE_FONTS, SettingAction::DownloadFonts);
   addAction(SettingsSection::Display, StrId::STR_HOME_MENU_BUTTONS, SettingAction::HomeMenuButtons);
   if (const auto* scene = UITheme::getInstance().activeExternalScene(); scene && scene->supportsBookCarousel())
@@ -748,6 +750,16 @@ void SettingsActivity::toggleSelectedSetting() {
                                  rebuildSettings();
                                });
         break;
+      case SettingAction::Decorators: {
+        auto activity =
+            makeUniqueNoThrow<PaperGuidesActivity>(renderer, mappedInput, PaperGuidesActivity::Page::Decorators);
+        if (!activity) {
+          LOG_ERR("SETTINGS", "OOM: Decorators settings");
+          return;
+        }
+        startActivityForResult(std::move(activity), [this](const ActivityResult&) { requestUpdate(); });
+        break;
+      }
       case SettingAction::TextSettings:
         startActivityForResult(std::make_unique<TextSettingsActivity>(renderer, mappedInput, &sdFontSystem.registry(),
                                                                       TextSettingsActivity::Tab::Family),

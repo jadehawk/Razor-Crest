@@ -270,6 +270,8 @@ Settings are grouped into **System**, **Display**, **Reader**, **Controls**, **L
 
 #### 3.6.2 Reader
 
+- **Decorators → Paper Guides:** Choose **Off** (default), **Ruled Paper** (lines follow text), or **Graph Paper** (a fixed square grid). Set line darkness, thickness (1–4 pixels), inset, and optionally dotted lines with adjustable dash length and gap. Ruled Paper adds a line-position adjustment; Graph Paper adds grid-size choices. Guides are painted behind the text and do not change EPUB pagination.
+
 - **Reader Font Family**: Choose the font used for reading:
   
   - "Noto Sans" (default) - Google's sans-serif font
@@ -727,6 +729,7 @@ Available options include:
 - **Look Up** – Select a word on the current page and show its dictionary definition (see [docs/dictionary.md](docs/dictionary.md)). Requires a dictionary to be selected in **Settings → Reader → Dictionary**.
 - **Create Clipping** – Select a range of text on the current page and save it as a highlighted clipping.
 - **View Clippings** – Open this book's saved clippings *(shown after the first clipping is saved)*.
+- **Decorators** – Open Paper Guides (Off, Ruled Paper, Graph Paper) and adjust line appearance without leaving the book.
 - **Reading Orientation** – Cycle through screen orientations without leaving the reader.
 - **Auto Turn (Pages Per Minute)** – Cycle through automatic page turn speed options for hands-free reading.
 - **Go to %** – Jump to a specific position in the book by percentage.

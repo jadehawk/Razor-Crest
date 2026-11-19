@@ -137,6 +137,34 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
   emit(SettingInfo::Toggle(StrId::STR_TEXT_AA, &CrossPointSettings::textAntiAliasing, "textAntiAliasing",
                            StrId::STR_CAT_READER)
            .withTextSettings());
+  // Persist decorator preferences through the shared settings system, but use
+  // the dedicated Reader > Decorators UI instead of flat device/WebUI rows.
+  emit(SettingInfo::Enum(StrId::STR_PAPER_GUIDES, &CrossPointSettings::paperGuidesMode,
+                         {StrId::STR_STATE_OFF, StrId::STR_RULED_PAPER, StrId::STR_GRAPH_PAPER}, "paperGuidesMode")
+           .withWebHidden());
+  emit(SettingInfo::Enum(StrId::STR_RULE_DARKNESS, &CrossPointSettings::paperGuidesDarkness,
+                         {StrId::STR_RULE_DARKNESS_25, StrId::STR_RULE_DARKNESS_50, StrId::STR_RULE_DARKNESS_75,
+                          StrId::STR_RULE_DARKNESS_100},
+                         "paperGuidesDarkness")
+           .withWebHidden());
+  emit(SettingInfo::Value(StrId::STR_RULE_THICKNESS, &CrossPointSettings::paperGuidesThickness, {1, 4, 1},
+                          "paperGuidesThickness")
+           .withWebHidden());
+  emit(SettingInfo::Value(StrId::STR_RULE_POSITION, &CrossPointSettings::paperGuidesOffset, {0, 10, 1},
+                          "paperGuidesOffset")
+           .withWebHidden());
+  emit(SettingInfo::Value(StrId::STR_RULE_INSET, &CrossPointSettings::paperGuidesInset, {0, 20, 5}, "paperGuidesInset")
+           .withWebHidden());
+  emit(SettingInfo::Toggle(StrId::STR_DOTTED_RULES, &CrossPointSettings::paperGuidesDotted, "paperGuidesDotted")
+           .withWebHidden());
+  emit(SettingInfo::Value(StrId::STR_RULE_DASH_LENGTH, &CrossPointSettings::paperGuidesDashLength, {1, 16, 1},
+                          "paperGuidesDashLength")
+           .withWebHidden());
+  emit(SettingInfo::Value(StrId::STR_RULE_DASH_GAP, &CrossPointSettings::paperGuidesGap, {1, 16, 1}, "paperGuidesGap")
+           .withWebHidden());
+  emit(SettingInfo::Value(StrId::STR_GRAPH_GRID_SIZE, &CrossPointSettings::paperGuidesGridSize, {16, 32, 4},
+                          "paperGuidesGridSize")
+           .withWebHidden());
   emit(SettingInfo::Enum(StrId::STR_IMAGES, &CrossPointSettings::imageRendering,
                          {StrId::STR_IMAGES_DISPLAY, StrId::STR_IMAGES_PLACEHOLDER, StrId::STR_IMAGES_SUPPRESS,
                           StrId::STR_IMAGES_DISPLAY_BW},
