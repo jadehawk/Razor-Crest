@@ -1537,6 +1537,7 @@ bool EpubReaderActivity::launchKOReaderSync(const bool automatic) {
     }
     // The destructor can no longer save the back-stack once epub is gone.
     if (footnoteDepth > 0) saveLinkStack();
+    rememberBookOnceRendered();
     epub.reset();
   }
   LOG_DBG("KOSync", "Epub released (heap after: %u)", (unsigned)ESP.getFreeHeap());
