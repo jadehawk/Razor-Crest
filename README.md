@@ -68,7 +68,6 @@ Razor-Crest retains the original CrossPoint reading experience while introducing
 - **Enhanced Plugin Catalog Browsing** — Additional image previews, visual catalog layouts, cached content, and refresh controls for discovering and managing supported extensions.
 - **Dedicated Plugin Management Web UI** — Manage every installed plugin from a separate Plugins page, including plugins without browser-based settings. View plugin details and use Reinstall or Remove controls.
 - **Improved KOReader Sync Interface** — Compare local and remote reading positions using visual progress cards showing percentages, pages, chapters, and device information before choosing which position to keep.
-- **Optional Techy-Notes LCP Integration** — Support an alternative LCP enrollment service through Techy-Notes when the firmware is configured with the necessary enrollment credentials.
 
 These are **Razor-Crest additions**, not a claim that the underlying Plugin System, Plugin Hub, standard plugin installation, KOReader progress sync, or the merged static-catalog pagination fix are exclusive to this fork. Plugins such as [Wallpaper Downloader](https://github.com/jadehawk/wallpapers.crosspoint-plugin) and [Send2Ereader](https://github.com/jadehawk/send2ereader.crosspoint-plugin) remain separate, capability-based projects that can work with other compatible firmware.
 
