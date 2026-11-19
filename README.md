@@ -39,6 +39,12 @@ Ruled Paper and Graph Paper add optional guides behind EPUB text. Adjust the lin
 | :---: | :---: |
 | <a href="docs/images/razor-crest/decorators-paper-guides-reading.jpg"><img src="docs/images/razor-crest/decorators-paper-guides-reading.jpg" alt="Two e-readers displaying Ruled Paper and Graph Paper behind book text" width="330"></a> | <a href="docs/images/razor-crest/decorators-paper-guides-settings.jpg"><img src="docs/images/razor-crest/decorators-paper-guides-settings.jpg" alt="Two e-readers displaying Ruled Paper and Graph Paper settings" width="330"></a> |
 
+### Automatic progress sync
+
+Enable **Sync on Sleep** and **Sync on Book Open** independently under **Settings → Connectivity → KOReader Sync**. With an account configured, Razor-Crest can automatically attempt progress synchronization when the reader goes to sleep or opens a book, subject to network availability and sufficient battery.
+
+<a href="docs/images/razor-crest/sync-on-sleep-and-book-open.jpg"><img src="docs/images/razor-crest/sync-on-sleep-and-book-open.jpg" alt="Razor-Crest KOReader Sync settings showing Sync on Sleep and Sync on Book Open" width="720"></a>
+
 ### Reading Statistics
 
 The latest Reading Statistics plugin dashboard, photographed on a device. Select the contact sheet to enlarge it, or open the individual photos below.
@@ -68,6 +74,7 @@ Razor-Crest retains the original CrossPoint reading experience while introducing
 - **Enhanced Plugin Catalog Browsing** — Additional image previews, visual catalog layouts, cached content, and refresh controls for discovering and managing supported extensions.
 - **Dedicated Plugin Management Web UI** — Manage every installed plugin from a separate Plugins page, including plugins without browser-based settings. View plugin details and use Reinstall or Remove controls.
 - **Improved KOReader Sync Interface** — Compare local and remote reading positions using visual progress cards showing percentages, pages, chapters, and device information before choosing which position to keep.
+- **Automatic KOReader Progress Sync** — Optional Sync on Sleep and Sync on Book Open settings attempt to synchronize reading progress without a manual sync action when a configured sync server is reachable.
 
 These are **Razor-Crest additions**, not a claim that the underlying Plugin System, Plugin Hub, standard plugin installation, KOReader progress sync, or the merged static-catalog pagination fix are exclusive to this fork. Plugins such as [Wallpaper Downloader](https://github.com/jadehawk/wallpapers.crosspoint-plugin) and [Send2Ereader](https://github.com/jadehawk/send2ereader.crosspoint-plugin) remain separate, capability-based projects that can work with other compatible firmware.
 
