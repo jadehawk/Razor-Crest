@@ -55,6 +55,7 @@
 #include "SdCardFontSystem.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
+#include "activities/settings/PaperGuidesActivity.h"
 #include "activities/settings/TextSettingsActivity.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "clippings/ClippingText.h"
@@ -1330,6 +1331,29 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       openFootnoteSelect(true);
       break;
     }
+    case EpubReaderMenuActivity::MenuAction::DECORATORS: {
+      // The same reader position preservation used for chapter selection:
+      // release the section before pushing two nested lists on low-RAM boards.
+      {
+        RenderLock lock;
+        if (section) {
+          rememberCurrentContentOffset();
+          cachedSpineIndex = currentSpineIndex;
+          cachedChapterTotalPageCount = section->pageCount;
+          nextPageNumber = section->currentPage;
+        }
+        section.reset();
+      }
+      auto decorators =
+          makeUniqueNoThrow<PaperGuidesActivity>(renderer, mappedInput, PaperGuidesActivity::Page::Decorators);
+      if (!decorators) {
+        LOG_ERR("ERS", "OOM: Reader decorators");
+        openReaderMenu();
+        break;
+      }
+      startActivityForResult(std::move(decorators), [this](const ActivityResult&) { openReaderMenu(); });
+      break;
+    }
     case EpubReaderMenuActivity::MenuAction::TEXT_SETTINGS: {
       startActivityForResult(std::make_unique<TextSettingsActivity>(renderer, mappedInput, &sdFontSystem.registry(),
                                                                     TextSettingsActivity::Tab::Family),
@@ -2353,6 +2377,112 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   const ReaderUtils::ReaderRefreshScope readerRefresh;
   const auto t0 = millis();
   const int fontId = SETTINGS.getReaderFontId();
+  // Draw guides into the existing page/gray-plane targets before text and images.
+  // Strip bounds are physical framebuffer Y; the renderer uses logical XY.
+  const auto drawPaperGuides = [&](const int stripY0, const int stripY1) {
+    const int mode = SETTINGS.paperGuidesMode;
+    if (mode != 1 && mode != 2) return;
+
+    const int inset = std::min<int>(SETTINGS.paperGuidesInset, 20);
+    const int originX = orientedMarginLeft + inset;
+    const int originY = orientedMarginTop + (mode == 2 ? inset : 0);
+    const int limitX = renderer.getScreenWidth() - orientedMarginRight - inset;
+    const int limitY = renderer.getScreenHeight() - orientedMarginBottom - (mode == 2 ? inset : 0);
+    int x0 = originX;
+    int x1 = limitX;
+    int y0 = originY;
+    int y1 = limitY;
+    const int displayHeight = renderer.getDisplayHeight();
+    switch (renderer.getOrientation()) {
+      case GfxRenderer::Portrait:
+        x0 = std::max(x0, displayHeight - stripY1);
+        x1 = std::min(x1, displayHeight - stripY0);
+        break;
+      case GfxRenderer::PortraitInverted:
+        x0 = std::max(x0, stripY0);
+        x1 = std::min(x1, stripY1);
+        break;
+      case GfxRenderer::LandscapeClockwise:
+        y0 = std::max(y0, displayHeight - stripY1);
+        y1 = std::min(y1, displayHeight - stripY0);
+        break;
+      case GfxRenderer::LandscapeCounterClockwise:
+        y0 = std::max(y0, stripY0);
+        y1 = std::min(y1, stripY1);
+        break;
+    }
+    if (x1 <= x0 || y1 <= y0) return;
+
+    const int darkness = std::min<int>(SETTINGS.paperGuidesDarkness, 3);
+    const auto ink = [&](const int x, const int y, const int w, const int h) {
+      if (w <= 0 || h <= 0) return;
+      if (darkness == 1 || darkness == 3) {
+        renderer.fillRectDither(x, y, w, h, darkness == 1 ? Color::DarkGray : Color::Black);
+        return;
+      }
+      for (int yy = y; yy < y + h; ++yy) {
+        for (int xx = x; xx < x + w; ++xx) {
+          if ((darkness == 0) == (((xx + yy) & 3) == 0)) renderer.drawPixel(xx, yy, true);
+        }
+      }
+    };
+
+    const bool dotted = SETTINGS.paperGuidesDotted != 0;
+    const int thickness = std::clamp<int>(SETTINGS.paperGuidesThickness, 1, 4);
+    const int dash = std::clamp<int>(SETTINGS.paperGuidesDashLength, 1, 16);
+    const int period = dash + std::clamp<int>(SETTINGS.paperGuidesGap, 1, 16);
+    const auto horizontal = [&](const int y) {
+      // The line can straddle an 80-row grayscale strip: paint its clipped
+      // remainder in the next strip without restarting the dash pattern.
+      if (y >= y1 || y + thickness <= y0) return;
+      const int top = std::max(y, y0);
+      const int height = std::min(y + thickness, y1) - top;
+      if (!dotted) {
+        ink(x0, top, x1 - x0, height);
+        return;
+      }
+      // Anchor the dash phase at the page margin, not at each gray strip.
+      for (int x = x0 - (x0 - originX) % period; x < x1; x += period) {
+        const int a = std::max(x0, x);
+        const int b = std::min(x1, x + dash);
+        if (b > a) ink(a, top, b - a, height);
+      }
+    };
+    const auto vertical = [&](const int x) {
+      if (x >= x1 || x + thickness <= x0) return;
+      const int left = std::max(x, x0);
+      const int width = std::min(x + thickness, x1) - left;
+      if (!dotted) {
+        ink(left, y0, width, y1 - y0);
+        return;
+      }
+      for (int y = y0 - (y0 - originY) % period; y < y1; y += period) {
+        const int a = std::max(y0, y);
+        const int b = std::min(y1, y + dash);
+        if (b > a) ink(left, a, width, b - a);
+      }
+    };
+
+    if (mode == 2) {
+      const int grid = std::clamp<int>(SETTINGS.paperGuidesGridSize, 16, 32);
+      for (int y = originY + grid; y < limitY; y += grid) horizontal(y);
+      for (int x = originX + grid; x < limitX; x += grid) vertical(x);
+      return;
+    }
+
+    for (const auto& element : page->elements) {
+      if (element->getTag() != TAG_PageLine) continue;
+      const auto& line = static_cast<const PageLine&>(*element);
+      const TextBlock& block = *line.getBlock();
+      if (block.getBlockStyle().alignment == CssTextAlign::Center) continue;
+      const int lineFontId = TextBlock::renderFontId(renderer, block.blockFontId(fontId), fontId);
+      const int rubyShift = block.getRubyShift(renderer.getFontAscenderSize(lineFontId));
+      const int lineHeight = renderer.getLineHeight(lineFontId, SETTINGS.getReaderLineCompression()) +
+                             block.extraAscent(renderer, fontId) + rubyShift;
+      const int y = orientedMarginTop + line.yPos + lineHeight + std::clamp<int>(SETTINGS.paperGuidesOffset, 0, 10) - 5;
+      horizontal(y);
+    }
+  };
   ImageBlock::clearRenderFailures();
 
   struct PxcSlotGuard {
@@ -2405,7 +2535,8 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   const bool combinedGrayscaleBase = tiledGrayscale && (!pageHasImages || BoardConfig::isEegoA4()) &&
                                      grayscale.base == HalDisplay::GrayscaleBase::Combined;
   const bool overlapRefresh = tiledGrayscale && grayscale.asyncBase && !pageHasImages;
-  auto renderGrayscalePass = [&]() {
+  auto renderGrayscalePass = [&](const int stripTop, const int stripBottom) {
+    drawPaperGuides(stripTop, stripBottom);
     // A4 gray planes replace the full page, including its clipping highlights.
     if (BoardConfig::isEegoA4()) drawClippingHighlights(*page, fontId, orientedMarginTop, orientedMarginLeft);
     if (absoluteImageGrayscale || needsTextGrayscale) {
@@ -2418,12 +2549,14 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   };
 
   if (pageHasImagesNeedingDecode) {
+    drawPaperGuides(0, renderer.getDisplayHeight());
     page->renderWithImagePlaceholders(renderer, fontId, orientedMarginLeft, orientedMarginTop);
     renderStatusBar();
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     renderer.clearScreen();
   }
 
+  drawPaperGuides(0, renderer.getDisplayHeight());
   drawClippingHighlights(*page, fontId, orientedMarginTop, orientedMarginLeft);
   page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
   renderStatusBar();
@@ -2478,7 +2611,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
         const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
         renderer.beginStripTarget(buf + static_cast<size_t>(y) * gwBytes, y, rows);
         renderer.clearScreen(absoluteImageGrayscale ? 0xFF : 0x00);
-        renderGrayscalePass();
+        renderGrayscalePass(y, y + rows);
         renderer.endStripTarget();
       }
     };
@@ -2546,7 +2679,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
           const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
           renderer.beginStripTarget(scratch.get(), y, rows);
           renderer.clearScreen(absoluteImageGrayscale ? 0xFF : 0x00);
-          renderGrayscalePass();
+          renderGrayscalePass(y, y + rows);
           renderer.endStripTarget();
           renderer.writeGrayscalePlaneStrip(true, scratch.get(), y, rows);
         }
@@ -2557,7 +2690,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
           const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
           renderer.beginStripTarget(scratch.get(), y, rows);
           renderer.clearScreen(absoluteImageGrayscale ? 0xFF : 0x00);
-          renderGrayscalePass();
+          renderGrayscalePass(y, y + rows);
           renderer.endStripTarget();
           renderer.writeGrayscalePlaneStrip(false, scratch.get(), y, rows);
         }
@@ -2592,13 +2725,13 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
 
       renderer.clearScreen(absoluteImageGrayscale ? 0xFF : 0x00);
       renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
-      renderGrayscalePass();
+      renderGrayscalePass(0, renderer.getDisplayHeight());
       renderer.copyGrayscaleLsbBuffers();
       const auto tGrayLsb = millis();
 
       renderer.clearScreen(absoluteImageGrayscale ? 0xFF : 0x00);
       renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
-      renderGrayscalePass();
+      renderGrayscalePass(0, renderer.getDisplayHeight());
       renderer.copyGrayscaleMsbBuffers();
       const auto tGrayMsb = millis();
 

@@ -109,6 +109,7 @@ void EpubReaderMenuActivity::buildMenuItems(std::vector<MenuItem>& items, const 
   }
   items.push_back({MenuAction::DELETE_CACHE, StrId::STR_DELETE_CACHE});
   items.push_back({MenuAction::TEXT_SETTINGS, StrId::STR_TEXT_SETTINGS});
+  items.push_back({MenuAction::DECORATORS, StrId::STR_DECORATORS});
 }
 
 void EpubReaderMenuActivity::toggleBluetooth() {
