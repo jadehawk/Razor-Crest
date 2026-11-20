@@ -58,7 +58,7 @@ class StatsDashboardActivity final : public Activity {
   uint8_t iconCount = 0;
   std::string manifestPath;
   std::string title = "Dashboard";
-  std::array<Page, 6> pages;
+  std::array<Page, 7> pages;
   uint8_t pageCount = 0;
   uint8_t activePage = 0;
   bool genericCardDashboard = false;
@@ -118,6 +118,11 @@ class StatsDashboardActivity final : public Activity {
   void openBooks();
   void promptRemoveBook();
   void openImport();
+  void openServerSync();
+  bool serverSyncPage() const;
+  void drawServerSync(int x, int y, int width, int height) const;
+  bool syncPaired = false;
+  bool serverSyncAvailable = false;
   bool booksPage() const;
   int dashboardContentTop() const;
   int listCapacity() const;

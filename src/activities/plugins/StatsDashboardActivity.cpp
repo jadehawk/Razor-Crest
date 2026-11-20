@@ -20,16 +20,55 @@
 #include "CrossPointState.h"
 #include "DashboardCalendar.h"
 #include "MappedInputManager.h"
+#include "PluginCatalogActivity.h"
 #include "RecentBooksStore.h"
 #include "StatsImportActivity.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/PluginHttp.h"
+#include "util/PluginLocations.h"
 #include "util/ReadingStatsBookMedia.h"
 #include "util/ReadingStatsSnapshot.h"
 #include "util/ReadingStatsStore.h"
 
 namespace {
+constexpr char kPersistentSyncToken[] = "/.crosspoint/reading-statistics-token.json";
+constexpr char kUnifiedPluginName[] = "reading-statistics";
+
+// Copy legacy companion credentials only if the unified token is absent.
+// Do not remove or overwrite old credentials: users can verify the migration
+// before uninstalling the separate companion.
+void migrateLegacySyncState(const std::string& manifestPath) {
+  const std::string dir = PluginLocations::findPluginDir(kUnifiedPluginName);
+  if (dir.empty() || manifestPath != dir + "/device.json") return;
+  const std::string newQueue = dir + "/events.jsonl";
+  for (const char* root : PluginLocations::ROOTS) {
+    const std::string legacyDir = std::string(root) + "/reading-stats-sync";
+    std::string legacyToken;
+    const bool validLegacy =
+        pluginhttp::loadTokenFromFile(legacyDir + "/token.json", "token", legacyToken) && !legacyToken.empty();
+    if (!Storage.exists(kPersistentSyncToken) && validLegacy &&
+        pluginhttp::saveTokenToFile(kPersistentSyncToken, "token", legacyToken)) {
+      LOG_INF("STATS", "Copied legacy Sync pairing to persistent storage");
+    }
+    std::string unifiedToken;
+    const bool sameAccount = validLegacy &&
+                             pluginhttp::loadTokenFromFile(kPersistentSyncToken, "token", unifiedToken) &&
+                             legacyToken == unifiedToken;
+    // Never move one guest's queued activity under another guest's token.
+    // When the unified queue is empty, retain same-account pending sessions.
+    // The old queue remains untouched and the server deduplicates event IDs.
+    if (sameAccount && !Storage.exists(newQueue.c_str())) {
+      std::string pending;
+      if (Storage.readFileToString("STATS", legacyDir + "/events.jsonl", 4096, pending) && !pending.empty() &&
+          Storage.writeFile(newQueue.c_str(), String(pending.c_str()))) {
+        LOG_INF("STATS", "Copied same-account pending reading sessions");
+      }
+    }
+    if (Storage.exists(kPersistentSyncToken) && Storage.exists(newQueue.c_str())) break;
+  }
+}
 constexpr int kMargin = 12;
 constexpr int kGap = 7;
 // Statistic content keeps a consistent built-in font under SD UI themes.
@@ -150,6 +189,11 @@ bool StatsDashboardActivity::loadManifest() {
     if (widgets.isNull() || widgets.size() == 0 || widgets.size() > pages[0].widgets.size() ||
         (genericCardDashboard && widgets.size() != 1))
       return false;
+    // The action page cannot be mixed with ordinary statistics widgets.
+    bool syncWidget = false;
+    for (const JsonVariantConst item : widgets)
+      if (strcmp(item["type"] | "", "server_sync") == 0) syncWidget = true;
+    if (syncWidget && widgets.size() != 1) return false;
     Page& page = pages[pageCount++];
     page.title = pageJson["title"] | "Reading";
     for (const JsonVariantConst widgetJson : widgets) {
@@ -208,8 +252,8 @@ bool StatsDashboardActivity::loadManifest() {
       if (widget.type == "reading_snapshot" && widget.currentBook) return false;
       if (widget.type != "card_carousel" && widget.type != "metric" && widget.type != "week_bars" &&
           widget.type != "month_calendar" && widget.type != "month_insights" && widget.type != "book_list" &&
-          widget.type != "legacy_import" && widget.type != "hero" && widget.type != "reading_snapshot" &&
-          widget.type != "time_of_day")
+          widget.type != "legacy_import" && widget.type != "server_sync" && widget.type != "hero" &&
+          widget.type != "reading_snapshot" && widget.type != "time_of_day")
         return false;
     }
   }
@@ -319,6 +363,11 @@ void StatsDashboardActivity::onEnter() {
     requestUpdate();
     return;
   }
+  const std::string statsPluginDir = PluginLocations::findPluginDir(kUnifiedPluginName);
+  serverSyncAvailable = !statsPluginDir.empty() && manifestPath == statsPluginDir + "/device.json";
+  if (serverSyncAvailable) migrateLegacySyncState(manifestPath);
+  std::string savedToken;
+  syncPaired = pluginhttp::loadTokenFromFile(kPersistentSyncToken, "token", savedToken) && !savedToken.empty();
   if (selectedBook) {
     for (uint8_t i = 0; i < pageCount; ++i) {
       // Choose a fully book-scoped page; a mixed Overview also contains a book hero.
@@ -340,6 +389,27 @@ void StatsDashboardActivity::onEnter() {
   currentAuthor = hasBookInfo ? readingstats::media::author(bookInfo) : std::string();
   if (hasBookInfo) readingstats::media::ensureCover(bookInfo, 142);
   requestUpdate();
+}
+
+bool StatsDashboardActivity::serverSyncPage() const {
+  if (activePage >= pageCount || pages[activePage].count != 1 || pages[activePage].widgets[0].type != "server_sync")
+    return false;
+  return serverSyncAvailable;
+}
+
+void StatsDashboardActivity::openServerSync() {
+  if (!serverSyncPage()) return;
+  auto view = makeUniqueNoThrow<PluginCatalogActivity>(renderer, mappedInput, false, kUnifiedPluginName);
+  if (!view) {
+    LOG_ERR("STATS", "Out of memory opening server pairing");
+    return;
+  }
+  app.clearTapFlash();
+  startActivityForResult(std::move(view), [this](const ActivityResult&) {
+    std::string token;
+    syncPaired = pluginhttp::loadTokenFromFile(kPersistentSyncToken, "token", token) && !token.empty();
+    requestUpdate();
+  });
 }
 
 bool StatsDashboardActivity::booksPage() const {
@@ -501,6 +571,10 @@ void StatsDashboardActivity::loop() {
       openImport();
       return;
     }
+    if (serverSyncPage()) {
+      openServerSync();
+      return;
+    }
     refresh();
     currentProgress = hasBookInfo ? readingstats::media::progress(bookInfo) : -1;
     currentAuthor = hasBookInfo ? readingstats::media::author(bookInfo) : std::string();
@@ -581,7 +655,7 @@ void StatsDashboardActivity::loop() {
     advance(-1);
     return;
   }
-  if ((booksPage() || importPage()) && mappedInput.wasScreenTapped(x, y)) {
+  if ((booksPage() || importPage() || serverSyncPage()) && mappedInput.wasScreenTapped(x, y)) {
     const auto& metrics = UITheme::getInstance().getMetrics();
     const int contentTop = dashboardContentTop();
     const int contentBottom = renderer.getScreenHeight() - metrics.buttonHintsHeight - 6;
@@ -593,6 +667,9 @@ void StatsDashboardActivity::loop() {
           openBooks();
           return;
         }
+      } else if (serverSyncPage()) {
+        openServerSync();
+        return;
       } else {
         openImport();
         return;
@@ -1319,6 +1396,28 @@ void StatsDashboardActivity::drawPluginCard(const Widget& widget, const int x, c
   }
 }
 
+void StatsDashboardActivity::drawServerSync(const int x, const int y, const int w, const int h) const {
+  if (h <= 0) return;
+  renderer.drawRoundedRect(x, y, w, h, 1, 9, true);
+  const int left = x + 14;
+  const int textWidth = std::max(20, w - 28);
+  const int step = renderer.getLineHeight(kStatsFont) + 9;
+  int top = y + 13;
+  const char* lines[] = {
+      "Techy-Notes Reading Sync",
+      "Server: sync-beta.techy-notes.com",
+      syncPaired ? "Reader paired" : "Reader not paired",
+      "KOSync is unchanged",
+      "Select Open to manage server sync",
+  };
+  for (size_t i = 0; i < sizeof(lines) / sizeof(lines[0]) && top + step <= y + h; ++i) {
+    const auto weight = i == 0 || i == 2 ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
+    const std::string fitted = renderer.truncatedText(kStatsFont, lines[i], textWidth, weight);
+    renderer.drawText(kStatsFont, left, top, fitted.c_str(), true, weight);
+    top += step;
+  }
+}
+
 void StatsDashboardActivity::drawWidget(const Widget& widget, const int x, const int y, const int w,
                                         const int height) const {
   if (widget.type == "metric")
@@ -1339,6 +1438,8 @@ void StatsDashboardActivity::drawWidget(const Widget& widget, const int x, const
     drawMonthInsights(widget, x, y, w, height);
   else if (widget.type == "legacy_import")
     drawLegacyImport(x, y, w, height);
+  else if (widget.type == "server_sync")
+    drawServerSync(x, y, w, height);
 }
 
 void StatsDashboardActivity::drawDashboardPage(bool interactive) {
@@ -1383,7 +1484,7 @@ void StatsDashboardActivity::drawDashboardPage(bool interactive) {
   if (isBookMetrics && !hasFeaturedCard) y = drawBookIdentity(y, width);
   const bool monthPage =
       page.count == 2 && page.widgets[0].type == "month_calendar" && page.widgets[1].type == "month_insights";
-  if (!statsAvailable && !isBookMetrics && !importPage() && !genericCardDashboard && !monthPage) {
+  if (!statsAvailable && !isBookMetrics && !importPage() && !serverSyncPage() && !genericCardDashboard && !monthPage) {
     renderer.drawText(kStatsFont, kMargin, y, "No saved reading sessions");
     y += renderer.getLineHeight(kStatsFont) + 5;
   }
@@ -1430,7 +1531,9 @@ void StatsDashboardActivity::drawDashboardPage(bool interactive) {
       y += h + kGap;
     }
   }
-  const char* confirmLabel = carouselPageActive() ? "Next Card" : (booksPage() || importPage()) ? "Open" : "Refresh";
+  const char* confirmLabel = carouselPageActive()                                ? "Next Card"
+                             : (booksPage() || importPage() || serverSyncPage()) ? "Open"
+                                                                                 : "Refresh";
   const auto hints = mappedInput.mapLabels("Back", confirmLabel, "Previous", "Next");
   if (interactive) GUI.drawButtonHints(renderer, hints.btn1, hints.btn2, hints.btn3, hints.btn4);
 }

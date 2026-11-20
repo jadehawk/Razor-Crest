@@ -293,6 +293,11 @@ bool loadDrainManifest(const Subscriber& sub, DrainManifest& out) {
   out.tokenFile = pluginhttp::inPluginDir(sub.dir, doc["token"]["file"] | "");
   out.tokenPath = doc["token"]["path"] | "token";
   out.configFile = pluginhttp::inPluginDir(sub.dir, doc["config"]["file"] | "");
+  constexpr const char* statsToken = "/.crosspoint/reading-statistics-token.json";
+  // Background subscriptions have no UI; enforce the same token ownership
+  // that the plugin catalog enforces for interactive OAuth pairing.
+  if ((out.tokenFile == statsToken && strcmp(sub.name, "reading-statistics") != 0) || out.configFile == statsToken)
+    return false;
   JsonVariantConst auth = doc["auth"];
   out.authType = auth["type"] | "device_code";
   pluginhttp::readRequest(auth["request"], "POST", out.authReq);

@@ -206,6 +206,9 @@ std::string inPluginDir(const std::string& pluginDir, const char* path) {
 
 // A manifest may not point the firmware at a credential store.
 static bool allowedFile(const std::string& file) {
+  // Only the validated Reading Statistics plugin manifest may select this
+  // reserved location. Generic file-manager/plugin paths remain protected.
+  if (file == "/.crosspoint/reading-statistics-token.json") return true;
   if (protectedpaths::isPluginPath(file)) return true;
   LOG_ERR("PHTP", "Manifest file not allowed: %s", file.c_str());
   return false;

@@ -423,6 +423,11 @@ bool PluginCatalogActivity::loadManifest() {
   manifest.tokenPath = doc["token"]["path"] | "token";
   manifest.tokenPersistent = doc["token"]["persist"] | true;
   manifest.configFile = pluginhttp::inPluginDir(pluginDir, doc["config"]["file"] | "");
+  // Do not allow arbitrary plugin manifests to read/replace the unified
+  // Reading Statistics credential through declarative auth or settings.
+  constexpr const char* statsToken = "/.crosspoint/reading-statistics-token.json";
+  const bool trustedStatisticsPlugin = pluginDir == PluginLocations::findPluginDir("reading-statistics");
+  if ((manifest.tokenFile == statsToken && !trustedStatisticsPlugin) || manifest.configFile == statsToken) return false;
 
   JsonVariantConst browse = doc["browse"];
   manifest.browseFormat = browse["format"] | "json";
