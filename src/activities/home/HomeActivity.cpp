@@ -401,6 +401,9 @@ void HomeActivity::onEnter() {
                        : slot == HomeMenuItem::OPDS_BROWSER ? CoverGridHomeUi::SlotTab::OPDS
                                                             : CoverGridHomeUi::SlotTab::NONE,
                        hasContinueReading);
+  } else if (hasContinueReading &&
+             (SETTINGS.uiTheme == CrossPointSettings::LYRA || SETTINGS.uiTheme == CrossPointSettings::COVER_GRID)) {
+    continueReadingProgress = loadBookProgress(recentBooks.front().path);
   }
 
   const auto base = recentSlots();
@@ -1070,7 +1073,7 @@ void HomeActivity::render(RenderLock&&) {
     }
 
     GUI.drawRecentBookCover(renderer, tile, recentBooks, selectorIndex, coverRendered, coverBufferStored,
-                            bufferRestored, std::bind(&HomeActivity::storeCoverBuffer, this));
+                            bufferRestored, std::bind(&HomeActivity::storeCoverBuffer, this), continueReadingProgress);
   }
 
   if (singleCardMode && cardPager.canCycle() && selectorIndex == 0 && external && external->hasNativeCoverCard()) {

@@ -39,6 +39,7 @@ class HomeActivity final : public Activity {
   void cycleCard(int direction);
   void showCardAt(size_t index, int direction);
   void prepareCurrentCard(int direction);
+  int continueReadingProgress = -1;
   bool coverRendered = false;      // Track if cover has been rendered once
   bool coverBufferStored = false;  // Track if cover buffer is stored
   uint8_t* coverBuffer = nullptr;  // HomeActivity's own buffer for cover image

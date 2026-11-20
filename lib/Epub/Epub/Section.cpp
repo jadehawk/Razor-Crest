@@ -1,6 +1,7 @@
 #include "Section.h"
 
 #include <BufferedFile.h>
+#include <ComplexShaper.h>
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
@@ -86,7 +87,9 @@ namespace {
 //      upstream disabled heading hyphenation using this same cache version.
 // v76: Combine both layout behaviors, invalidating caches written by either v75 build.
 // v77: CSS block spans and hidden/black-background word flags change EPUB layout and cached line data.
-constexpr uint8_t SECTION_FILE_VERSION = 77;
+// v78: Combine Razor-Crest layout/visibility updates with upstream Indic shaping
+//      and cached complex-script display forms; rebuild earlier caches.
+constexpr uint8_t SECTION_FILE_VERSION = 78;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
@@ -491,6 +494,7 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   ctx->parser->setTextSpacing(spec.characterSpacing, spec.wordSpacingPercent);
   ctx->parser->setParagraphIndentSpaces(spec.paragraphIndentSpaces);
   Hyphenator::setPreferredLanguage(epub->getLanguage());
+  ComplexShaper::setDocumentLanguage(epub->getLanguage().c_str());
   build_ = std::move(ctx);
 
   if (!build_->parser->beginParse()) {

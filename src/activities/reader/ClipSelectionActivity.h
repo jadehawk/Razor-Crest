@@ -90,6 +90,7 @@ class ClipSelectionActivity final : public Activity {
   Rect handleRect(int index, bool start) const;
   Rect actionRect() const;
   int selectionTop() const;
+  int selectionBottom() const;
   int textOffset() const;
   int textXOffset() const;
   void cancel();
