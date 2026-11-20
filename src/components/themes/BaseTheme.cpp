@@ -337,6 +337,15 @@ int BaseTheme::headerStatusTopY(const GfxRenderer& renderer) {
   return std::max(HEADER_STATUS_TOP, top) + BoardConfig::ACTIVE.headerOffsetY;
 }
 
+namespace {
+// headerBand keeps its bottom fixed when this shift moves its top.
+int headerBandTopShift(const GfxRenderer& renderer, int headerStatusTop) {
+  int top, right, bottom, left;
+  renderer.getOrientedViewableTRBL(&top, &right, &bottom, &left);
+  return std::max(headerStatusTop, top) - UITheme::getInstance().getMetrics().topPadding;
+}
+}  // namespace
+
 int BaseTheme::headerStatusInset() { return HEADER_STATUS_EDGE_INSET; }
 
 void BaseTheme::applyHeaderStatus(const GfxRenderer& renderer, freeink::ui::HeaderProps& props) {
@@ -384,11 +393,11 @@ void BaseTheme::applyHeaderStatus(const GfxRenderer& renderer, freeink::ui::Head
   props.trailingSize = headerButtonSize;
   props.leadingStyles = freeink::ui::plainStyles(freeink::ui::Paint::solid(freeink::ui::Color::Black));
   props.actionOffsetY = static_cast<int16_t>(strip + (bandHeight - strip - headerButtonSize) / 2 - 4 + opticalDrop);
-  // Shift the title's band-centered box down by half the strip: its center
-  // lands on the below-strip region's midline with the buttons.
-  // headerBand lowers only the band's top edge, which moves a centered title
-  // half as far as the buttons; the second half keeps the title on their line.
-  props.titleOffsetY = static_cast<int16_t>(strip / 2 + BoardConfig::ACTIVE.headerOffsetY / 2);
+  // Compensate half of the band's total top-edge offset so the title stays
+  // aligned with the top-relative action buttons. Divide once so odd board
+  // offsets and status shifts round consistently.
+  const int topOffset = BoardConfig::ACTIVE.headerOffsetY + headerBandTopShift(renderer, HEADER_STATUS_TOP);
+  props.titleOffsetY = static_cast<int16_t>(strip / 2 + topOffset / 2);
   status.stripHeight = strip;
   status.clockCentered = false;
 
@@ -408,8 +417,7 @@ freeink::ui::Rect BaseTheme::headerBand(const GfxRenderer& renderer, const freei
   const auto r = static_cast<int16_t>(right);
   // Move the top edge to Lyra's status clearance without moving the header's
   // bottom edge or changing the available content area below it.
-  const int16_t shift =
-      static_cast<int16_t>(std::max(HEADER_STATUS_TOP, top) - UITheme::getInstance().getMetrics().topPadding);
+  const int16_t shift = static_cast<int16_t>(headerBandTopShift(renderer, HEADER_STATUS_TOP));
   const int16_t offset = static_cast<int16_t>(BoardConfig::ACTIVE.headerOffsetY + shift);
   props.bleed = freeink::ui::Insets{0, r, 0, l};
   const int corner = BoardConfig::ACTIVE.cornerRadius;

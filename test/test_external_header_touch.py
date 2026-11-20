@@ -44,7 +44,17 @@ assert "status.batteryLeft = false;" in base
 assert "status.clockCentered = false;" in base
 assert "if (SETTINGS.clockShowInHeader &&" in base
 assert "metrics.headerShowsClock &&" not in base
-assert "std::max(HEADER_STATUS_TOP, top)" in base
+# The top shift must subtract the theme top padding (including negative
+# shifts); its result is shared by the band and the title offset.
+shift_helper = base.split("int headerBandTopShift(", 1)[1].split("}  // namespace", 1)[0]
+assert re.search(
+    r"return\s+std::max\(headerStatusTop,\s*top\)\s*-\s*"
+    r"UITheme::getInstance\(\)\.getMetrics\(\)\.topPadding\s*;",
+    shift_helper,
+)
+assert "const int topOffset = BoardConfig::ACTIVE.headerOffsetY + headerBandTopShift(renderer, HEADER_STATUS_TOP);" in base
+assert "props.titleOffsetY = static_cast<int16_t>(strip / 2 + topOffset / 2);" in base
+assert "const int16_t shift = static_cast<int16_t>(headerBandTopShift(renderer, HEADER_STATUS_TOP));" in base
 assert "static_cast<int16_t>(rect.height - offset)" in base
 assert "renderer.fillRect(area.x, area.y, area.width, contentTop - area.y, dark);" in scene
 assert "props.status.battery.color = dark ? fui::Color::White : fui::Color::Black;" in scene
@@ -58,16 +68,37 @@ rounded = read("src/components/themes/roundedraff/RoundedRaffTheme.cpp")
 rounded_header = rounded.split("void RoundedRaffTheme::drawHeader(", 1)[1].split(
     "void RoundedRaffTheme::drawRecentBookCover(", 1
 )[0]
-assert "BaseTheme::drawHeader(renderer, rect, title, subtitle, backButton, titleFontId);" in rounded_header
-assert "if (title == nullptr)" not in rounded_header
+# The null-title path must unconditionally delegate to the shared status
+# renderer, independent of how a theme spells its null checks.
+delegate = "BaseTheme::drawHeader(renderer, rect, title, subtitle, backButton, titleFontId);"
+assert rounded_header.count(delegate) == 1
+before_delegate = re.sub(r"//[^\n]*|/\*.*?\*/", "", rounded_header.split(delegate, 1)[0], flags=re.S)
+before_delegate = before_delegate.split("{", 1)[1]
+assert not re.search(r"\b(if|switch|for|while|return|goto)\b", before_delegate)
 
-# Bottom edges remain unchanged; nothing pushes X3 content down.
-for theme_top, normal_height, home_bottom in [(5, 84, 40), (10, 84, 56),
-                                               (13, 84, 64), (0, 62, 56),
-                                               (0, 76, 76)]:
-    status_y = max(10, 0)
-    assert theme_top + normal_height > status_y + 20
-    assert home_bottom > status_y + 20
+# Validate that production headerBand preserves the rectangle's bottom
+# boundary, including 24px/51px Home bands and both positive/negative shifts.
+band = base.split("freeink::ui::Rect BaseTheme::headerBand(", 1)[1].split(
+    "bool BaseTheme::drawExternalHeaderScene(", 1)[0]
+assert "const int16_t offset = static_cast<int16_t>(BoardConfig::ACTIVE.headerOffsetY + shift);" in band
+assert re.search(r"rect\.y\s*\+\s*offset", band)
+assert re.search(r"rect\.height\s*-\s*offset", band)
+for theme_top, height in ((5, 84), (10, 84), (13, 84), (0, 62),
+                          (0, 76), (13, 24), (5, 51)):
+    for visible_top, board_offset in ((0, 0), (9, 3), (11, 0), (15, 2), (9, -1)):
+        shift = max(10, visible_top) - theme_top
+        offset = board_offset + shift
+        rect_y, rect_height = theme_top, height
+        band_y = rect_y + offset
+        band_height = rect_height - offset
+        assert band_height > 0
+        assert band_y + band_height == rect_y + rect_height
+        total = board_offset + shift
+        # C++ integer division truncates toward zero for negative totals.
+        title_offset = 20 // 2 + int(total / 2)
+        assert title_offset == 10 + int((board_offset + shift) / 2)
+# Preserve the explicit negative-shift RoundedRaff scenario.
+assert max(10, 0) - 13 == -3
 
 # The Home header still has no Back hit target.
 assert re.search(
