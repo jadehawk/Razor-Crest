@@ -1,5 +1,7 @@
 # Razor-Crest
 
+<a href="docs/images/razor-crest/reading-statistics-contact-sheet.jpg"><img src="docs/images/razor-crest/reading-statistics-contact-sheet.jpg" alt="Contact sheet of five photographed Reading Statistics screens" width="720"></a>
+
 **A personal fork of [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader), built around a more customizable e-reader.**
 
 Razor-Crest keeps CrossPoint's reading experience and adds a growing ecosystem of **on-device plugins, downloadable UI themes, wallpaper collections, native reading statistics, and customizable sleep screens**. The goal is to make these additions usable directly on the reader, including on the memory-constrained X3.
@@ -43,13 +45,13 @@ Ruled Paper and Graph Paper add optional guides behind EPUB text. Adjust the lin
 
 Enable **Sync on Sleep** and **Sync on Book Open** independently under **Settings → Connectivity → KOReader Sync**. With an account configured, Razor-Crest can automatically attempt progress synchronization when the reader goes to sleep or opens a book, subject to network availability and sufficient battery.
 
-<a href="docs/images/razor-crest/sync-on-sleep-and-book-open.jpg"><img src="docs/images/razor-crest/sync-on-sleep-and-book-open.jpg" alt="Razor-Crest KOReader Sync settings showing Sync on Sleep and Sync on Book Open" width="720"></a>
+| Automatic Progress Sync |
+| :---: |
+| <a href="docs/images/razor-crest/sync-on-sleep-and-book-open.jpg"><img src="docs/images/razor-crest/sync-on-sleep-and-book-open.jpg" alt="Razor-Crest KOReader Sync settings showing Sync on Sleep and Sync on Book Open" width="240"></a> |
 
 ### Reading Statistics
 
 The latest Reading Statistics plugin dashboard, photographed on a device. Select the contact sheet to enlarge it, or open the individual photos below.
-
-<a href="docs/images/razor-crest/reading-statistics-contact-sheet.jpg"><img src="docs/images/razor-crest/reading-statistics-contact-sheet.jpg" alt="Contact sheet of five photographed Reading Statistics screens" width="720"></a>
 
 | Overall Statistics | Current Book | Reading Calendar |
 | :---: | :---: | :---: |
