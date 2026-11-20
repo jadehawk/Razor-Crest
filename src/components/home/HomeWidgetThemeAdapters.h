@@ -36,6 +36,7 @@ struct View {
   const char* headerTitle = nullptr;
   int selectorIndex = 0;
   size_t currentBook = 0;
+  int readingProgress = -1;  // Existing current-book percentage, or unknown.
 
   // The legacy external scene places its book card relative to the whole
   // Hero+Book rectangle, not relative to the new Book-only widget viewport.
@@ -123,7 +124,7 @@ inline bool drawNative(void* owner, Kind kind, uint16_t resource, home_grid::Rec
       view.theme.getTheme().drawRecentBookCover(view.renderer, nativeArea, *view.recentBooks,
                                                 view.selectorIndex, *view.coverRendered,
                                                 *view.coverBufferStored, *view.bufferRestored,
-                                                saveIfSafe);
+                                                saveIfSafe, view.readingProgress);
       return true;
     }
     case Kind::Shortcuts: {

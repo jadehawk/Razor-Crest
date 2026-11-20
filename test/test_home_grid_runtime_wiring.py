@@ -76,6 +76,8 @@ assert 'strcmp(cap, "home.widgets.v1") == 0' not in registry
 
 # The same existing renderer manages cover cache state and menu decorations.
 assert "view.theme.getTheme().drawRecentBookCover(" in adapter
+assert "saveIfSafe, view.readingProgress);" in adapter
+assert "view.readingProgress = continueReadingProgress;" in paint
 assert "view.theme.getTheme().drawButtonMenu(" in adapter
 assert "view.theme.renderExternalScene(" in adapter
 assert "view.theme.renderExternalHomeScene(" in adapter

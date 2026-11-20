@@ -108,6 +108,7 @@ void testNativeFallbackBookAndSnapshot() {
 
   firmware::View view{theme, screen};
   view.recentBooks = &books;
+  view.readingProgress = 47;
   view.coverRendered = &rendered;
   view.coverBufferStored = &stored;
   view.bufferRestored = &restored;
@@ -128,6 +129,7 @@ void testNativeFallbackBookAndSnapshot() {
   assert(result.status == PaintStatus::Ok && result.failedWidgets == 0);
   assert(theme.backgroundCalls == 0 && theme.foregroundCalls == 0);
   assert(theme.theme.bookCalls == 1 && saves == 1 && rendered && stored && !restored);
+  assert(theme.theme.lastReadingProgress == 47);
   assert(screen.pixel(3, 13) == 1);
 
   int restoredSnapshots = 0;
@@ -143,12 +145,14 @@ void testNativeFallbackBookAndSnapshot() {
   // Split-column Book widget: redraw the cover instead of restoring whole
   // physical bytes that might corrupt a neighboring widget's pixels.
   view.allowCachedBook = false;
+  view.readingProgress = -1;  // Unknown progress retains the existing sentinel.
   rendered = false;
   stored = false;
   assert(paint(p, d, out, home_widgets::native::hooks(surface)).failedWidgets == 0);
   assert(restoredSnapshots == 1);
   assert(saves == snapshotStoresBeforeSplit); // No new unsafe snapshot.
   assert(!stored);
+  assert(theme.theme.lastReadingProgress == -1);
   const int bookCallsBefore = theme.theme.bookCalls;
   assert(paint(p, d, out, home_widgets::native::hooks(surface)).failedWidgets == 0);
   assert(theme.theme.bookCalls == bookCallsBefore + 1); // Repaint each time.

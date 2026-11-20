@@ -33,6 +33,7 @@ class UITheme {
   struct FakeTheme {
     mutable int headerCalls = 0;
     mutable int bookCalls = 0;
+    mutable int lastReadingProgress = -1;
     mutable int menuCalls = 0;
     mutable int menuCount = 0;
     mutable int menuSelected = -1;
@@ -47,8 +48,9 @@ class UITheme {
     void drawRecentBookCover(GfxRenderer& renderer, Rect rect,
                              const std::vector<RecentBook>& books, int,
                              bool& rendered, bool& stored, bool& restored,
-                             std::function<bool()> save) const {
+                             std::function<bool()> save, int progress) const {
       ++bookCalls;
+      lastReadingProgress = progress;
       if (!books.empty()) renderer.drawPixel(rect.x + 3, rect.y + 1, true);
       rendered = true;
       stored = save();

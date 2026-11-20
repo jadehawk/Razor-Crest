@@ -904,6 +904,7 @@ bool HomeActivity::renderGridHome() {
                          ? recentBooks[singleCardMode ? cardPager.current() : 0].title.c_str() : nullptr;
   view.selectorIndex = selectorIndex;
   view.currentBook = cardPager.current();
+  view.readingProgress = continueReadingProgress;
   view.useExternalBookCard = areas.bookWidget >= 0 && scene->hasNativeCoverCard() &&
                              scene->hasRegion(ThemeScene::Region::Home);
   view.externalBookScene = areas.bookScene;
