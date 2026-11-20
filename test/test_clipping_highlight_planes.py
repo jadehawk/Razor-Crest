@@ -53,13 +53,16 @@ int main() {
   bool needsTextGrayscale = true;
   auto drawClippingHighlights = [&](Page&, int, int, int) { assert(++order == 1); };
   auto renderStatusBar = [&] { assert(++order == 3); };
+  auto drawPaperGuides = [&](int stripTop, int stripBottom) {
+    assert(stripTop == 0 && stripBottom == 100);
+  };
 """ + render + r"""
   BoardConfig::a4 = true;
-  renderGrayscalePass();
+  renderGrayscalePass(0, 100);
   assert(order == 3);
   order = 0;
   needsTextGrayscale = false;
-  renderGrayscalePass();
+  renderGrayscalePass(0, 100);
   assert(order == 3);
 }
 """
