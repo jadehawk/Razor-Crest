@@ -124,8 +124,9 @@ Advertised named capabilities include `catalog.lists`,
 `catalog.notices`, `catalog.bundle_install`,
 `catalog.version_tracking`, `catalog.compatibility`,
 `catalog.images`, `catalog.cache`, `catalog.refresh`,
-`catalog.item_details`, `stats.native.v1`, `ui.dashboard.v1`, `ui.local-notes.v1`
-(bounded on-device metric/hero cards, icon assets, book lists, and native progress).
+`catalog.item_details`, `stats.native.v1`, `ui.dashboard.v1`, `ui.dashboard.v2`,
+`ui.local-notes.v1` (on-device dashboard widgets, icons, book lists, native
+progress, and v2 time-of-day/month-calendar/insights widgets).
 Their exact schema and limits are in [sd-plugins.md](sd-plugins.md) and
 [webserver-endpoints.md](webserver-endpoints.md).
 

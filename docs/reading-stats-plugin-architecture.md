@@ -31,10 +31,12 @@ events, and README-only plugins. A small adapter recognizes a standalone
 `device.json` with `dashboard.source = "reading-stats.v1"` and opens a
 offline dashboard activity with an opt-in, confirmed legacy-data import.
 
-Razor-Crest advertises `stats.native.v1` and `ui.dashboard.v1`
-through the firmware identity contract, additive to `plugin_api=1`.
-The complete styled Reading Statistics plugin uses the single pre-release
-`ui.dashboard.v1` contract, without a separate V2 API or compatibility path.
+Razor-Crest advertises `stats.native.v1`, `ui.dashboard.v1` and
+`ui.dashboard.v2` through the firmware identity contract, additive to
+`plugin_api=1`. The updated Reading Statistics plugin requires
+`ui.dashboard.v2` for time-of-day charts and the monthly calendar/insights.
+The declarative dashboard source remains `reading-stats.v1`: the V2 capability
+indicates expanded widget support, not a second renderer or data format.
 Stock CrossPoint cannot run the native dashboard and falls back to the
 ordinary plugin description. No browser statistics gateway is shipped
 with this native-only integration.

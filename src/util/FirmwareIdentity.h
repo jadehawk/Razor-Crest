@@ -40,7 +40,7 @@
   "catalog.cache,catalog.refresh,catalog.item_details,catalog.encoded_item_fields,catalog.list_index_mapping,"     \
   "catalog.list_requirements,catalog.server_paths,"                                                                \
   "catalog.hardware_filter.v1,stats."                                                                              \
-  "native.v1,ui.dashboard.v1,"                                                                                     \
+  "native.v1,ui.dashboard.v1,ui.dashboard.v2,"                                                                     \
   "theme.sd.v1,theme.metrics.v1,theme.images.v1,theme.composition.v1,theme.fonts.v1,"                              \
   "theme.font-family.v1,theme.settings-navigation.v1,theme.book-cover.v1,theme.menu-decoration.v1,"                \
   "theme.screen-decoration.v1,theme.screen-background.v1,theme.header-back.v1,theme.sleep-gallery.v1,theme.sleep-" \

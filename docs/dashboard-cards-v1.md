@@ -1,13 +1,16 @@
 # Dashboard cards V1 — experimental on-device contract
 
-This is the single pre-release dashboard contract. The old `ui.dashboard.v2`
-capability and generic `dashboard.v2` source are retired; do not create
-backward-compatibility branches for development builds.
+This is the single pre-release `reading-stats.v1` dashboard source contract.
+`ui.dashboard.v1` continues to identify the original renderer; the additive
+`ui.dashboard.v2` capability guarantees newer widgets (`time_of_day`,
+`month_calendar`, and `month_insights`). V2 is a capability gate, not a new
+`dashboard.v2` manifest source or a parallel renderer.
 
 ## Manifest and capability
 
 - Dashboard manifest source: `"reading-stats.v1"`
-- Required firmware capabilities: `stats.native.v1`, `ui.dashboard.v1`
+- Required firmware capabilities for the current Reading Statistics plugin:
+  `stats.native.v1`, `ui.dashboard.v2` (older dashboards may still use `ui.dashboard.v1`)
 - Maximum six pages, six widgets per page, 8 KiB `device.json`
 - The firmware owns the persisted native reading data, book thumbnails, progress
   and rendering; SD plugin manifests declaratively specify page order and widgets.
