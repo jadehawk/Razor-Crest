@@ -404,7 +404,6 @@ void StatsDashboardActivity::openServerSync() {
     LOG_ERR("STATS", "Out of memory opening server pairing");
     return;
   }
-  app.clearTapFlash();
   startActivityForResult(std::move(view), [this](const ActivityResult&) {
     std::string token;
     syncPaired = pluginhttp::loadTokenFromFile(kPersistentSyncToken, "token", token) && !token.empty();
