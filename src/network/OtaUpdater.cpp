@@ -68,7 +68,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate(const otaversion::Channel
     LOG_ERR("OTA", "Board name too long for release asset suffix");
     return INTERNAL_UPDATE_ERROR;
   }
-  char assetName[80] = {};
+  char assetName[ReleaseJsonParser::kNameCapacity] = {};
   bool assetNameSet = false;
   const char* const feedUrl = channel == otaversion::Channel::Nightly ? nightlyFeedUrl : latestReleaseUrl;
   const bool ok = HttpDownloader::fetchUrl(feedUrl, [&](const uint8_t* data, size_t len) {

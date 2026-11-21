@@ -89,8 +89,8 @@ jobs:
                 exit 0
               fi
             fi
-            nightly_date="$(TZ=America/New_York date +%m-%d)"
-            version="${base_version}n-${nightly_date}-${source_sha:0:7}"
+            # Keep the undated version during the OTA parser rollout.
+            version="${base_version}n-${source_sha:0:7}"
             tag="rn-v${version}"
           elif [ "$EVENT_NAME" = 'push' ]; then
             tag="$GITHUB_REF_NAME"

@@ -221,15 +221,29 @@ TEST(OtaVersion, ParsesCommitBasedNightlyVersion) {
 
 TEST(OtaVersion, RejectsMalformedCommitNightlyVersions) {
   for (const char* version :
-       {"RC.2.0.0n-abc123", "RC.2.0.0n-abc12345", "RC.2.0.0n-abcdefg", "RC.2.0.0n-ABC1234", "RC.2.0.0n-1234567x",
-        "RC.2.0.0-r10", "2.0.0n-abc123", "2.0.0n-abc12345", "2.0.0n-abcdefg", "2.0.0n-ABC1234", "2.0.0n-1234567x"}) {
+       {"RC.2.0.0n-abc123", "RC.2.0.0n-abcdefg", "RC.2.0.0-r10", "2.0.0n-abc123", "2.0.0n-abcdefg", "2.0.0n-1234567x",
+        "2.0.0n-11-21-abc123", "2.0.0n--", "2.0.0n-a1234567890123456789012345678901234567890"}) {
     EXPECT_FALSE(otaversion::parse(version).valid) << version;
   }
-  for (const char* version : {"2.0.0n-00-21-abcdef0", "2.0.0n-13-21-abcdef0", "2.0.0n-11-00-abcdef0",
-                              "2.0.0n-11-32-abcdef0", "2.0.0n-02-30-abcdef0", "2.0.0n-11-21-abcdefg",
-                              "2.0.0n-11-21-abc123", "2.0.0n-11-21-abcdef00"}) {
-    EXPECT_FALSE(otaversion::parse(version).valid) << version;
-  }
+}
+
+TEST(OtaVersion, ComparesTrailingHashesAcrossNightlyLabels) {
+  using otaversion::Channel;
+  EXPECT_STREQ(otaversion::parse("2.0.0n-a longer label - ABCDEF01").nightlyCommit, "abcdef01");
+  EXPECT_STREQ(otaversion::parse("rn-vLong nightly label - ABCDEF0").nightlyCommit, "abcdef0");
+  EXPECT_STREQ(otaversion::parse("Long nightly label - ABCDEF0").nightlyCommit, "abcdef0");
+  EXPECT_STREQ(otaversion::parse("2.0.0-custom-label-ABCDEF0").nightlyCommit, "abcdef0");
+  EXPECT_FALSE(otaversion::isNewerForChannel("rn-v2.0.0n-label-ABCDEF01", "2.0.0n-abcdef0", Channel::Nightly));
+  EXPECT_TRUE(otaversion::isNewerForChannel("rn-v2.0.0n-label-abcdef02", "2.0.0n-abcdef01", Channel::Nightly));
+  EXPECT_TRUE(otaversion::isNewerForChannel("rn-v2.0.0n-label-abcdef0", "2.1.0n-bbcdef0", Channel::Nightly));
+  EXPECT_FALSE(otaversion::isNewerForChannel("razor-crest-v2.0.0-r12", "2.0.0n-abcdef0", Channel::Nightly));
+
+  EXPECT_TRUE(otaversion::isNewerForChannel("rn-vLong-nightly-label-ABCDEF0", "2.0.0-r12", Channel::Nightly));
+
+  char asset[256] = {};
+  ASSERT_TRUE(
+      otaversion::buildAssetName("razor-crest-", "rn-vLong-nightly-label-ABCDEF0", "-x3-x4", asset, sizeof(asset)));
+  EXPECT_STREQ(asset, "razor-crest-Long-nightly-label-ABCDEF0-x3-x4.bin");
 }
 
 TEST(OtaVersion, ComparesCommitNightliesByIdentityAndMigratesLegacy) {

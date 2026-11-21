@@ -7,6 +7,8 @@
 
 class ReleaseJsonParser {
  public:
+  static constexpr size_t kNameCapacity = 256;
+
   ReleaseJsonParser();
 
   ReleaseJsonParser(const ReleaseJsonParser&) = delete;
@@ -59,15 +61,15 @@ class ReleaseJsonParser {
   uint8_t depth;
   uint8_t assetDepth;
 
-  char tagName[64];
+  char tagName[kNameCapacity];
   char firmwareUrl[512];
   size_t firmwareSize;
   bool tagFound;
   bool firmwareFound;
 
-  char currentAssetName[80];
+  char currentAssetName[kNameCapacity];
   char currentAssetUrl[512];
   size_t currentAssetSize;
 
-  char firmwareAssetName[80];
+  char firmwareAssetName[kNameCapacity];
 };

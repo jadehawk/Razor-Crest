@@ -98,12 +98,13 @@ void ReleaseJsonParser::sOnString(void* ctx, const char* value, size_t len) {
   switch (self->lastKey) {
     case LastKey::TAG_NAME:
       if (self->position == Position::TOP_LEVEL && self->depth == 1) {
-        safeCopy(self->tagName, sizeof(self->tagName), value, len);
-        self->tagFound = true;
+        self->tagFound = len > 0 && len < sizeof(self->tagName) && memchr(value, '\0', len) == nullptr;
+        if (self->tagFound) safeCopy(self->tagName, sizeof(self->tagName), value, len);
       }
       break;
     case LastKey::ASSET_NAME:
-      if (self->position == Position::IN_ASSET_OBJECT && self->assetDepth == 1)
+      if (self->position == Position::IN_ASSET_OBJECT && self->assetDepth == 1 &&
+          len < sizeof(self->currentAssetName) && memchr(value, '\0', len) == nullptr)
         safeCopy(self->currentAssetName, sizeof(self->currentAssetName), value, len);
       break;
     case LastKey::ASSET_URL:
