@@ -34,6 +34,10 @@ def make_manifest(directory: Path, repo: str, tag: str, version: str, commit: st
     if actual != expected:
         raise ValueError(f"Expected exactly {len(expected)} nightly firmware images; missing={expected - actual}, extra={actual - expected}")
 
+    # Older OTA clients derive asset names from a seven-character commit tag.
+    # The download URLs still point to binaries from the actual dated release.
+    legacy_version = version.split("n-", 1)[0] + "n-" + commit[:7]
+    legacy_tag = f"rn-v{legacy_version}"
     assets = []
     for device in DEVICES:
         filename = f"razor-crest-{version}-{device}.bin"
@@ -41,13 +45,13 @@ def make_manifest(directory: Path, repo: str, tag: str, version: str, commit: st
         if not (64 * 1024 <= len(data) <= MAX_FIRMWARE_BYTES) or data[0] != 0xE9:
             raise ValueError(f"Invalid ESP application firmware image: {filename}")
         assets.append({
-            "name": filename,
+            "name": f"razor-crest-{legacy_version}-{device}.bin",
             "size": len(data),
             "sha256": hashlib.sha256(data).hexdigest(),
             "browser_download_url": f"https://github.com/{repo}/releases/download/{tag}/{filename}",
         })
     return {
-        "tag_name": tag,
+        "tag_name": legacy_tag,
         "channel": "nightly",
         "version": version,
         "source_commit": commit,

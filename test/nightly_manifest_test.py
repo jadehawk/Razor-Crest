@@ -30,19 +30,41 @@ class NightlyManifestTests(unittest.TestCase):
         meta = self.generate()
         self.assertEqual(meta["channel"], "nightly")
         self.assertEqual(meta["source_commit"], COMMIT)
-        self.assertEqual(meta["tag_name"], TAG)
+        self.assertEqual(meta["tag_name"], f"rn-v2.0.0n-{COMMIT[:7]}")
+        self.assertEqual(meta["version"], VERSION)
         self.assertEqual(len(meta["assets"]), 8)
-        self.assertIn(f"razor-crest-{VERSION}-picco.bin", {a["name"] for a in meta["assets"]})
+        self.assertIn(f"razor-crest-2.0.0n-{COMMIT[:7]}-picco.bin", {a["name"] for a in meta["assets"]})
         self.assertEqual(
             {a["name"] for a in meta["assets"]},
-            {f"razor-crest-{VERSION}-{device}.bin" for device in DEVICES},
+            {f"razor-crest-2.0.0n-{COMMIT[:7]}-{device}.bin" for device in DEVICES},
         )
         for asset in meta["assets"]:
             self.assertEqual(asset["size"], 64 * 1024)
             self.assertEqual(len(asset["sha256"]), 64)
+            self.assertTrue(asset["browser_download_url"].endswith(
+                "/" + asset["name"].replace(f"2.0.0n-{COMMIT[:7]}", VERSION)
+            ))
             self.assertTrue(asset["browser_download_url"].startswith(
                 f"https://github.com/jadehawk/Razor-Crest/releases/download/{TAG}/"
             ))
+
+    def test_legacy_ota_asset_discovery_matches_feed_for_every_board(self):
+        meta = self.generate()
+        # The pre-2026-11-21 updater validates this exact seven-hex suffix
+        # and builds its desired firmware asset name directly from tag_name.
+        tag = meta["tag_name"]
+        self.assertRegex(tag, r"^rn-v2\.0\.0n-[0-9a-f]{7}$")
+        legacy_version = tag.removeprefix("rn-v")
+        by_name = {asset["name"]: asset for asset in meta["assets"]}
+        for device in DEVICES:
+            with self.subTest(device=device):
+                expected = f"razor-crest-{legacy_version}-{device}.bin"
+                self.assertIn(expected, by_name)
+                self.assertEqual(
+                    by_name[expected]["browser_download_url"],
+                    f"https://github.com/jadehawk/Razor-Crest/releases/download/{TAG}/"
+                    f"razor-crest-{VERSION}-{device}.bin",
+                )
 
     def test_missing_or_extra_target_prevents_publication(self):
         (self.dist / f"razor-crest-{VERSION}-sticky.bin").unlink()

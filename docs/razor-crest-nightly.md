@@ -29,7 +29,12 @@ The month and day use America/New_York time.
 A new commit produces a new Nightly version; unchanged commits are skipped.
 Firmware is published only when every board and the host tests pass. A JSON
 feed and checksums identify the exact version, source commit, firmware
-filenames, sizes, and download URLs. Older date-numbered and RC-prefixed
+filenames, sizes, and download URLs. The OTA feed advertises an undated
+seven-character-commit `tag_name` and matching asset names for compatibility
+with installed older firmware, but its `version` and asset download URLs retain
+the real dated GitHub release identity. The OTA popup consequently displays
+the undated identifier; the installed firmware retains the dated version.
+Older date-numbered and RC-prefixed
 prereleases are retired; the latest seven commit-based Nightlies are retained.
 
 The combined X3/X4 image uses `x3-x4`. Picco builds are published on both
