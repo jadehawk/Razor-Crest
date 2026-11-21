@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from nightly_manifest import DEVICES, make_manifest  # noqa: E402
 
 COMMIT = "b" * 40
-VERSION = f"2.0.0n-{COMMIT[:7]}"
+VERSION = f"2.0.0n-11-21-{COMMIT[:7]}"
 TAG = f"rn-v{VERSION}"
 
 
@@ -80,6 +80,10 @@ class NightlyManifestTests(unittest.TestCase):
             make_manifest(self.dist, "jadehawk/Razor-Crest", "rn-vRC.2.0.0n-bbbbbbb", "RC.2.0.0n-bbbbbbb", COMMIT)
         with self.assertRaises(ValueError):
             make_manifest(self.dist, "https://bad.invalid", TAG, VERSION, COMMIT)
+        for invalid in ("2.0.0n-00-21-bbbbbbb", "2.0.0n-13-21-bbbbbbb", "2.0.0n-02-30-bbbbbbb",
+                        "2.0.0n-11-21-bbbbbb", "2.0.0n-bbbbbbb"):
+            with self.subTest(version=invalid), self.assertRaises(ValueError):
+                make_manifest(self.dist, "jadehawk/Razor-Crest", f"rn-v{invalid}", invalid, COMMIT)
 
 
 if __name__ == "__main__":

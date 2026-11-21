@@ -43,7 +43,7 @@ with tempfile.TemporaryDirectory(prefix="papermono-timer-") as tmp:
         print(name + ": expected wake outcomes confirmed")
     source = (root / "lib/hal/HalPowerManager.cpp").read_text()
     start = source.index("void HalPowerManager::startDeepSleep(")
-    end = source.index("uint16_t HalPowerManager::getBatteryPercentage()", start)
+    end = source.index("bool HalPowerManager::readBatteryPercentage(", start)
     (temp / "SleepSource.inc").write_text(source[start:end])
     exe = temp / "sleep"
     subprocess.run([*flags, str(here / "SleepFlowTest.cpp"), "-o", str(exe)], check=True)

@@ -16,7 +16,7 @@ baseline = "3678609ff49a6a082c5181f1366ebf14038a836c"
 
 def function(source):
     start = source.index("void HalPowerManager::startDeepSleep(")
-    end = source.index("uint16_t HalPowerManager::getBatteryPercentage()", start)
+    end = source.index("bool HalPowerManager::readBatteryPercentage(", start)
     return source[start:end]
 
 

@@ -10,16 +10,22 @@ from pathlib import Path
 
 DEVICES = ("x3-x4", "sticky", "x4pro", "x4c", "papermono", "metalio-eink4", "eego-a4", "picco")
 MAX_FIRMWARE_BYTES = 32 * 1024 * 1024
-VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+n-[0-9a-f]{7}$")
+VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+n-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])-[0-9a-f]{7}$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
 def make_manifest(directory: Path, repo: str, tag: str, version: str, commit: str):
-    if not VERSION_PATTERN.fullmatch(version) or tag != f"rn-v{version}":
-        raise ValueError("Nightly tag/version must follow rn-v<base>n-<7-char SHA>")
+    version_match = VERSION_PATTERN.fullmatch(version)
+    if not version_match or tag != f"rn-v{version}":
+        raise ValueError("Nightly tag/version must follow rn-v<base>n-MM-DD-<7-char SHA>")
+    # MM-DD has no year; validate calendar dates against a leap year.
+    try:
+        datetime.strptime(f"2000-{version_match.group(1)}-{version_match.group(2)}", "%Y-%m-%d")
+    except ValueError:
+        raise ValueError("Invalid nightly month/day") from None
     if not COMMIT_PATTERN.fullmatch(commit):
         raise ValueError("Nightly source commit must be a full SHA-1")
-    if not version.endswith(f"n-{commit[:7]}"):
+    if not version.endswith(f"-{commit[:7]}"):
         raise ValueError("Nightly version must match the source commit")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise ValueError("Invalid GitHub release repository")

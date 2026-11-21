@@ -213,12 +213,21 @@ TEST(OtaVersion, ParsesCommitBasedNightlyVersion) {
   EXPECT_STREQ(otaversion::parse("2.0.0n-abcdef0").nightlyCommit, "abcdef0");
   EXPECT_STREQ(otaversion::parse("rn-vRC.2.0.0n-abcdef0").nightlyCommit, "abcdef0");
   EXPECT_STREQ(otaversion::parse("RC.2.0.0n-abcdef0").nightlyCommit, "abcdef0");
+  const auto dated = otaversion::parse("rn-v2.0.0n-11-21-abcdef0");
+  EXPECT_TRUE(dated.valid);
+  EXPECT_TRUE(dated.nightly);
+  EXPECT_STREQ(dated.nightlyCommit, "abcdef0");
 }
 
 TEST(OtaVersion, RejectsMalformedCommitNightlyVersions) {
   for (const char* version :
        {"RC.2.0.0n-abc123", "RC.2.0.0n-abc12345", "RC.2.0.0n-abcdefg", "RC.2.0.0n-ABC1234", "RC.2.0.0n-1234567x",
         "RC.2.0.0-r10", "2.0.0n-abc123", "2.0.0n-abc12345", "2.0.0n-abcdefg", "2.0.0n-ABC1234", "2.0.0n-1234567x"}) {
+    EXPECT_FALSE(otaversion::parse(version).valid) << version;
+  }
+  for (const char* version : {"2.0.0n-00-21-abcdef0", "2.0.0n-13-21-abcdef0", "2.0.0n-11-00-abcdef0",
+                              "2.0.0n-11-32-abcdef0", "2.0.0n-02-30-abcdef0", "2.0.0n-11-21-abcdefg",
+                              "2.0.0n-11-21-abc123", "2.0.0n-11-21-abcdef00"}) {
     EXPECT_FALSE(otaversion::parse(version).valid) << version;
   }
 }
@@ -229,6 +238,10 @@ TEST(OtaVersion, ComparesCommitNightliesByIdentityAndMigratesLegacy) {
   EXPECT_FALSE(otaversion::isNewerForChannel("rn-v2.0.0n-a1b2c3d", "RC.2.0.0n-a1b2c3d", Channel::Nightly));
   EXPECT_FALSE(otaversion::isNewerForChannel("rn-vRC.2.0.0n-a1b2c3d", "2.0.0n-a1b2c3d", Channel::Nightly));
   EXPECT_TRUE(otaversion::isNewerForChannel("rn-v2.0.0n-b1b2c3d", "RC.2.0.0n-a1b2c3d", Channel::Nightly));
+  EXPECT_TRUE(otaversion::isNewerForChannel("rn-v2.0.0n-11-21-b1b2c3d", "2.0.0n-a1b2c3d", Channel::Nightly));
+  EXPECT_FALSE(otaversion::isNewerForChannel("rn-v2.0.0n-11-21-a1b2c3d", "2.0.0n-a1b2c3d", Channel::Nightly));
+  EXPECT_FALSE(otaversion::isNewerForChannel("rn-v2.0.0n-11-22-a1b2c3d", "2.0.0n-11-21-a1b2c3d", Channel::Nightly));
+  EXPECT_TRUE(otaversion::isNewerForChannel("rn-v2.0.0n-11-22-b1b2c3d", "2.0.0n-11-21-a1b2c3d", Channel::Nightly));
   EXPECT_TRUE(otaversion::isNewerForChannel("rn-vRC.2.0.0n-a1b2c3d", "2.0.0-r10", Channel::Nightly));
   EXPECT_FALSE(otaversion::isNewerForChannel("rn-vRC.1.9.9n-a1b2c3d", "2.0.0-r10", Channel::Nightly));
   EXPECT_FALSE(otaversion::isNewerForChannel("rn-v2.0.0-n20261108.23", "RC.2.0.0n-a1b2c3d", Channel::Nightly));
@@ -243,6 +256,8 @@ TEST(OtaVersion, BuildsCommitNightlyAssetsWithoutRCPrefix) {
   EXPECT_STREQ(out, "razor-crest-2.0.0n-a1b2c3d-x3-x4.bin");
   ASSERT_TRUE(otaversion::buildAssetName("razor-crest-", "rn-v2.0.0n-a1b2c3d", "-metalio-eink4", out, sizeof(out)));
   EXPECT_STREQ(out, "razor-crest-2.0.0n-a1b2c3d-metalio-eink4.bin");
+  ASSERT_TRUE(otaversion::buildAssetName("razor-crest-", "rn-v2.0.0n-11-21-a1b2c3d", "-picco", out, sizeof(out)));
+  EXPECT_STREQ(out, "razor-crest-2.0.0n-11-21-a1b2c3d-picco.bin");
 }
 
 TEST(OtaVersion, BuildsNightlyAssetsWithExistingBoardNaming) {

@@ -16,21 +16,21 @@ hosts the JSON update feed, while the Pages root redirects to
 
 ## Publication
 
-The existing `.github/workflows/razor-crest-release.yml` handles both channels
+The shared `.github/workflows/razor-crest-build.yml` handles both channels
 with the same host test suite, eight firmware targets for both channels,
-pinned PlatformIO setup, and binary naming. Nightlies run at midnight
+pinned PlatformIO setup, and binary naming. Nightlies run at 1:17 AM
 `America/New_York` (EST/EDT); GitHub Actions may queue a scheduled run.
 The workflow can also run manually with channel **Nightly**, including an
 option to force a rebuild of an unchanged commit.
 
-Successful Nightlies use the version `<base>n-<7-char commit SHA>`, for
-example `2.0.0n-a1b2c3d`, with GitHub prerelease tag `rn-v<version>`.
+Successful Nightlies use `<base>n-MM-DD-<7-char commit SHA>`, for
+example `2.0.0n-11-21-a1b2c3d`, with GitHub prerelease tag `rn-v<version>`.
+The month and day use America/New_York time.
 A new commit produces a new Nightly version; unchanged commits are skipped.
 Firmware is published only when every board and the host tests pass. A JSON
 feed and checksums identify the exact version, source commit, firmware
-filenames, sizes, and download URLs. The first successful commit-based
-Nightly retires the old date-numbered prereleases. The latest seven
-commit-based Nightlies are retained.
+filenames, sizes, and download URLs. Older date-numbered and RC-prefixed
+prereleases are retired; the latest seven commit-based Nightlies are retained.
 
 The combined X3/X4 image uses `x3-x4`. Picco builds are published on both
 Stable and Nightly channels for USB installation. Picco's stock layout has
@@ -50,8 +50,8 @@ confirmation popup shows **Release: Stable** or **Release: Nightly** and keeps
 validation, OTA partition writer, progress bar, and reboot path are shared.
 
 A Nightly-to-Nightly update compares seven-character commit identities.
-Installed date-numbered and `RC.`-prefixed Nightlies can upgrade to unprefixed commit-based
-Nightlies; a date-numbered feed cannot replace a commit-based Nightly. Switching
+Installed date-numbered, `RC.`-prefixed, and previous undated-commit Nightlies can
+upgrade to dated-commit Nightlies; older date-numbered feeds cannot replace them. Switching
 from Nightly to Stable is an explicit channel change; the
 confirmation warns that Stable may be older. Ordinary Stable-to-Stable checks
 retain existing revision-based comparisons.

@@ -45,17 +45,36 @@ Parsed parse(const char* value) {
       (suffix[0] == 'r' && suffix[1] == 'c') || (suffix[0] == '-' && suffix[1] == 'r' && suffix[2] == 'c');
   out.development = strstr(base, "-dev") != nullptr;
   if (commitNightly) {
-    if (strncmp(suffix, "n-", 2) != 0 || strlen(suffix + 2) != 7) {
+    if (strncmp(suffix, "n-", 2) != 0) {
       out.valid = false;
       return out;
     }
-    for (const char* p = suffix + 2; *p; ++p) {
+    const char* commit = suffix + 2;
+    if (strlen(commit) == 13) {
+      // Date labels are displayed in Eastern time; the commit remains the update identity.
+      const bool formatted = commit[2] == '-' && commit[5] == '-' &&
+                             commit[0] >= '0' && commit[0] <= '9' && commit[1] >= '0' && commit[1] <= '9' &&
+                             commit[3] >= '0' && commit[3] <= '9' && commit[4] >= '0' && commit[4] <= '9';
+      const int month = formatted ? (commit[0] - '0') * 10 + commit[1] - '0' : 0;
+      const int day = formatted ? (commit[3] - '0') * 10 + commit[4] - '0' : 0;
+      static constexpr int daysInMonth[] = {0, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+      if (!formatted || month < 1 || month > 12 || day < 1 || day > daysInMonth[month]) {
+        out.valid = false;
+        return out;
+      }
+      commit += 6;
+    }
+    if (strlen(commit) != 7) {
+      out.valid = false;
+      return out;
+    }
+    for (const char* p = commit; *p; ++p) {
       if (!((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f'))) {
         out.valid = false;
         return out;
       }
     }
-    memcpy(out.nightlyCommit, suffix + 2, 7);
+    memcpy(out.nightlyCommit, commit, 7);
     out.nightly = true;
   } else if (strncmp(suffix, "-n", 2) == 0) {
     unsigned int date = 0;
