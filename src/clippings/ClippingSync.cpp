@@ -51,15 +51,28 @@ bool decode(JsonObjectConst item, Clipping& clipping, std::string& text, bool& d
   if (!item["deleted"].is<unsigned>() || item["deleted"].as<unsigned>() > 1) return false;
   deleted = item["deleted"].as<unsigned>() == 1;
   if (deleted) return true;
-  if (!item["revision"].is<uint64_t>() || !item["spine"].is<uint16_t>() || !item["start_page"].is<uint16_t>() ||
-      !item["end_page"].is<uint16_t>() || !item["pages"].is<uint16_t>() || !item["start_word"].is<uint16_t>() ||
-      !item["end_word"].is<uint16_t>() || !item["words"].is<uint16_t>() || !item["created_at"].is<uint32_t>() ||
-      !item["layout_signature"].is<uint32_t>())
+  [[maybe_unused]] const char* source = id.size() >= 3 && strncmp(id.c_str(), "ko-", 3) == 0 ? "KOReader" : "native";
+  auto invalid = [&](const char* field) {
+    // Report only the source class and failed field, never IDs or highlighted text.
+    LOG_ERR("CLIP", "Invalid %s remote clipping field: %s", source, field);
     return false;
-  if (!item["para"].isNull() && !item["para"].is<uint16_t>()) return false;
+  };
+  const char* invalidField =
+      !item["revision"].is<uint64_t>() ? "revision" :
+      !item["spine"].is<uint16_t>() ? "spine" :
+      !item["start_page"].is<uint16_t>() ? "start_page" :
+      !item["end_page"].is<uint16_t>() ? "end_page" :
+      !item["pages"].is<uint16_t>() ? "pages" :
+      !item["start_word"].is<uint16_t>() ? "start_word" :
+      !item["end_word"].is<uint16_t>() ? "end_word" :
+      !item["words"].is<uint16_t>() ? "words" :
+      !item["created_at"].is<uint32_t>() ? "created_at" :
+      !item["layout_signature"].is<uint32_t>() ? "layout_signature" : nullptr;
+  if (invalidField) return invalid(invalidField);
+  if (!item["para"].isNull() && !item["para"].is<uint16_t>()) return invalid("para");
   const JsonString quote = item["text"].as<JsonString>();
   if (quote.isNull() || quote.size() == 0 || quote.size() > CLIPPING_TEXT_MAX || strlen(quote.c_str()) != quote.size())
-    return false;
+    return invalid("text");
   clipping.spineIndex = item["spine"];
   clipping.startPage = item["start_page"];
   clipping.endPage = item["end_page"];
@@ -88,7 +101,10 @@ bool decode(JsonObjectConst item, Clipping& clipping, std::string& text, bool& d
 
 bool clippingSync::run(SyncRequest& sync, const std::string& bookPath, const std::string& documentHash,
                        const bool uploadOnly) {
-  if (!CLIPPINGS.loadForBook(bookPath, "", "", "epub")) return false;
+  if (!CLIPPINGS.loadForBook(bookPath, "", "", "epub")) {
+    LOG_ERR("CLIP", "Unable to load local clipping store");
+    return false;
+  }
   struct Unload {
     ~Unload() { CLIPPINGS.unload(); }
   } unload;
@@ -113,12 +129,18 @@ bool clippingSync::run(SyncRequest& sync, const std::string& bookPath, const std
     LOG_ERR("CLIP", "Clipping sync requires a compatible crosspoint-sync server");
     return false;
   }
-  if (!CLIPPINGS.prepareSync()) return false;
+  if (!CLIPPINGS.prepareSync()) {
+    LOG_ERR("CLIP", "Unable to prepare local clippings for sync");
+    return false;
+  }
 
   uint32_t deletionOffset = 0;
   char deletedId[65];
   while (true) {
-    if (!CLIPPINGS.nextDeletion(deletionOffset, deletedId)) return false;
+    if (!CLIPPINGS.nextDeletion(deletionOffset, deletedId)) {
+      LOG_ERR("CLIP", "Unable to read pending clipping deletions");
+      return false;
+    }
     if (!deletedId[0]) break;
     doc.clear();
     JsonObject item = doc["items"].to<JsonArray>().add<JsonObject>();
@@ -126,25 +148,38 @@ bool clippingSync::run(SyncRequest& sync, const std::string& bookPath, const std
     item["deleted"] = 1;
     if (!upload(sync, url, doc)) return false;
   }
-  if (!CLIPPINGS.finishDeletions()) return false;
+  if (!CLIPPINGS.finishDeletions()) {
+    LOG_ERR("CLIP", "Unable to finalize clipping deletions");
+    return false;
+  }
 
   std::string text;
   for (size_t i = 0; i < CLIPPINGS.clippingCount(); ++i) {
     const Clipping& clipping = *CLIPPINGS.clippingAt(i);
     if (!clipping.pendingUpload) continue;
-    if (!CLIPPINGS.readClippingText(i, text)) return false;
+    if (!CLIPPINGS.readClippingText(i, text)) {
+      LOG_ERR("CLIP", "Unable to read local clipping text at index %u", static_cast<unsigned>(i));
+      return false;
+    }
     doc.clear();
     encode(doc["items"].to<JsonArray>().add<JsonObject>(), clipping, text);
     if (!upload(sync, url, doc)) return false;
   }
-  if (!CLIPPINGS.finishUploads()) return false;
+  if (!CLIPPINGS.finishUploads()) {
+    LOG_ERR("CLIP", "Unable to finalize clipping uploads");
+    return false;
+  }
   if (uploadOnly) return true;
 
   // ponytail: rescan one book per manual sync; persist an account-scoped cursor if histories grow large.
   uint64_t cursor = 0;
   do {
     if (!sync.send(url + "?limit=1&format=reader&cursor=" + std::to_string(cursor), doc)) return false;
-    if (!doc["cursor"].is<uint64_t>() || !doc["more"].is<bool>() || !doc["items"].is<JsonArray>()) return false;
+    if (!doc["cursor"].is<uint64_t>() || !doc["more"].is<bool>() || !doc["items"].is<JsonArray>()) {
+      LOG_ERR("CLIP", "Invalid clipping page envelope (cursor=%d more=%d items=%d)",
+              doc["cursor"].is<uint64_t>(), doc["more"].is<bool>(), doc["items"].is<JsonArray>());
+      return false;
+    }
     const uint64_t next = doc["cursor"];
     const JsonArrayConst items = doc["items"].as<JsonArrayConst>();
     if (items.size() > 1 || next < cursor || ((!items.isNull() && items.size() > 0) && next <= cursor) ||
@@ -159,7 +194,10 @@ bool clippingSync::run(SyncRequest& sync, const std::string& bookPath, const std
         LOG_ERR("CLIP", "Invalid remote clipping");
         return false;
       }
-      if (!CLIPPINGS.applyRemote(clipping, text, deleted)) return false;
+      if (!CLIPPINGS.applyRemote(clipping, text, deleted)) {
+        LOG_ERR("CLIP", "Unable to persist remote clipping");
+        return false;
+      }
     }
     cursor = next;
   } while (doc["more"].as<bool>());
