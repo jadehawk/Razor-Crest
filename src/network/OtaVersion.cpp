@@ -1,5 +1,6 @@
 #include "OtaVersion.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -10,10 +11,28 @@ namespace {
 // Keep recognizing the original RC.-prefixed Nightlies during migration.
 const char* versionStart(const char* value) {
   if (value == nullptr) return "";
-  if (strncmp(value, "rn-vRC.", 7) == 0) return value + 4;
+  if (strncmp(value, "rn-v", 4) == 0) return value + 4;
   if (strncmp(value, "RC.", 3) == 0) return value;
   while (*value != '\0' && (*value < '0' || *value > '9')) ++value;
   return value;
+}
+
+bool parseNightlyCommit(const char* label, char (&commit)[41]) {
+  const char* separator = strrchr(label, '-');
+  const char* hash = separator ? separator + 1 : label;
+  while (*hash == ' ') ++hash;
+  const size_t length = strlen(hash);
+  if (length < 7 || length >= sizeof(commit)) return false;
+
+  for (size_t i = 0; i < length; ++i) {
+    const char c = hash[i];
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) return false;
+  }
+  for (size_t i = 0; i < length; ++i) {
+    const char c = hash[i];
+    commit[i] = c >= 'A' && c <= 'F' ? c + ('a' - 'A') : c;
+  }
+  return true;
 }
 
 int parseRevision(const char* value) {
@@ -32,51 +51,33 @@ Parsed parse(const char* value) {
   if (value == nullptr) return out;
 
   const char* taggedVersion = versionStart(value);
+  const bool taggedNightly = strncmp(value, "rn-v", 4) == 0;
   const bool legacyPrefixedNightly = strncmp(taggedVersion, "RC.", 3) == 0;
   const char* base = legacyPrefixedNightly ? taggedVersion + 3 : taggedVersion;
   int consumed = 0;
-  if (base[0] == '\0' || sscanf(base, "%d.%d.%d%n", &out.major, &out.minor, &out.patch, &consumed) != 3) return out;
+  if (sscanf(base, "%d.%d.%d%n", &out.major, &out.minor, &out.patch, &consumed) != 3) {
+    const char* label = taggedNightly ? taggedVersion : value;
+    out.valid = out.nightly = strchr(label, '-') && parseNightlyCommit(label, out.nightlyCommit);
+    return out;
+  }
 
-  out.valid = true;
-  out.revision = parseRevision(base);
+  out.hasBaseVersion = true;
   const char* suffix = base + consumed;
-  const bool commitNightly = legacyPrefixedNightly || strncmp(suffix, "n-", 2) == 0;
+  out.valid = true;
+  if (strncmp(suffix, "n-", 2) == 0) {
+    out.valid = out.nightly = parseNightlyCommit(suffix + 1, out.nightlyCommit);
+    return out;
+  }
+  if (legacyPrefixedNightly) {
+    out.valid = false;
+    return out;
+  }
+
+  out.revision = parseRevision(base);
   out.releaseCandidate =
       (suffix[0] == 'r' && suffix[1] == 'c') || (suffix[0] == '-' && suffix[1] == 'r' && suffix[2] == 'c');
   out.development = strstr(base, "-dev") != nullptr;
-  if (commitNightly) {
-    if (strncmp(suffix, "n-", 2) != 0) {
-      out.valid = false;
-      return out;
-    }
-    const char* commit = suffix + 2;
-    if (strlen(commit) == 13) {
-      // Date labels are displayed in Eastern time; the commit remains the update identity.
-      const bool formatted = commit[2] == '-' && commit[5] == '-' &&
-                             commit[0] >= '0' && commit[0] <= '9' && commit[1] >= '0' && commit[1] <= '9' &&
-                             commit[3] >= '0' && commit[3] <= '9' && commit[4] >= '0' && commit[4] <= '9';
-      const int month = formatted ? (commit[0] - '0') * 10 + commit[1] - '0' : 0;
-      const int day = formatted ? (commit[3] - '0') * 10 + commit[4] - '0' : 0;
-      static constexpr int daysInMonth[] = {0, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-      if (!formatted || month < 1 || month > 12 || day < 1 || day > daysInMonth[month]) {
-        out.valid = false;
-        return out;
-      }
-      commit += 6;
-    }
-    if (strlen(commit) != 7) {
-      out.valid = false;
-      return out;
-    }
-    for (const char* p = commit; *p; ++p) {
-      if (!((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f'))) {
-        out.valid = false;
-        return out;
-      }
-    }
-    memcpy(out.nightlyCommit, commit, 7);
-    out.nightly = true;
-  } else if (strncmp(suffix, "-n", 2) == 0) {
+  if (strncmp(suffix, "-n", 2) == 0 && suffix[2] >= '0' && suffix[2] <= '9') {
     unsigned int date = 0;
     unsigned int run = 0;
     char trailing = '\0';
@@ -99,6 +100,9 @@ Parsed parse(const char* value) {
     out.nightly = true;
     out.nightlyDate = date;
     out.nightlyRun = run;
+  } else if (taggedNightly || (!out.revision && !out.releaseCandidate && !out.development)) {
+    out.nightly = strchr(suffix, '-') && parseNightlyCommit(suffix, out.nightlyCommit);
+    out.valid = !taggedNightly || out.nightly;
   }
   return out;
 }
@@ -126,6 +130,13 @@ bool isNewerForChannel(const char* latestTag, const char* currentVersion, const 
   const Parsed current = parse(currentVersion);
   if (!latest.valid || !current.valid || latest.nightly != (channel == Channel::Nightly)) return false;
 
+  if (latest.nightlyCommit[0] && current.nightlyCommit[0]) {
+    // The feed selects the current nightly. Compare Git abbreviations by their shared prefix.
+    const size_t sharedLength = std::min(strlen(latest.nightlyCommit), strlen(current.nightlyCommit));
+    return strncmp(latest.nightlyCommit, current.nightlyCommit, sharedLength) != 0;
+  }
+  if (latest.nightlyCommit[0] && (current.nightly || !latest.hasBaseVersion)) return !current.development;
+
   if (latest.major != current.major) {
     // Switching to Stable is an explicit opt-in even if it rolls the base back.
     return channel == Channel::Stable && current.nightly ? true : latest.major > current.major;
@@ -138,10 +149,6 @@ bool isNewerForChannel(const char* latestTag, const char* currentVersion, const 
   }
 
   if (current.nightly && latest.nightly) {
-    if (latest.nightlyCommit[0] != '\0') {
-      // A commit hash is an identity, not an ordered version number.
-      return strcmp(latest.nightlyCommit, current.nightlyCommit) != 0;
-    }
     if (current.nightlyCommit[0] != '\0') return false;
     if (latest.nightlyDate != current.nightlyDate) return latest.nightlyDate > current.nightlyDate;
     return latest.nightlyRun > current.nightlyRun;

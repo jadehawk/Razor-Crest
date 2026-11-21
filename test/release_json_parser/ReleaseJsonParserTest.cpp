@@ -666,3 +666,26 @@ TEST(ReleaseJsonParser, ParsesCompactNightlyFeedUsingStableReleaseParser) {
                "https://github.com/jadehawk/Razor-Crest/releases/download/rn-v2.0.0-n20261108.123/"
                "razor-crest-2.0.0-n20261108.123-metalio-eink4.bin");
 }
+
+TEST(ReleaseJsonParserTest, MatchesFullNightlyTagAndAssetName) {
+  ReleaseJsonParser parser;
+  const std::string tag = "rn-v2.0.0n-" + std::string(100, 'a') + "-abcdef0";
+  const std::string name = "razor-crest-" + tag.substr(4) + "-x3-x4.bin";
+  const std::string metadata = "{\"tag_name\":\"" + tag + "\",\"assets\":[{\"name\":\"" + name +
+                               "\",\"size\":65536,\"browser_download_url\":\"https://example.test/firmware.bin\"}]}";
+  const size_t tagEnd = metadata.find(",\"assets\"");
+  ASSERT_NE(tagEnd, std::string::npos);
+  parser.feed(metadata.data(), tagEnd);
+  ASSERT_TRUE(parser.foundTag());
+  EXPECT_EQ(parser.getTagName(), tag);
+  parser.setFirmwareAssetName(name.c_str());
+  parser.feed(metadata.data() + tagEnd, metadata.size() - tagEnd);
+  EXPECT_TRUE(parser.foundFirmware());
+}
+
+TEST(ReleaseJsonParserTest, RejectsOversizedTag) {
+  ReleaseJsonParser parser;
+  const std::string input = "{\"tag_name\":\"" + std::string(ReleaseJsonParser::kNameCapacity, 'a') + "\"}";
+  parser.feed(input.data(), input.size());
+  EXPECT_FALSE(parser.foundTag());
+}

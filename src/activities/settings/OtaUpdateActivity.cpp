@@ -63,14 +63,15 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
   const char* options[] = {tr(STR_CANCEL), tr(STR_UPDATE)};
   // Default the selection to Update so the hardware Confirm button installs,
   // matching the pre-popup layout (Back = cancel, Confirm = update).
-  const char* channelLabel = channel == otaversion::Channel::Nightly ? "Release: Nightly" : "Release: Stable";
-  confirmPopup.show(tr(STR_NEW_UPDATE), channelLabel, options, 2, 1, [this](const int idx) {
+  const std::string newVersion = std::string(tr(STR_NEW_VERSION)) + updater.getLatestVersion();
+  confirmPopup.showMessage(tr(STR_NEW_UPDATE), newVersion.c_str(), options, 2, 1, [this](const int idx) {
     if (idx == 1) {
       runUpdateInstall();
     } else {
       finish();
     }
   });
+  confirmPopup.setMessageMaxLines(10);
   requestUpdate();
 }
 
@@ -147,10 +148,10 @@ void OtaUpdateActivity::render(RenderLock&&) {
     // Cancel/Update popup doesn't cover it (same layout as ConfirmationActivity).
     const int infoTop = pageHeight / 6;
     const int lineStep = height + metrics.verticalSpacing;
-    renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, infoTop,
-                      (std::string(tr(STR_CURRENT_VERSION)) + CROSSPOINT_VERSION).c_str());
+    const char* channelLabel = channel == otaversion::Channel::Nightly ? "Release: Nightly" : "Release: Stable";
+    renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, infoTop, channelLabel);
     renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, infoTop + lineStep,
-                      (std::string(tr(STR_NEW_VERSION)) + updater.getLatestVersion()).c_str());
+                      (std::string(tr(STR_CURRENT_VERSION)) + CROSSPOINT_VERSION).c_str());
     if (otaversion::isSwitchingToStable(CROSSPOINT_VERSION, channel)) {
       renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, infoTop + 2 * lineStep,
                         "Stable may be older than Nightly.");

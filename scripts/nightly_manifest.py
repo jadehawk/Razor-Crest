@@ -10,19 +10,13 @@ from pathlib import Path
 
 DEVICES = ("x3-x4", "sticky", "x4pro", "x4c", "papermono", "metalio-eink4", "eego-a4", "picco")
 MAX_FIRMWARE_BYTES = 32 * 1024 * 1024
-VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+n-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])-[0-9a-f]{7}$")
+VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+n-[0-9a-f]{7}$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
 def make_manifest(directory: Path, repo: str, tag: str, version: str, commit: str):
-    version_match = VERSION_PATTERN.fullmatch(version)
-    if not version_match or tag != f"rn-v{version}":
-        raise ValueError("Nightly tag/version must follow rn-v<base>n-MM-DD-<7-char SHA>")
-    # MM-DD has no year; validate calendar dates against a leap year.
-    try:
-        datetime.strptime(f"2000-{version_match.group(1)}-{version_match.group(2)}", "%Y-%m-%d")
-    except ValueError:
-        raise ValueError("Invalid nightly month/day") from None
+    if not VERSION_PATTERN.fullmatch(version) or tag != f"rn-v{version}":
+        raise ValueError("Nightly tag/version must follow rn-v<base>n-<7-char SHA>")
     if not COMMIT_PATTERN.fullmatch(commit):
         raise ValueError("Nightly source commit must be a full SHA-1")
     if not version.endswith(f"-{commit[:7]}"):
@@ -34,10 +28,6 @@ def make_manifest(directory: Path, repo: str, tag: str, version: str, commit: st
     if actual != expected:
         raise ValueError(f"Expected exactly {len(expected)} nightly firmware images; missing={expected - actual}, extra={actual - expected}")
 
-    # Older OTA clients derive asset names from a seven-character commit tag.
-    # The download URLs still point to binaries from the actual dated release.
-    legacy_version = version.split("n-", 1)[0] + "n-" + commit[:7]
-    legacy_tag = f"rn-v{legacy_version}"
     assets = []
     for device in DEVICES:
         filename = f"razor-crest-{version}-{device}.bin"
@@ -45,13 +35,13 @@ def make_manifest(directory: Path, repo: str, tag: str, version: str, commit: st
         if not (64 * 1024 <= len(data) <= MAX_FIRMWARE_BYTES) or data[0] != 0xE9:
             raise ValueError(f"Invalid ESP application firmware image: {filename}")
         assets.append({
-            "name": f"razor-crest-{legacy_version}-{device}.bin",
+            "name": filename,
             "size": len(data),
             "sha256": hashlib.sha256(data).hexdigest(),
             "browser_download_url": f"https://github.com/{repo}/releases/download/{tag}/{filename}",
         })
     return {
-        "tag_name": legacy_tag,
+        "tag_name": tag,
         "channel": "nightly",
         "version": version,
         "source_commit": commit,

@@ -23,18 +23,14 @@ pinned PlatformIO setup, and binary naming. Nightlies run at 1:17 AM
 The workflow can also run manually with channel **Nightly**, including an
 option to force a rebuild of an unchanged commit.
 
-Successful Nightlies use `<base>n-MM-DD-<7-char commit SHA>`, for
-example `2.0.0n-11-21-a1b2c3d`, with GitHub prerelease tag `rn-v<version>`.
-The month and day use America/New_York time.
+During the OTA parser rollout, Nightlies use `<base>n-<7-char commit SHA>`
+so devices running older firmware can discover the update. The OTA feed uses
+the published release tag, version, and asset filenames. Updated firmware
+recognizes a trailing Git hash even when the nightly version includes a label.
 A new commit produces a new Nightly version; unchanged commits are skipped.
 Firmware is published only when every board and the host tests pass. A JSON
 feed and checksums identify the exact version, source commit, firmware
-filenames, sizes, and download URLs. The OTA feed advertises an undated
-seven-character-commit `tag_name` and matching asset names for compatibility
-with installed older firmware, but its `version` and asset download URLs retain
-the real dated GitHub release identity. The OTA popup consequently displays
-the undated identifier; the installed firmware retains the dated version.
-Older date-numbered and RC-prefixed
+filenames, sizes, and download URLs. Older date-numbered and RC-prefixed
 prereleases are retired; the latest seven commit-based Nightlies are retained.
 
 The combined X3/X4 image uses `x3-x4`. Picco builds are published on both
