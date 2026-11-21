@@ -3,13 +3,11 @@
 #include <cstdint>
 #include <string>
 
-namespace clippingSync {
-enum class Mode { Bidirectional, UploadOnly };
+class SyncRequest;
 
-// Disabled in KOSync settings by default. Returns false on an enabled sync failure.
-// UploadOnly sends pending additions/deletions without applying any remote changes.
-// timeoutMs == 0 retains the manual sync client's default timeout.
-// C3 requires an active framebuffer loan with rendering locked until this returns.
-bool run(const std::string& bookPath, const std::string& documentHash, Mode mode = Mode::Bidirectional,
-         uint32_t timeoutMs = 0);
+namespace clippingSync {
+// Syncs one book's clippings; syncEngine calls it when Sync Clippings is enabled.
+// Returns false when the server lacks clipping sync or a step fails.
+bool run(SyncRequest& sync, const std::string& bookPath, const std::string& documentHash,
+         bool uploadOnly = false);
 }  // namespace clippingSync

@@ -415,7 +415,7 @@ freeink::ui::Rect BaseTheme::headerBand(const GfxRenderer& renderer, const freei
   renderer.getOrientedViewableTRBL(&top, &right, &bottom, &left);
   const auto l = static_cast<int16_t>(left);
   const auto r = static_cast<int16_t>(right);
-  // Move the top edge to Lyra's status clearance without moving the header's
+  // Move the top edge to the shared status slot without moving the header's
   // bottom edge or changing the available content area below it.
   const int16_t shift = static_cast<int16_t>(headerBandTopShift(renderer, HEADER_STATUS_TOP));
   const int16_t offset = static_cast<int16_t>(BoardConfig::ACTIVE.headerOffsetY + shift);

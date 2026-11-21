@@ -26,6 +26,7 @@
 #include <esp_wifi.h>
 #include <time.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdarg>
 #include <cstring>

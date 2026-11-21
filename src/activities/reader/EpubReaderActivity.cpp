@@ -209,9 +209,10 @@ void moveFinishedBookToReadFolder(const std::string& srcPath, const std::string&
     return;
   }
 
-  // Protected-book sidecars travel with the book; a protected book separated
-  // from its key no longer opens, so a failed move rolls everything back.
-  static constexpr const char* SIDECARS[] = {".key", ".rights"};
+  // Sidecars travel with the book: a protected book separated from its key no
+  // longer opens, and sync reads the plugin metadata next to the book. A failed
+  // move rolls everything back.
+  static constexpr const char* SIDECARS[] = {".key", ".rights", ".meta.json"};
   for (size_t i = 0; i < std::size(SIDECARS); i++) {
     const std::string from = srcPath + SIDECARS[i];
     if (!Storage.exists(from.c_str())) continue;
@@ -234,6 +235,15 @@ void moveFinishedBookToReadFolder(const std::string& srcPath, const std::string&
     if (!cacheMoved) {
       LOG_ERR("ERS", "Failed to rename cache dir %s -> %s (non-fatal)", oldCachePath.c_str(), newCachePath.c_str());
     }
+  }
+
+  // Bookmarks are stored under the book's path. Like the cache, a failed move
+  // is not fatal: the book is already in place.
+  const std::string oldBookmarkPath = BookmarkUtil::getBookmarkPath(srcPath);
+  const std::string newBookmarkPath = BookmarkUtil::getBookmarkPath(dstPath);
+  if (Storage.exists(oldBookmarkPath.c_str()) &&
+      (Storage.exists(newBookmarkPath.c_str()) || !Storage.rename(oldBookmarkPath.c_str(), newBookmarkPath.c_str()))) {
+    LOG_ERR("ERS", "Failed to move bookmarks %s -> %s (non-fatal)", oldBookmarkPath.c_str(), newBookmarkPath.c_str());
   }
 
   RECENT_BOOKS.updatePath(srcPath, dstPath, oldCachePath, cacheMoved ? newCachePath : oldCachePath);
