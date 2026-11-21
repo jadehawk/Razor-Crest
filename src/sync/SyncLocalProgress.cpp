@@ -3,6 +3,7 @@
 #include <HalStorage.h>
 #include <KOReaderCredentialStore.h>
 #include <Logging.h>
+#include <ProgressMapper.h>
 
 #include <utility>
 
