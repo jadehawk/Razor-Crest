@@ -1,0 +1,450 @@
+// Razor-Crest native statistics for the first two Reading Statistics dashboard pages.
+// Read-only access to versioned native binary data and checksummed backups.
+#![no_std]
+#![allow(dead_code)]
+
+use core::panic::PanicInfo;
+
+#[panic_handler]
+fn panic(_: &PanicInfo) -> ! {
+    dsn_exit(99);
+    loop {}
+}
+
+include!("../../dessen/sdk/dessen.rs");
+include!("dashboard.rs"); // Device Statistics + Current Book.
+include!("preview.rs"); // Local preview of the future server-wide Overall Statistics.
+include!("bookhero.rs"); // Shared Current Book and Continue Reading hero card.
+include!("pages.rs"); // Your Week and All Books.
+include!("calendar.rs"); // Native-style Reading Calendar.
+
+// sdk/dessen_abi.h
+const BLACK: i32 = 1;
+const LIGHT: i32 = 2;
+const DARK: i32 = 3;
+// Match the native StatsDashboardActivity's fixed-size typography instead of
+// theme-scaled FreeInk Small/Body/Title font slots.
+const SMALL: i32 = 4; // DSN_FONT_NOTOSANS_12 (labels, captions)
+const BODY: i32 = 4;  // DSN_FONT_NOTOSANS_12 (body text)
+const TITLE: i32 = 5; // DSN_FONT_NOTOSANS_14 (metric values)
+const LARGE: i32 = 6; // DSN_FONT_NOTOSANS_18 (monthly total)
+const LEFT: i32 = 0;
+const CENTER: i32 = 1;
+const RIGHT: i32 = 2;
+const BOLD: i32 = 1;
+const ERR_UNAVAILABLE: i32 = -4;
+const SIDE_KEY: u32 = 1 << 8; // Dessen PREV/NEXT source marker
+
+const GLOBAL: &[u8] = b"/.crosspoint/reading-stats/global_v2.bin";
+const GLOBAL_BACKUP: &[u8] = b"/.crosspoint/reading-stats/global_v2.bin.bak";
+const BOOK_INDEX: &[u8] = b"/.crosspoint/reading-stats/books_v1.bin";
+const PERIODS: &[u8] = b"/.crosspoint/reading-stats/time_global_v1.bin";
+const PERIODS_BACKUP: &[u8] = b"/.crosspoint/reading-stats/time_global_v1.bin.bak";
+const BOOK_PREFIX: &[u8] = b"/.crosspoint/reading-stats/book_";
+const BOOK_SUFFIX: &[u8] = b"_v2.bin";
+const BOOK_SUFFIX_BACKUP: &[u8] = b"_v2.bin.bak";
+const DAYS: usize = 53 * 7; // retained day history
+const G: i32 = 18; // safe-area side gutter for narrow displays
+
+// The book to continue: the first row of the recents shelf.
+struct Home {
+    rec: [u8; 1100],        // "path\ttitle\tauthor\t..." (DSN_SHELF_RECORD_MAX)
+    f: [(usize, usize); 5], // path, title, author, progress, optional series
+    percent: i32,           // 0..=100, or -1 if unknown
+    cover: [u8; 4096],      // {u16 w, u16 h} + 1-bit rows, from dsn_book_cover
+    cover_n: usize,
+}
+
+impl Home {
+    fn field(&self, i: usize) -> &[u8] {
+        &self.rec[self.f[i].0..self.f[i].1]
+    }
+    fn has_book(&self) -> bool {
+        self.field(0).first() == Some(&b'/')
+    }
+    fn load(&mut self) {
+        let n = dsn_recent_shelf(0, 1, &mut self.rec);
+        let n = if n > 0 { (n as usize).min(self.rec.len()) } else { 0 };
+        let (mut start, mut k) = (0, 0);
+        for i in 0..n {
+            let c = self.rec[i];
+            if c == b'\t' || c == b'\n' {
+                if k < 5 {
+                    self.f[k] = (start, i);
+                    k += 1;
+                }
+                start = i + 1;
+                if c == b'\n' {
+                    break;
+                }
+            }
+        }
+        if k < 2 {
+            self.f[0] = (0, 0); // not a whole record
+        }
+        if self.has_book() {
+            let p = dsn_book_progress(self.field(0));
+            self.percent = if (0..=100).contains(&p) { p } else { -1 };
+        }
+    }
+}
+
+struct Stats {
+    end: u32,         // local day number (days since 1970) of day[DAYS - 1]: today
+    day: [u32; DAYS], // seconds read per local day
+    hour: [u32; 4],   // real native morning/afternoon/evening/night totals
+    book_count: u32, // count of valid native per-book statistics records
+    total: u32,
+    sessions: u32,
+    progress_bp: u32, // native qualified forward page turns
+    err: i32,
+}
+
+fn le32(data: &[u8], off: usize) -> u32 {
+    u32::from_le_bytes([data[off], data[off+1], data[off+2], data[off+3]])
+}
+fn record_valid(data: &[u8], magic: u32, version: u32) -> bool {
+    if data.len() < 12 || le32(data, 0) != magic || le32(data, 4) != version {
+        return false;
+    }
+    let mut hash: u32 = 2166136261;
+    for &byte in &data[..data.len()-4] {
+        hash = (hash ^ byte as u32).wrapping_mul(16777619);
+    }
+    hash == le32(data, data.len()-4)
+}
+fn read_native(path: &[u8], output: &mut [u8], magic: u32, version: u32) -> bool {
+    dsn_fs_read(path, output) == output.len() as i32 && record_valid(output, magic, version)
+}
+
+impl Stats {
+    fn load(&mut self, have_clock: bool) {
+        let mut raw = [0u8; 1500];
+        let mut ok = read_native(GLOBAL, &mut raw, 0x32545352, 2);
+        if !ok {
+            ok = read_native(GLOBAL_BACKUP, &mut raw, 0x32545352, 2);
+        }
+        if !ok {
+            return; // genuinely empty or unavailable store
+        }
+        let latest = le32(&raw, 28);
+        self.sessions = le32(&raw, 12);
+        let total = (le32(&raw, 20) as u64) << 32 | le32(&raw, 16) as u64;
+        self.total = total.min(u32::MAX as u64) as u32;
+        self.progress_bp = le32(&raw, 24); // repurposed as qualified page turns
+        if !have_clock && latest != 0 {
+            self.end = latest - 1; // native ordinal is Unix day + 1
+        }
+        if latest != 0 {
+            for i in 0..DAYS {
+                let day = self.end as i64 - (DAYS - 1 - i) as i64;
+                let ordinal = day + 1;
+                if ordinal > 0 && ordinal <= latest as i64 &&
+                    latest - (ordinal as u32) < 366 {
+                    self.day[i] = le32(&raw, 32 + ((ordinal as usize % 366) * 4));
+                }
+            }
+        }
+        // The native store has four truthful periods, not 24 hourly values.
+        let mut timed = [0u8; 148];
+        if read_native(PERIODS, &mut timed, 0x31505452, 1) ||
+            read_native(PERIODS_BACKUP, &mut timed, 0x31505452, 1) {
+            for i in 0..4 {
+                self.hour[i] = le32(&timed, 16 + 4*i);
+            }
+        }
+        // Native book index uses fixed 316-byte, checksummed records.
+        // Bound the scan; count only books with valid native snapshots.
+        let mut record = [0u8; 316];
+        let mut book_snapshot = [0u8; 1500];
+        for index in 0..2048u32 {
+            let n = dsn_fs_read_at(BOOK_INDEX, index * 316, &mut record);
+            if n != 316 {
+                break;
+            }
+            if !record_valid(&record, 0x314b4252, 1) ||
+                !record[16..192].contains(&0) ||
+                !record[192..264].contains(&0) ||
+                !record[264..312].contains(&0) {
+                break; // don't fabricate entries from a corrupt catalog
+            }
+            let hash = (le32(&record, 12) as u64) << 32 | le32(&record, 8) as u64;
+            let mut path = [0u8; 80];
+            let prefix = BOOK_PREFIX.len();
+            path[..prefix].copy_from_slice(BOOK_PREFIX);
+            const HEX: &[u8;16] = b"0123456789abcdef";
+            for k in 0..16 {
+                path[prefix+k] = HEX[((hash >> (60 - 4*k)) & 15) as usize];
+            }
+            let suffix = prefix + 16;
+            path[suffix..suffix+BOOK_SUFFIX.len()].copy_from_slice(BOOK_SUFFIX);
+            let size = suffix + BOOK_SUFFIX.len();
+            let valid = read_native(&path[..size], &mut book_snapshot, 0x32545352, 2);
+            if !valid {
+                path[suffix..suffix+BOOK_SUFFIX_BACKUP.len()].copy_from_slice(BOOK_SUFFIX_BACKUP);
+                if !read_native(&path[..suffix+BOOK_SUFFIX_BACKUP.len()], &mut book_snapshot, 0x32545352, 2) {
+                    continue;
+                }
+            }
+            self.book_count = self.book_count.saturating_add(1);
+        }
+    }
+
+    // Best recorded reading day, average over days with reading, and number
+    // of active days. Uses only the retained daily history, never the all-time
+    // total which may extend beyond that window.
+    fn daily_summary(&self) -> (u32, u32, u32) {
+        let mut best = 0u32;
+        let mut total = 0u64;
+        let mut active = 0u32;
+        for &seconds in self.day.iter() {
+            if seconds > 0 {
+                best = best.max(seconds);
+                total += seconds as u64;
+                active += 1;
+            }
+        }
+        let average = if active == 0 { 0 } else { (total / active as u64).min(u32::MAX as u64) as u32 };
+        (best, average, active)
+    }
+
+    // (current, best) runs of consecutive days with reading. Today not having
+    // been read yet doesn't break the current streak.
+    fn streaks(&self) -> (u32, u32) {
+        let (mut best, mut run) = (0, 0);
+        for &d in self.day.iter() {
+            run = if d > 0 { run + 1 } else { 0 };
+            best = best.max(run);
+        }
+        let mut cur = 0;
+        let skip = (self.day[DAYS - 1] == 0) as usize;
+        for &d in self.day.iter().rev().skip(skip) {
+            if d == 0 {
+                break;
+            }
+            cur += 1;
+        }
+        (cur, best) // best streak is limited to the retained 53-week history
+    }
+}
+
+// Days since 1970-01-01 for a civil date (Howard Hinnant's algorithm), y >= 1970.
+fn days_from_civil(y: u32, m: u32, d: u32) -> u32 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let (era, yoe) = (y / 400, y % 400);
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    era * 146097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719468
+}
+
+// A tiny string builder for labels.
+struct S {
+    b: [u8; 24],
+    n: usize,
+}
+
+impl S {
+    fn new() -> S {
+        S { b: [0; 24], n: 0 }
+    }
+    fn s(mut self, t: &[u8]) -> S {
+        for &c in t {
+            if self.n < self.b.len() {
+                self.b[self.n] = c;
+                self.n += 1;
+            }
+        }
+        self
+    }
+    fn n(self, v: u32) -> S {
+        let mut d = [0u8; 10];
+        let (mut i, mut v) = (d.len(), v);
+        loop {
+            i -= 1;
+            d[i] = b'0' + (v % 10) as u8;
+            v /= 10;
+            if v == 0 {
+                break;
+            }
+        }
+        self.s(&d[i..])
+    }
+    fn get(&self) -> &[u8] {
+        &self.b[..self.n]
+    }
+}
+
+// "45m", "5h 45m", "123h"
+fn dur(secs: u32) -> S {
+    let (h, m) = (secs / 3600, secs / 60 % 60);
+    match h {
+        0 => S::new().n(m).s(b"m"),
+        1..=99 => S::new().n(h).s(b"h ").n(m).s(b"m"),
+        _ => S::new().n(h).s(b"h"),
+    }
+}
+
+fn text(x: i32, y: i32, w: i32, h: i32, s: &[u8], font: i32, align: i32, flags: i32) {
+    dsn_text_box(x, y, w, h, s, font, align, 1, flags);
+}
+
+// Same 14->12 fallback as the native dashboard when a metric is too wide.
+// The ABI returns packed text width (high 16) and line height (low 16).
+fn metric_font(value: &[u8], primary: i32, fallback: i32, max_width: i32) -> i32 {
+    let width = (dsn_measure_text(value, primary, BOLD) >> 16) as i32;
+    if width <= max_width.max(0) { primary } else { fallback }
+}
+
+struct Ui {
+    w: i32,
+    h: i32,
+    ls: i32, // line heights: small, body, title. Everything is sized from these,
+    lb: i32, // so the layout scales with the board's fonts.
+    lt: i32,
+    touch: bool,
+    buttons: bool,
+}
+
+#[no_mangle]
+pub extern "C" fn main() -> i32 {
+    let mut st = Stats {
+        end: 0,
+        day: [0; DAYS],
+        hour: [0; 4],
+        book_count: 0,
+        total: 0,
+        sessions: 0,
+        progress_bp: 0,
+        err: 0,
+    };
+    // dsn_clock_t: u16 year, month, day, ... in local time.
+    let mut c = [0u8; 8];
+    let year = if dsn_clock(&mut c) >= 0 { c[0] as u32 | (c[1] as u32) << 8 } else { 0 };
+    let have_clock = year >= 2000 && (1..=12).contains(&c[2]) && (1..=31).contains(&c[3]);
+    if have_clock {
+        st.end = days_from_civil(year, c[2] as u32, c[3] as u32);
+    }
+    st.load(have_clock);
+
+    let scr = dsn_screen();
+    let mut device = [0u8; 24];
+    let device_n = dsn_device(&mut device);
+    let touch = device_n >= 20 && device[18] != 0;
+    let buttons = device_n >= 20 && device[19] != 0;
+    let ui = Ui {
+        w: (scr >> 16) as i32,
+        h: (scr & 0xffff) as i32,
+        ls: dsn_line_height(SMALL),
+        lb: dsn_line_height(BODY),
+        lt: dsn_line_height(TITLE),
+        touch,
+        buttons,
+    };
+    let mut home = Home {
+        rec: [0; 1100],
+        f: [(0, 0); 5],
+        percent: -1,
+        cover: [0; 4096],
+        cover_n: 0,
+    };
+    home.load();
+    if home.has_book() {
+        // Limit the cover to the Current Book hero; keep the original source unmodified.
+        let cover_limit = ((ui.content_bottom() - (13 + ui.ls + ui.lt) - 33) * 35 / 100 - 20).clamp(40, 150);
+        let (start, end) = home.f[0];
+        let n = dsn_book_cover(&home.rec[start..end], cover_limit, &mut home.cover);
+        home.cover_n = if n > 4 { (n as usize).min(home.cover.len()) } else { 0 };
+    }
+
+    let detail = load_current(&home);
+    let month_day = if have_clock { c[3] as u32 } else { 0 };
+    let mut carousel = BookCarousel::new();
+    carousel.load();
+    let mut page = 0;
+    let mut book_offset = 0u32;
+    let mut calendar_offset = 0u32; // months before the current month
+    loop {
+        if page == 0 {
+            ui.overall_preview(&st, month_day, have_clock, &carousel);
+        } else if page <= 2 {
+            ui.dashboard_render(&st, &home, &detail, page - 1, month_day, have_clock);
+        } else {
+            dsn_clear();
+            ui.header(page);
+            let month_number = if have_clock { year * 12 + c[2] as u32 - 1 - calendar_offset } else { 0 };
+            let shown_year = if have_clock { month_number / 12 } else { 0 };
+            let shown_month = if have_clock { month_number % 12 + 1 } else { 0 };
+            let shown_day = if calendar_offset == 0 { month_day } else { 0 };
+            ui.extra_page(&st, page - 1, shown_year, shown_month, shown_day, book_offset);
+        }
+        ui.draw_footer(page, carousel.count);
+        dsn_refresh();
+        loop {
+            let e = dsn_wait_event();
+            match e & 0xff {
+                1 if page == 0 => {
+                    if let Some(book) = carousel.current() { dsn_open_book(book.path()); }
+                }
+                1 if page == 2 && home.has_book() => { dsn_open_book(home.field(0)); }
+                2 if page == 0 => return 0,
+                2 => { page = 0; break; }
+                3 | 8 | 10 => {
+                    // Front Previous browses books when there are multiple.
+                    // The configured side key always pages, regardless of book count.
+                    if page == 0 && carousel.count > 1 &&
+                        (((e & 0xff) == 3 && (e & SIDE_KEY) == 0) ||
+                         ((e & 0xff) == 10 && ui.overall_carousel_contains(
+                             ((e >> 8) & 0xfff) as i32, ((e >> 20) & 0xfff) as i32))) {
+                        carousel.step(-1);
+                        break;
+                    }
+                    if page == 5 && book_offset >= 5 { book_offset -= 5; }
+                    else { page = (page + 5) % 6; }
+                    break;
+                }
+                4 | 7 | 9 => {
+                    if page == 0 && carousel.count > 1 &&
+                        (((e & 0xff) == 4 && (e & SIDE_KEY) == 0) ||
+                         ((e & 0xff) == 9 && ui.overall_carousel_contains(
+                             ((e >> 8) & 0xfff) as i32, ((e >> 20) & 0xfff) as i32))) {
+                        carousel.step(1);
+                        break;
+                    }
+                    if page == 5 && book_offset + 5 < st.book_count { book_offset += 5; }
+                    else { page = (page + 1) % 6; }
+                    break;
+                }
+                5 => {
+                    // Tap the current-book hero to resume reading; elsewhere change page.
+                    let x = ((e >> 8) & 0xfff) as i32;
+                    let y = ((e >> 20) & 0xfff) as i32;
+                    if x < G + 55 && y < 13 + ui.ls + ui.lt {
+                        if page == 0 { return 0; }
+                        page = 0;
+                        break;
+                    } else if page == 0 {
+                        if ui.overall_carousel_contains(x, y) && carousel.count > 0 {
+                            if let Some(book) = carousel.current() { dsn_open_book(book.path()); }
+                        } else {
+                            page = 1;
+                            break;
+                        }
+                    } else if page == 4 && have_clock && y >= 13 + ui.ls + ui.lt &&
+                              y < 13 + ui.ls + ui.lt * 2 + 20 && x < ui.w / 4 {
+                        calendar_offset = (calendar_offset + 1).min(11);
+                        break;
+                    } else if page == 4 && have_clock && y >= 13 + ui.ls + ui.lt &&
+                              y < 13 + ui.ls + ui.lt * 2 + 20 && x > ui.w * 3 / 4 {
+                        calendar_offset = calendar_offset.saturating_sub(1);
+                        break;
+                    } else if page == 2 && home.has_book() && y < (13 + ui.ls + ui.lt) + (ui.content_bottom() - (13 + ui.ls + ui.lt) - 33) * 35 / 100 {
+                        dsn_open_book(home.field(0));
+                    } else {
+                        page = (page + 1) % 6;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
