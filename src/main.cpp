@@ -16,6 +16,7 @@
 #include <HalTiltSensor.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <Memory.h>
 #include <SPI.h>
 #include <TrustedTime.h>
 #include <VectorFontSupport.h>
@@ -45,6 +46,9 @@
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
 #include "activities/boot_sleep/SleepActivity.h"
+#if CROSSPOINT_DESSEN_APPS
+#include "activities/plugins/DessenAppActivity.h"
+#endif
 #include "activities/reader/KOReaderSyncActivity.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "components/UITheme.h"
@@ -121,12 +125,19 @@ EpdFontFamily ui12FontFamily(12, &ui12RegularFont, &ui12BoldFont);
 RTC_NOINIT_ATTR uint32_t silentRebootMagic;
 RTC_NOINIT_ATTR uint32_t silentRebootTarget;
 RTC_NOINIT_ATTR uint32_t silentRebootPayload;
+#if CROSSPOINT_DESSEN_APPS
+RTC_NOINIT_ATTR char silentDessenAppPath[192];
+#endif
 constexpr uint32_t SILENT_REBOOT_MAGIC = 0xC1EAB007;
 constexpr uint32_t SILENT_REBOOT_TARGET_HOME = 0;
 constexpr uint32_t SILENT_REBOOT_TARGET_READER = 1;
 constexpr uint32_t SILENT_REBOOT_TARGET_SETTINGS = 2;
 constexpr uint32_t SILENT_REBOOT_TARGET_JOIN_NETWORK = 3;
-constexpr uint32_t SILENT_REBOOT_TARGET_MAX = SILENT_REBOOT_TARGET_JOIN_NETWORK;
+constexpr uint32_t SILENT_REBOOT_TARGET_DESSEN = 4;
+constexpr uint32_t SILENT_REBOOT_TARGET_DESSEN_PAIR = 5;
+constexpr uint32_t SILENT_REBOOT_TARGET_DESSEN_REFRESH = 6;
+constexpr uint32_t SILENT_REBOOT_TARGET_DESSEN_UNPAIR = 7;
+constexpr uint32_t SILENT_REBOOT_TARGET_MAX = SILENT_REBOOT_TARGET_DESSEN_UNPAIR;
 constexpr uint32_t SILENT_REBOOT_LIGHT_ON = 1U << 0;
 constexpr uint32_t SILENT_REBOOT_READER_ORIENTATION_VALID = 1U << 1;
 constexpr uint32_t SILENT_REBOOT_READER_ORIENTATION_SHIFT = 2;
@@ -194,7 +205,10 @@ static void silentRestartTo(const uint32_t target, const char* targetName) {
   // through to the new activity. On Home, Select on the default
   // selectorIndex=0 opens the most-recent book, looking like a trampoline back
   // to the reader they just exited.
-  GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
+  // Dessen has already rendered "Syncing..." in the This Month value slot.
+  // Preserve that e-ink frame throughout the network-phase reboot, rather
+  // than replacing it with a generic Loading popup while TLS is active.
+  if (target != SILENT_REBOOT_TARGET_DESSEN_REFRESH) GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
   delay(50);
   ESP.restart();
 }
@@ -204,6 +218,46 @@ void silentRestart() { silentRestartTo(SILENT_REBOOT_TARGET_HOME, "home"); }
 void silentRestartToReader() { silentRestartTo(SILENT_REBOOT_TARGET_READER, "reader"); }
 
 void silentRestartToSettings() { silentRestartTo(SILENT_REBOOT_TARGET_SETTINGS, "settings"); }
+
+#if CROSSPOINT_DESSEN_APPS
+// Only the first-party Dessen stats guest may request the standalone
+// firmware network phase. Persist the exact app identity in RTC across the
+// maintenance reboot; keep the navigation page in its SD folder.
+static bool isAllowedDessenStatsPath(const std::string& path) {
+  constexpr const char* suffixes[] = {"/reading-stats-dessen/app.bin", "/reading-statistics-dessen-rust/app.bin"};
+  if (path.size() >= sizeof(silentDessenAppPath)) return false;
+  for (const char* suffix : suffixes) {
+    const size_t length = strlen(suffix);
+    if (path.size() < length || path.compare(path.size() - length, length, suffix) != 0) continue;
+    const std::string root = path.substr(0, path.size() - length);
+    return root == "/.crosspoint/plugins" || root == "/plugins" || root == "/.plugins";
+  }
+  return false;
+}
+
+void silentRestartToDessenOperation(const std::string& appPath, const int action) {
+  if (!isAllowedDessenStatsPath(appPath)) {
+    LOG_ERR("MAIN", "Dessen network operation rejected: invalid app path");
+    silentRestart();
+    return;
+  }
+  memcpy(silentDessenAppPath, appPath.c_str(), appPath.size() + 1);
+  const uint32_t target = action == 2   ? SILENT_REBOOT_TARGET_DESSEN_UNPAIR
+                          : action == 0 ? SILENT_REBOOT_TARGET_DESSEN_PAIR
+                                        : SILENT_REBOOT_TARGET_DESSEN_REFRESH;
+  silentRestartTo(target, action == 2 ? "dessen-unpair" : action == 0 ? "dessen-pair" : "dessen-refresh");
+}
+
+void silentRestartToDessen(const std::string& appPath) {
+  if (!isAllowedDessenStatsPath(appPath)) {
+    silentRestart();
+    return;
+  }
+  memcpy(silentDessenAppPath, appPath.c_str(), appPath.size() + 1);
+  LOG_INF("MAIN", "Dessen resume requested: app=%s", appPath.c_str());
+  silentRestartTo(SILENT_REBOOT_TARGET_DESSEN, "dessen");
+}
+#endif
 
 void silentRestartToJoinNetwork() {
   if (deepSleepInProgress) return;
@@ -709,6 +763,18 @@ void setup() {
   const uint32_t snapshotTarget =
       (isSilentReboot && silentRebootTarget <= SILENT_REBOOT_TARGET_MAX) ? silentRebootTarget : 0;
   const bool silentRebootLightOn = isSilentReboot && (silentRebootPayload & SILENT_REBOOT_LIGHT_ON) != 0;
+#if CROSSPOINT_DESSEN_APPS
+  // RTC state is uninitialized on a cold boot; use only with the validated
+  // one-shot silent reboot marker. Copy before clearing the marker/path.
+  char resumeDessenPath[sizeof(silentDessenAppPath)] = {};
+  if (isSilentReboot &&
+      (snapshotTarget == SILENT_REBOOT_TARGET_DESSEN || snapshotTarget == SILENT_REBOOT_TARGET_DESSEN_PAIR ||
+       snapshotTarget == SILENT_REBOOT_TARGET_DESSEN_REFRESH || snapshotTarget == SILENT_REBOOT_TARGET_DESSEN_UNPAIR)) {
+    memcpy(resumeDessenPath, silentDessenAppPath, sizeof(resumeDessenPath));
+    resumeDessenPath[sizeof(resumeDessenPath) - 1] = '\0';
+  }
+  memset(silentDessenAppPath, 0, sizeof(silentDessenAppPath));
+#endif
   const bool restoreReaderOrientation = isSilentReboot && snapshotTarget == SILENT_REBOOT_TARGET_READER &&
                                         (silentRebootPayload & SILENT_REBOOT_READER_ORIENTATION_VALID) != 0;
   const uint8_t readerOrientation = static_cast<uint8_t>(
@@ -997,6 +1063,27 @@ void setup() {
     // Rebooted on the way *into* File Transfer > Join Network for a fresh heap;
     // resume that flow directly instead of landing on home.
     activityManager.goToJoinNetwork();
+#if CROSSPOINT_DESSEN_APPS
+  } else if (resume == BootResume::Silent &&
+             (snapshotTarget == SILENT_REBOOT_TARGET_DESSEN || snapshotTarget == SILENT_REBOOT_TARGET_DESSEN_PAIR ||
+              snapshotTarget == SILENT_REBOOT_TARGET_DESSEN_REFRESH ||
+              snapshotTarget == SILENT_REBOOT_TARGET_DESSEN_UNPAIR)) {
+    const std::string appPath(resumeDessenPath);
+    const bool validPath = isAllowedDessenStatsPath(appPath) && Storage.exists(appPath.c_str());
+    LOG_INF("MAIN", "Dessen resume: target=%u path-valid=%d", static_cast<unsigned>(snapshotTarget), validPath);
+    auto app = validPath
+                   ? makeUniqueNoThrow<DessenAppActivity>(renderer, mappedInputManager, appPath, false,
+                                                          snapshotTarget == SILENT_REBOOT_TARGET_DESSEN_PAIR      ? 1
+                                                          : snapshotTarget == SILENT_REBOOT_TARGET_DESSEN_REFRESH ? 2
+                                                          : snapshotTarget == SILENT_REBOOT_TARGET_DESSEN_UNPAIR  ? 3
+                                                                                                                  : 0,
+                                                          snapshotTarget == SILENT_REBOOT_TARGET_DESSEN)
+                   : nullptr;
+    if (app)
+      activityManager.replaceActivity(std::move(app));
+    else
+      activityManager.goHome();
+#endif
   } else if (resume == BootResume::Silent && snapshotTarget == SILENT_REBOOT_TARGET_SETTINGS) {
     // Back out of the WiFi rows and the user is where they left off, not on Home.
     activityManager.goToSettings(SettingsSection::Network);

@@ -19,11 +19,27 @@
 #include "activities/RenderLock.h"
 #include "network/ProtectedPaths.h"
 #include "network/WifiPowerSaveGuard.h"
+#include "util/PluginLocations.h"
 
 extern GfxRenderer renderer;
 
 namespace {
 constexpr size_t MAX_TOKEN_FILE_SIZE = 2 * 1024;
+constexpr char kUnifiedStatsToken[] = "/.crosspoint/reading-statistics-token.json";
+
+void invalidateStatsOverviewCache() {
+  // A new reader token may belong to a different account. Never display
+  // cached totals from a previous account after re-pairing or unpairing.
+  constexpr const char* names[] = {"reading-statistics", "reading-stats-dessen", "reading-statistics-dessen-rust"};
+  for (const char* root : PluginLocations::ROOTS) {
+    for (const char* name : names) {
+      const std::string cache = std::string(root) + "/" + name + "/server-overview.json";
+      Storage.remove(cache.c_str());
+      Storage.remove((cache + ".bak").c_str());
+      Storage.remove((cache + ".part").c_str());
+    }
+  }
+}
 
 bool networkReady() { return WiFi.getMode() != WIFI_MODE_NULL && WiFi.status() == WL_CONNECTED; }
 
@@ -229,6 +245,8 @@ bool loadTokenFromFile(const std::string& file, const std::string& path, std::st
 bool saveTokenToFile(const std::string& file, const std::string& path, const std::string& value) {
   if (file.empty()) return false;
   if (!allowedFile(file)) return false;
+  std::string previous;
+  if (file == kUnifiedStatsToken) loadTokenFromFile(file, path, previous);
   JsonDocument doc;
   // Build the nesting the read path expects (numeric segments unsupported).
   std::vector<std::string> segs;
@@ -247,14 +265,21 @@ bool saveTokenToFile(const std::string& file, const std::string& path, const std
     LOG_ERR("PHTP", "Failed to save token file");
     return false;
   }
+  if (file == kUnifiedStatsToken && previous != value) invalidateStatsOverviewCache();
   return true;
 }
 
 bool removeTokenFile(const std::string& file) {
   if (file.empty()) return true;
   if (!allowedFile(file)) return false;
-  if (!Storage.exists(file.c_str())) return true;
-  if (Storage.remove(file.c_str())) return true;
+  if (!Storage.exists(file.c_str())) {
+    if (file == kUnifiedStatsToken) invalidateStatsOverviewCache();
+    return true;
+  }
+  if (Storage.remove(file.c_str())) {
+    if (file == kUnifiedStatsToken) invalidateStatsOverviewCache();
+    return true;
+  }
   LOG_ERR("PHTP", "Failed to remove token file: %s", file.c_str());
   return false;
 }

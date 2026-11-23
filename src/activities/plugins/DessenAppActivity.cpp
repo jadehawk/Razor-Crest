@@ -1,20 +1,36 @@
 #if CROSSPOINT_DESSEN_APPS
 #include "DessenAppActivity.h"
 
+#include <FontCacheManager.h>
+#include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <WiFi.h>
 #include <esp_random.h>
 #include <sdk/dessen_abi.h>  // DSN_HOME_*
 
 #include <utility>
 
 #include "MappedInputManager.h"
+#include "activities/network/WifiSelectionActivity.h"
+#include "activities/plugins/PluginCatalogActivity.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UiAppHelpers.h"
 #include "fontIds.h"
+#include "network/HttpDownloader.h"
+#include "util/PluginHttp.h"
+#include "util/PluginLocations.h"
 
 namespace fui = freeink::ui;
+
+// RTC-backed silent maintenance reboots resume this exact standalone app.
+extern void silentRestartToDessenOperation(const std::string& appPath, int action);
+extern void silentRestartToDessen(const std::string& appPath);
+
+// Shared with the sleep-time plugin drain. Called only after unloading the
+// RV32 guest, so X3 can reclaim its internal heap before Wi-Fi initialization.
+extern bool connectLastUsedWifi(uint32_t timeoutMs, bool showPopup);
 
 namespace {
 constexpr unsigned long FORCE_QUIT_HOLD_MS = 1000;
@@ -27,17 +43,31 @@ constexpr unsigned long FORCE_QUIT_HOLD_MS = 1000;
 constexpr uint32_t STEP_BUDGET = 200000;
 constexpr int MAX_STEPS_PER_RENDER = 16;
 
+// The original sideloaded demo uses reading-stats-dessen; newer packages use
+// reading-statistics-dessen-rust. Both are the same first-party app. Keep
+// network operations restricted to an exact installed plugin root/name.
+bool isStandaloneStatsApp(const std::string& path) {
+  constexpr const char* names[] = {"reading-stats-dessen", "reading-statistics-dessen-rust"};
+  constexpr const char* roots[] = {"/.crosspoint/plugins/", "/plugins/", "/.plugins/"};
+  for (const char* root : roots)
+    for (const char* name : names)
+      if (path == std::string(root) + name + "/app.bin") return true;
+  return false;
+}
+
 bool hasEvent(const fui::InputSnapshot& s) {
   return s.confirm || s.back || s.prev || s.next || s.focusPrev || s.focusNext || (s.touchReleased && s.touchX >= 0);
 }
 }  // namespace
 
 DessenAppActivity::DessenAppActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string appPath,
-                                     bool homeLauncher)
+                                     bool homeLauncher, int nativeOperation, bool resumeAfterNetwork)
     : Activity("DessenApp", renderer, mappedInput),
       appPath(std::move(appPath)),
       homeLauncher(homeLauncher),
-      uiTarget(makeUiTarget(renderer)) {
+      uiTarget(makeUiTarget(renderer)),
+      nativeOperation(nativeOperation),
+      resumeAfterNetwork(resumeAfterNetwork) {
   // Fixed fonts for sideloaded dashboard apps, independent of UI theme scale.
   // Keep the old Dessen large slot (3) as an alias of Noto Sans 18.
   // OMIT_FONTS targets only register Noto Sans 14 and use it as a fallback.
@@ -96,11 +126,131 @@ bool DessenAppActivity::loadApp() {
   return true;
 }
 
+namespace {
+constexpr char kStatsToken[] = "/.crosspoint/reading-statistics-token.json";
+constexpr char kStatsOverviewUrl[] = "https://sync.techy-notes.com/api/device/overview";
+
+bool refreshNativeStatsSnapshot(const std::string& appPath) {
+  const auto slash = appPath.find_last_of('/');
+  if (slash == std::string::npos) return false;
+  const std::string dir = appPath.substr(0, slash);
+  if (!Storage.exists((dir + "/device.json").c_str())) {
+    LOG_ERR("DSN", "Native overview: bundled pairing descriptor missing");
+    return false;
+  }
+  std::string token;
+  if (!pluginhttp::loadTokenFromFile(kStatsToken, "token", token) || token.empty() || token.size() > 128) {
+    LOG_ERR("DSN", "Native overview: not paired (or invalid saved token)");
+    return false;
+  }
+  // The guest is already gone before this call. One native saved-network join
+  // (10 seconds) matches the established sleep-sync behavior on X3.
+  if (WiFi.status() != WL_CONNECTED && !connectLastUsedWifi(10000, false)) {
+    LOG_ERR("DSN", "Native overview: saved Wi-Fi connection unavailable");
+    return false;
+  }
+  const std::string target = dir + "/server-overview.json";
+  const std::string tmp = target + ".part";
+  const std::string backup = target + ".bak";
+  const pluginhttp::Headers headers = {{"Authorization", "Bearer " + token}};
+  const int status = pluginhttp::requestToFile(nullptr, kStatsOverviewUrl, "GET", "", headers, tmp.c_str(), 2048);
+  token.clear();
+  if (status != 200) {
+    Storage.remove(tmp.c_str());
+    LOG_ERR("DSN", "Native overview refresh failed: HTTP %d", status);
+    return false;
+  }
+  Storage.remove(backup.c_str());
+  const bool had = Storage.exists(target.c_str());
+  if (had && !Storage.rename(target.c_str(), backup.c_str())) {
+    Storage.remove(tmp.c_str());
+    return false;
+  }
+  if (!Storage.rename(tmp.c_str(), target.c_str())) {
+    Storage.remove(tmp.c_str());
+    if (had) Storage.rename(backup.c_str(), target.c_str());
+    return false;
+  }
+  Storage.remove(backup.c_str());
+  LOG_INF("DSN", "Native overview snapshot updated: %s", target.c_str());
+  return true;
+}
+}  // namespace
+
+void DessenAppActivity::unloadGuestForNativeStats() {
+  RenderLock lock(*this);
+  host.setServices(nullptr);
+  services.reset();
+  memory.reset();
+  pendingInput = {};
+  pendingSwipe = dessen::FreeInkHost::SwipeNone;
+  if (frameStored) {
+    renderer.discardStoredBwBuffer();
+    frameStored = false;
+  }
+  LOG_INF("DSN", "Native handoff: guest freed, free=%u max=%u", static_cast<unsigned>(ESP.getFreeHeap()),
+          static_cast<unsigned>(ESP.getMaxAllocHeap()));
+}
+
 void DessenAppActivity::onEnter() {
   Activity::onEnter();
+  if (nativeOperation == 0 && !resumeAfterNetwork && isStandaloneStatsApp(appPath)) {
+    // The one-byte page marker is only meaningful for the immediate return
+    // from a firmware-owned network operation. A normal launch (including
+    // after a user exits during pairing) must always begin on Overall.
+    const auto marker = appPath.substr(0, appPath.find_last_of('/')) + "/resume-page";
+    if (Storage.exists(marker.c_str())) {
+      Storage.remove(marker.c_str());
+      LOG_INF("DSN", "Discarded stale resume page on normal app launch");
+    }
+  }
+  if (nativeOperation != 0) {
+    if (nativeOperation == 3) {
+      const bool cleared = pluginhttp::removeTokenFile(kStatsToken);
+      LOG_INF("DSN", "Reset Reading Statistics pairing: success=%d", cleared);
+      silentRestartToDessen(appPath);
+      return;
+    }
+    if (nativeOperation == 2) {
+      const bool refreshed = refreshNativeStatsSnapshot(appPath);
+      LOG_INF("DSN", "Standalone overview refresh completed: success=%d; resuming Dessen", refreshed);
+      silentRestartToDessen(appPath);
+      return;
+    }
+    const size_t slash = appPath.find_last_of('/');
+    const std::string appDir = slash == std::string::npos ? std::string() : appPath.substr(0, slash);
+    const size_t nameStart = appDir.find_last_of('/');
+    const std::string appName = nameStart == std::string::npos ? appDir : appDir.substr(nameStart + 1);
+    LOG_INF("DSN", "Standalone pairing from %s; guest unloaded, free=%u max=%u", appName.c_str(),
+            static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()));
+    auto native = makeUniqueNoThrow<PluginCatalogActivity>(renderer, mappedInput, false, appName, true);
+    if (!native) {
+      LOG_ERR("DSN", "Standalone pairing screen OOM");
+      silentRestartToDessen(appPath);
+      return;
+    }
+    startActivityForResult(std::move(native), [this](const ActivityResult&) {
+      // The pairing-only catalog has finished (approved or cancelled).
+      // Its TLS client is destroyed before this callback and the Dessen VM
+      // remains unloaded until after the upcoming silent reboot.
+      LOG_INF("DSN", "Standalone pairing screen returned; checking server snapshot");
+      const bool refreshed = refreshNativeStatsSnapshot(appPath);
+      LOG_INF("DSN", "Post-pairing overview refresh completed: success=%d; resuming Dessen", refreshed);
+      silentRestartToDessen(appPath);
+    });
+    return;
+  }
   {
     RenderLock lock;
+#ifndef BOARD_HAS_PSRAM
+    // X3/C3: reusable SD glyph caches can obstruct the guest's one large
+    // internal allocation. Fonts are lazily reconstructed on demand.
+    if (auto* fcm = renderer.getFontCacheManager()) fcm->releaseSdFontCaches();
+    LOG_INF("DSN", "Guest allocation headroom: free=%u max_block=%u", static_cast<unsigned>(ESP.getFreeHeap()),
+            static_cast<unsigned>(ESP.getMaxAllocHeap()));
+#endif
     if (loadApp()) {
+      lastPairingWakeMs = millis();
       requestUpdate();
       return;
     }
@@ -213,9 +363,50 @@ void DessenAppActivity::loop() {
         openKeyboard();
         return;
       }
+      // The saved e-ink frame is a large second RAM buffer on X3.
+      // Release it before Wi-Fi/TLS work; the guest repaints the
+      // successful/error result, and only then stores a new frame.
+      if (frameStored && services->needsNetworkHeap()) {
+        renderer.discardStoredBwBuffer();
+        frameStored = false;
+        LOG_INF("DSN", "Reclaimed app frame for network: free=%u max_block=%u",
+                static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()));
+      }
+      if (services->wantsWifiSelection()) {
+        services->wifiSelectionOpened();
+        lock.unlock();
+        // Reuse the firmware's scanning, credential and saved-network UI.
+        // The parked Dessen syscall resumes after the user connects/cancels.
+        auto picker = makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput);
+        if (!picker) {
+          services->completeWifiSelection(false);
+          requestUpdate();
+          return;
+        }
+        startActivityForResult(std::move(picker), [this](const ActivityResult& result) {
+          RenderLock lock(*this);
+          services->completeWifiSelection(!result.isCancelled && WiFi.status() == WL_CONNECTED);
+          requestUpdate();
+        });
+        return;
+      }
       // Blocking work uses the loop stack. Keep the render task out of poll().
       if (services->serviceAsyncWork()) requestUpdate();
       return;
+    }
+    // Periodic wake for the Reading Statistics device-code approval flow.
+    // A timer event does not impersonate a physical/touch input. Other Dessen
+    // apps retain their existing blocking wait_event behavior.
+    if (state == dessen::State::Waiting && appPath.find("/reading-statistics-dessen-rust/") != std::string::npos) {
+      if (hasEvent(snap) || appSwipe != dessen::FreeInkHost::SwipeNone) {
+        lastPairingWakeMs = millis();
+      } else if (millis() - lastPairingWakeMs >= 5000) {
+        lastPairingWakeMs = millis();
+        appSwipe = dessen::FreeInkHost::WakeTick;
+        // A timer wake is not a display invalidation. The VM can poll
+        // silently and request a new frame only if its visible state changed.
+        suppressTimerFrameRestore = true;
+      }
     }
     deliver = state == dessen::State::Waiting && (hasEvent(snap) || appSwipe != dessen::FreeInkHost::SwipeNone);
     if (deliver) {
@@ -243,6 +434,33 @@ void DessenAppActivity::loop() {
           activityManager.replaceActivity(std::move(app));
         else
           leaveApp();  // missing binary / OOM: fall back home
+        break;
+      }
+      case dessen::Launch::NativeStatsPair:
+      case dessen::Launch::NativeStatsRefresh:
+      case dessen::Launch::NativeStatsUnpair: {
+        // Restricted to this first-party Reading Statistics guest. This must
+        // be a full unload: pushing a native picker while the VM stays alive
+        // leaves its 80KiB allocation unavailable to Wi-Fi/TLS.
+        if (homeLauncher || !isStandaloneStatsApp(appPath)) {
+          LOG_ERR("DSN", "Stats pairing/refresh rejected: unsupported app path %s", appPath.c_str());
+          leaveApp();
+          break;
+        }
+        if (!Storage.exists((appPath.substr(0, appPath.find_last_of('/')) + "/device.json").c_str())) {
+          LOG_ERR("DSN", "Stats operation requires bundled device.json");
+          leaveApp();
+          break;
+        }
+        // Exit into an app-owned native networking phase. Firmware resets
+        // before entering Wi-Fi and again before reloading the 80-KiB guest.
+        // No legacy Reading Statistics SD plugin or device.json is consulted.
+        const int action = host.launch() == dessen::Launch::NativeStatsUnpair ? 2
+                           : host.launch() == dessen::Launch::NativeStatsPair ? 0
+                                                                              : 1;
+        LOG_INF("DSN", "Stats handoff accepted: app=%s action=%d", appPath.c_str(), action);
+        unloadGuestForNativeStats();
+        silentRestartToDessenOperation(appPath, action);
         break;
       }
       case dessen::Launch::Settings:
@@ -317,12 +535,14 @@ void DessenAppActivity::render(RenderLock&&) {
     }
     if (state != dessen::State::Running) break;  // still running: loop() asks for another pass
   }
+  const bool skipFrameRestore = suppressTimerFrameRestore;
+  suppressTimerFrameRestore = false;
   // We were re-rendered with no new frame of our own while the app is parked —
   // i.e. a system overlay (the frontlight panel) popped and ActivityManager asked
   // us to repaint. The parked app can't redraw itself, so restore its last frame
   // to wipe the overlay. Gated on a parked state so long in-VM work (e.g. puzzle
   // generation, which also produces no frame) does not repaint every pass.
-  if (!drew && frameStored && (state == dessen::State::Waiting || state == dessen::State::Busy)) {
+  if (!drew && !skipFrameRestore && frameStored && (state == dessen::State::Waiting || state == dessen::State::Busy)) {
     renderer.restoreBwBuffer();  // repaints the saved frame; frees the slot
     renderer.displayBuffer();
     frameStored = renderer.storeBwBuffer();  // re-save it for the next overlay (slot is free)

@@ -68,6 +68,12 @@ void ActivityManager::begin() {
   // stack-resident band pool on top — a measured ~8KB peak that trips the
   // canary on an 8KB stack. Vector-font boards all have PSRAM-class RAM.
   constexpr uint32_t renderTaskStackBytes = 16384;
+#elif FREEINK_DEVICE_X3
+  // The X3 sync-screen renderer has dropped to 80 bytes of free stack
+  // before an ActivityManagerRender stack-canary panic. Reserve another
+  // 2 KiB for nested font/layout paths while preserving a contiguous
+  // allocation for the 80-KiB Dessen guest on this no-PSRAM device.
+  constexpr uint32_t renderTaskStackBytes = 10240;
 #else
   constexpr uint32_t renderTaskStackBytes = 8192;
 #endif

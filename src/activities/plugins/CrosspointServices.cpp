@@ -13,6 +13,7 @@
 #include <HalFrontlight.h>  // declares the `Frontlight` singleton
 #include <HalGPIO.h>        // declares the `gpio` singleton (USB/charge detection)
 #include <HalHaptics.h>
+#include <HalMemory.h>
 #include <HalPowerManager.h>  // declares the `powerManager` singleton
 #include <HalStorage.h>
 #include <I18n.h>  // I18N, Language, LANGUAGE_CODES
@@ -25,6 +26,8 @@
 #include <WiFi.h>
 #include <WifiCredentialStore.h>
 #include <WolfsslCrypto.h>  // freeink::content::WolfsslCrypto
+#include <esp_wifi.h>
+#include <qrcode.h>
 #include <sdk/dessen_abi.h>
 #include <strings.h>
 #include <time.h>
@@ -109,7 +112,7 @@ int writeShelfRow(char* out, uint32_t cap, std::string_view path, std::string_vi
   // Bound it to keep a complete row within the existing ABI's record limit.
   constexpr size_t SERIES_MAX = 100;
   if (series.size() > SERIES_MAX) series = series.substr(0, utf8SafeTruncateBuffer(series.data(), SERIES_MAX));
-  const size_t baseBytes = path.size() + title.size() + author.size() + 2 + 4; // two separators + "\t-1\n"
+  const size_t baseBytes = path.size() + title.size() + author.size() + 2 + 4;  // two separators + "\t-1\n"
   if (!series.empty() && baseBytes + 1 + series.size() > DSN_SHELF_RECORD_MAX)
     series = series.substr(0, utf8SafeTruncateBuffer(series.data(), DSN_SHELF_RECORD_MAX - baseBytes - 1));
   const size_t bytes = baseBytes + (series.empty() ? 0 : 1 + series.size());
@@ -662,6 +665,45 @@ int CrosspointServices::accel(uint8_t*) {
   return DSN_ERR_UNAVAILABLE;
 }
 
+// Build a scannable QR matrix using the firmware's existing native QRCode
+// library. Return bounded row-padded 1bpp pixels to the sandbox; this avoids
+// expensive Reed-Solomon calculations inside the interpreted RV32 guest.
+int CrosspointServices::qrBitmap(const char* link, uint32_t length, uint8_t* out, uint32_t cap) {
+  constexpr uint32_t qrVersion = 4;
+  constexpr uint32_t qrSize = 33;
+  constexpr uint32_t stride = (qrSize + 7) / 8;
+  constexpr uint32_t required = 4 + stride * qrSize;
+  if (!link || length == 0 || length > 72) return DSN_ERR_INVALID;
+  if (!out || cap < required) return DSN_ERR_TOO_BIG;
+  if (std::any_of(link, link + length, [](unsigned char c) { return c < 32 || c > 126; })) {
+    return DSN_ERR_INVALID;
+  }
+  // X3 render task stack has reached under 500 free bytes in serial logs.
+  // Native QRCode's scratch must not consume 512 bytes of that stack.
+  const uint32_t scratchSize = qrcode_getBufferSize(qrVersion);
+  if (!scratchSize || scratchSize > 512) return DSN_ERR_IO;
+  auto scratch = makeUniqueNoThrow<uint8_t[]>(scratchSize);
+  if (!scratch) return DSN_ERR_IO;
+  const std::string url(link, length);
+  QRCode qr{};
+  if (qrcode_initText(&qr, scratch.get(), qrVersion, ECC_LOW, url.c_str()) != 0 || qr.size != qrSize) {
+    return DSN_ERR_INVALID;
+  }
+  out[0] = qrSize;
+  out[1] = 0;
+  out[2] = qrSize;
+  out[3] = 0;
+  memset(out + 4, 0, required - 4);
+  for (uint32_t row = 0; row < qrSize; row++) {
+    for (uint32_t col = 0; col < qrSize; col++) {
+      if (qrcode_getModule(&qr, col, row)) {
+        out[4 + row * stride + col / 8] |= static_cast<uint8_t>(0x80u >> (col & 7));
+      }
+    }
+  }
+  return required;
+}
+
 // ---- async: queue on the render task, execute on the loop task ----
 int CrosspointServices::wifiConnectStart() {
   pending_ = Op::WifiStart;
@@ -718,6 +760,59 @@ bool CrosspointServices::serviceAsyncWork() {
   if (done_) return true;
   switch (pending_) {
     case Op::Net: {
+      // Overview may be the first Wi-Fi user after boot. Try saved credentials
+      // quietly (never launch the picker), preserving the offline local fallback.
+      // All other network operations must explicitly connect first.
+      if (WiFi.status() != WL_CONNECTED) {
+#ifndef BOARD_HAS_PSRAM
+        // ESP32-C3 has no PSRAM. The guest must leave enough internal heap
+        // for Wi-Fi tasks, network events and TLS before Wi-Fi initialization.
+        // A failed initialization otherwise repeatedly consumes the remaining
+        // heap and can crash ActivityManager (X3 serial-log (3).txt).
+        if (ESP.getFreeHeap() < 80000 || ESP.getMaxAllocHeap() < HttpDownloader::MIN_TLS_MAX_ALLOC) {
+          LOG_ERR("DSN", "Overview Wi-Fi skipped: insufficient heap free=%u max=%u",
+                  static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()));
+          result_ = DSN_ERR_UNAVAILABLE;
+          break;
+        }
+#endif
+        constexpr std::string_view overviewRequest = "GET https://sync.techy-notes.com/api/device/overview\n";
+        if (!std::string_view(head_).starts_with(overviewRequest)) {
+          result_ = DSN_ERR_UNAVAILABLE;
+          break;
+        }
+        WIFI_STORE.loadFromFile();
+        const auto last = WIFI_STORE.getLastConnectedSsid();
+        auto cred = last.empty() ? std::nullopt : WIFI_STORE.findCredential(last);
+        if (!cred) cred = WIFI_STORE.getCredentialAt(0);
+        if (!cred) {
+          LOG_INF("DSN", "Overview offline: no saved Wi-Fi network");
+          result_ = DSN_ERR_UNAVAILABLE;
+          break;
+        }
+        const wl_status_t status = WiFi.status();
+        wifi_config_t stationConfig{};
+        const bool configured =
+            esp_wifi_get_config(WIFI_IF_STA, &stationConfig) == ESP_OK && stationConfig.sta.ssid[0] != '\0';
+        if (status != WL_IDLE_STATUS) {
+          if (configured) {
+            const esp_err_t err = esp_wifi_connect();
+            if (err != ESP_OK && err != ESP_ERR_WIFI_STATE) {
+              LOG_ERR("DSN", "Overview silent Wi-Fi join failed: err=0x%x", static_cast<unsigned>(err));
+              result_ = DSN_ERR_UNAVAILABLE;
+              break;
+            }
+          } else {
+            WiFi.persistent(false);
+            WiFi.mode(WIFI_STA);
+            WiFi.begin(cred->ssid.c_str(), cred->password.c_str());
+          }
+        }
+        overviewWifiStart_ = millis();
+        pending_ = Op::NetConnecting;
+        LOG_INF("DSN", "Overview quiet Wi-Fi join started");
+        return false;
+      }
       const std::string_view request = head_;
       const size_t newline = request.find('\n');
       const auto first = request.substr(0, newline);
@@ -769,13 +864,22 @@ bool CrosspointServices::serviceAsyncWork() {
           break;
         }
       }
-      if (result_ < 0) break;
+      if (result_ < 0) {
+        LOG_ERR("DSN", "HTTP header validation failed: err=%d", result_);
+        break;
+      }
 
+      // Log only the HTTP method: URL paths, queries, bodies and headers may
+      // contain pairing codes, credentials or other private material.
+      LOG_INF("DSN", "HTTP request: method=%s", method.c_str());
       // TLS needs a healthy heap; refuse up front rather than OOM mid-handshake
       // (same thresholds as CatalogActivity / FontDownloadActivity).
+      const uint32_t tlsMinBlock = HalMemory::getPsramHeap().totalBytes > 0 ? HttpDownloader::MIN_TLS_MAX_ALLOC_PSRAM
+                                                                            : HttpDownloader::MIN_TLS_MAX_ALLOC;
       if (url.size() >= 6 && strncasecmp(url.data(), "https:", 6) == 0 &&
-          (ESP.getFreeHeap() < HttpDownloader::MIN_TLS_FREE_HEAP ||
-           ESP.getMaxAllocHeap() < HttpDownloader::MIN_TLS_MAX_ALLOC)) {
+          (ESP.getFreeHeap() < HttpDownloader::MIN_TLS_FREE_HEAP || ESP.getMaxAllocHeap() < tlsMinBlock)) {
+        LOG_ERR("DSN", "HTTP TLS heap guard: free=%u max=%u", static_cast<unsigned>(ESP.getFreeHeap()),
+                static_cast<unsigned>(ESP.getMaxAllocHeap()));
         result_ = DSN_ERR_IO;
         break;
       }
@@ -786,6 +890,7 @@ bool CrosspointServices::serviceAsyncWork() {
                                   [&](const uint8_t* bytes, size_t len) { return response.append(bytes, len); });
       if (status == 0) {
         result_ = response.error ? response.error : DSN_ERR_IO;
+        LOG_ERR("DSN", "HTTP transport failed: err=%d", result_);
         break;
       }
       out_[0] = (status >> 8) & 0xff;
@@ -793,8 +898,22 @@ bool CrosspointServices::serviceAsyncWork() {
       out_[2] = 0;
       out_[3] = 0;
       result_ = response.copyTo(out_ + 4);
+      LOG_INF("DSN", "HTTP response: status=%d bytes=%d", status, result_);
       break;
     }
+    case Op::NetConnecting:
+      if (WiFi.status() == WL_CONNECTED) {
+        LOG_INF("DSN", "Overview quiet Wi-Fi connected in %lu ms",
+                static_cast<unsigned long>(millis() - overviewWifiStart_));
+        pending_ = Op::Net;
+        return false;
+      }
+      if (millis() - overviewWifiStart_ > 10000) {
+        LOG_INF("DSN", "Overview offline after quiet Wi-Fi timeout: status=%d", static_cast<int>(WiFi.status()));
+        result_ = DSN_ERR_UNAVAILABLE;
+        break;
+      }
+      return false;
     case Op::Fetch: {
       size_t bytes = 0;
       if (strncasecmp(url_.c_str(), "https:", 6) == 0 && (ESP.getFreeHeap() < HttpDownloader::MIN_TLS_FREE_HEAP ||
@@ -829,7 +948,17 @@ bool CrosspointServices::serviceAsyncWork() {
       break;
     }
     case Op::WifiStart: {
+#ifndef BOARD_HAS_PSRAM
+      if (WiFi.status() != WL_CONNECTED &&
+          (ESP.getFreeHeap() < 80000 || ESP.getMaxAllocHeap() < HttpDownloader::MIN_TLS_MAX_ALLOC)) {
+        LOG_ERR("DSN", "Wi-Fi start refused: insufficient heap free=%u max=%u",
+                static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()));
+        result_ = DSN_ERR_UNAVAILABLE;
+        break;
+      }
+#endif
       if (WiFi.status() == WL_CONNECTED) {
+        LOG_INF("DSN", "Wi-Fi already connected");
         result_ = 0;
         break;
       }
@@ -839,31 +968,73 @@ bool CrosspointServices::serviceAsyncWork() {
       auto cred = last.empty() ? std::nullopt : WIFI_STORE.findCredential(last);
       if (!cred) cred = WIFI_STORE.getCredentialAt(0);
       if (!cred) {
-        result_ = DSN_ERR_UNAVAILABLE;
-        break;
+        LOG_INF("DSN", "Wi-Fi: no saved credentials, opening network picker");
+        pending_ = Op::WifiSelecting;
+        return false;
       }
-      WiFi.persistent(false);
-      WiFi.mode(WIFI_STA);
-      WiFi.begin(cred->ssid.c_str(), cred->password.c_str());
+      // WL_IDLE_STATUS means associated but still waiting for an IP address.
+      // WL_DISCONNECTED does NOT mean a join is in progress. The station may
+      // retain its configuration while idle; explicitly ask ESP-IDF to join
+      // using that config rather than blindly waiting 20 seconds.
+      const wl_status_t status = WiFi.status();
+      wifi_config_t stationConfig{};
+      const bool configured =
+          esp_wifi_get_config(WIFI_IF_STA, &stationConfig) == ESP_OK && stationConfig.sta.ssid[0] != '\0';
+      LOG_INF("DSN", "Wi-Fi request: status=%d configured=%d", static_cast<int>(status), configured ? 1 : 0);
+      if (status != WL_IDLE_STATUS) {
+        if (configured) {
+          // esp_wifi_connect() does not rewrite configuration. ESP_ERR_WIFI_STATE
+          // is benign here: another task/auto-reconnect is already joining.
+          const esp_err_t err = esp_wifi_connect();
+          if (err != ESP_OK && err != ESP_ERR_WIFI_STATE) {
+            LOG_ERR("DSN", "Wi-Fi join request failed: err=0x%x, opening network picker", static_cast<unsigned>(err));
+            pending_ = Op::WifiSelecting;
+            return false;
+          }
+          LOG_INF("DSN", "Wi-Fi join: %s", err == ESP_OK ? "requested" : "already in progress");
+        } else {
+          WiFi.persistent(false);
+          WiFi.mode(WIFI_STA);
+          LOG_INF("DSN", "Wi-Fi begin: saved credentials");
+          WiFi.begin(cred->ssid.c_str(), cred->password.c_str());
+        }
+      } else {
+        LOG_INF("DSN", "Wi-Fi already associated; waiting for IP");
+      }
       wifiStart_ = millis();
       pending_ = Op::WifiConnecting;
       return false;
     }
     case Op::WifiConnecting:
       if (WiFi.status() == WL_CONNECTED) {
+        LOG_INF("DSN", "Wi-Fi connected in %lu ms", static_cast<unsigned long>(millis() - wifiStart_));
         result_ = 0;
       } else if (millis() - wifiStart_ > 20000) {
-        result_ = DSN_ERR_IO;
+        LOG_ERR("DSN", "Wi-Fi timeout after %lu ms: status=%d", static_cast<unsigned long>(millis() - wifiStart_),
+                static_cast<int>(WiFi.status()));
+        pending_ = Op::WifiSelecting;
+        return false;
       } else {
         return false;
       }
       break;
+    case Op::WifiSelecting:
+      // Paused while native Wi-Fi selection screen handles scanning/credentials.
+      return false;
     case Op::None:
     case Op::TextInput:
       return false;
   }
   done_ = true;
   return true;
+}
+
+void CrosspointServices::completeWifiSelection(bool connected) {
+  if (pending_ != Op::WifiSelecting) return;
+  LOG_INF("DSN", "Wi-Fi network picker: %s", connected && WiFi.status() == WL_CONNECTED ? "connected" : "cancelled");
+  result_ = connected && WiFi.status() == WL_CONNECTED ? 0 : DSN_ERR_IO;
+  wifiPickerOpen_ = false;
+  done_ = true;
 }
 
 void CrosspointServices::deliverText(const char* text) {

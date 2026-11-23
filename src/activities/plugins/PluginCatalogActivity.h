@@ -47,11 +47,12 @@ class PluginCatalogActivity : public CatalogActivity {
   // rootMode returns Home instead of popping to Settings.
   // Out-of-line construction/destruction needs the complete SecureHttpClient type.
   explicit PluginCatalogActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool rootMode = false,
-                                 std::string initialPlugin = {});
+                                 std::string initialPlugin = {}, bool forceInitialCatalog = false);
   ~PluginCatalogActivity() override;
 
   void onEnter() override;
   void onExit() override;
+  bool handleHomeGesture() override;
 
  protected:
   // Generic hosts can claim supported local plugin manifests while leaving all
@@ -253,7 +254,8 @@ class PluginCatalogActivity : public CatalogActivity {
   OptionPopup pluginHubPopup;
   bool rootMode = false;
   std::string initialPlugin;
-  std::string pickerReturnName;  // plugin identity to reselect after leaving a catalog
+  bool forceInitialCatalog = false;  // Dessen pairing: use bundled device.json instead of recursively launching app.bin
+  std::string pickerReturnName;      // plugin identity to reselect after leaving a catalog
   std::vector<Item> items;
   // Row buffer over the active content. Footer paging is a separate native
   // FreeInkUI control and never occupies an item row.

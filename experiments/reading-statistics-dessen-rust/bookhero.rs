@@ -14,7 +14,7 @@ impl Ui {
         if self.footer_height() == 0 { return; }
         let y = self.h - 34;
         let book_controls = page == 0 && books > 1;
-        let can_open = (page == 0 && books > 0) || page == 2;
+        let can_open = (page == 0 && books > 0) || page == 2 || page == 6;
         let labels: [&[u8]; 4] = [
             b"Back", if can_open { b"Open" } else { b"" },
             if book_controls { b"Prev Book" } else { b"Prev Page" },

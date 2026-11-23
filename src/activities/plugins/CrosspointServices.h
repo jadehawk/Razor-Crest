@@ -50,6 +50,9 @@ class CrosspointServices : public dessen::Services {
   int recentShelf(uint32_t first, uint32_t count, char* out, uint32_t cap) override;
   int bookProgress(const char* path) override;
   int bookCover(const char* path, uint32_t height, uint8_t* out, uint32_t cap) override;
+  int qrBitmap(const char* link, uint32_t length, uint8_t* out, uint32_t cap) override;
+  // All boards use the same reboot-isolated firmware networking lifecycle.
+  int nativeStatsMode() override { return 1; }
   int wifiConnectStart() override;
 
   // ---- crypto (all wrap freeink::content::Crypto) ----
@@ -77,6 +80,13 @@ class CrosspointServices : public dessen::Services {
 
   // ---- loop-task side, driven by DessenAppActivity ----
   bool wantsKeyboard() const { return pending_ == Op::TextInput && !done_; }
+  bool needsNetworkHeap() const {
+    return !done_ && (pending_ == Op::Net || pending_ == Op::NetConnecting || pending_ == Op::Fetch ||
+                      pending_ == Op::WifiStart || pending_ == Op::WifiConnecting || pending_ == Op::WifiSelecting);
+  }
+  bool wantsWifiSelection() const { return pending_ == Op::WifiSelecting && !done_ && !wifiPickerOpen_; }
+  void wifiSelectionOpened() { wifiPickerOpen_ = true; }
+  void completeWifiSelection(bool connected);
   // Run work on the loop task. True when render can resume the VM.
   bool serviceAsyncWork();
   // The keyboard prompt the app asked for.
@@ -86,7 +96,17 @@ class CrosspointServices : public dessen::Services {
   void cancelText();
 
  private:
-  enum class Op : uint8_t { None, Net, Fetch, Keygen, TextInput, WifiStart, WifiConnecting };
+  enum class Op : uint8_t {
+    None,
+    Net,
+    NetConnecting,
+    Fetch,
+    Keygen,
+    TextInput,
+    WifiStart,
+    WifiConnecting,
+    WifiSelecting
+  };
 
   static int resolve(const char* path, uint32_t maxLen = 255);  // validates an app path (already the SD path)
 
@@ -109,6 +129,8 @@ class CrosspointServices : public dessen::Services {
   uint32_t privCap_ = 0;
   uint32_t bits_ = 0;
   unsigned long wifiStart_ = 0;
+  unsigned long overviewWifiStart_ = 0;
+  bool wifiPickerOpen_ = false;
 };
 
 #endif  // CROSSPOINT_DESSEN_APPS

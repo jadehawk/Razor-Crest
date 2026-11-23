@@ -17,6 +17,25 @@ include!("preview.rs"); // Local preview of the future server-wide Overall Stati
 include!("bookhero.rs"); // Shared Current Book and Continue Reading hero card.
 include!("pages.rs"); // Your Week and All Books.
 include!("calendar.rs"); // Native-style Reading Calendar.
+include!("sync.rs"); // Optional Techy-Notes device-code registration.
+include!("qr.rs"); // Scannable QR with prefilled pairing link.
+include!("server.rs"); // Account-scoped server totals; local offline fallback.
+// Resume marker follows the Dessen app's actual SD root. All supported
+// plugin roots work; the firmware has already unloaded the VM on handoff.
+fn native_resume_path(path: &mut [u8; 192]) -> usize {
+    const SUFFIX: &[u8] = b"/resume-page";
+    let n = dsn_fs_app_dir(path);
+    if n <= 0 || n as usize + SUFFIX.len() > path.len() { return 0; }
+    let end = n as usize;
+    path[end..end + SUFFIX.len()].copy_from_slice(SUFFIX);
+    end + SUFFIX.len()
+}
+fn native_stats_handoff(action: i32, page: u8) {
+    let mut path = [0u8; 192];
+    let n = native_resume_path(&mut path);
+    if n > 0 { let _ = dsn_fs_write(&path[..n], &[page]); }
+    let _ = dsn_native_stats(action);
+}
 
 // sdk/dessen_abi.h
 const BLACK: i32 = 1;
@@ -359,12 +378,46 @@ pub extern "C" fn main() -> i32 {
     let month_day = if have_clock { c[3] as u32 } else { 0 };
     let mut carousel = BookCarousel::new();
     carousel.load();
+    let native_stats = dsn_native_stats_mode() > 0;
+    let mut pairing = Pairing::new();
+    let mut server = ServerOverall::new();
+    if native_stats && pairing.phase == PairPhase::Paired { server.load_cached(); }
     let mut page = 0;
+    if native_stats {
+        let mut previous = [0u8; 1];
+        let mut path = [0u8; 192];
+        let n = native_resume_path(&mut path);
+        if n > 0 {
+            if dsn_fs_read(&path[..n], &mut previous) == 1 && previous[0] <= 6 {
+                page = previous[0] as i32;
+            }
+            let _ = dsn_fs_delete(&path[..n]);
+        }
+    }
+    let mut previous_page = 0;
+    let mut confirm_month_sync = false;
+    let mut confirm_disconnect = false;
+    let mut syncing_month = false;
     let mut book_offset = 0u32;
     let mut calendar_offset = 0u32; // months before the current month
     loop {
-        if page == 0 {
-            ui.overall_preview(&st, month_day, have_clock, &carousel);
+        // A first attempt can fail quietly while Wi-Fi is initially off.
+        // Returning from Server Sync (where Wi-Fi may have been connected
+        // for Web PIN generation) must retry the account-wide Overview.
+        if page == 0 && previous_page != 0 && pairing.phase == PairPhase::Paired {
+            server.attempted = false;
+            server.attempts = 0;
+        }
+        previous_page = page;
+        if page == 6 && confirm_disconnect {
+            ui.sync_unpair_confirmation();
+        } else if page == 0 && confirm_month_sync {
+            ui.overall_sync_confirmation();
+        } else if page == 0 {
+            ui.overall_preview(&st, month_day, have_clock, &carousel, &server,
+                               pairing.phase == PairPhase::Paired, syncing_month);
+        } else if page == 6 {
+            ui.sync_page(&pairing, native_stats);
         } else if page <= 2 {
             ui.dashboard_render(&st, &home, &detail, page - 1, month_day, have_clock);
         } else {
@@ -378,16 +431,114 @@ pub extern "C" fn main() -> i32 {
         }
         ui.draw_footer(page, carousel.count);
         dsn_refresh();
+        // The confirmation is painted first. Only after a second, explicit
+        // confirmation do we display Syncing... before the firmware reboot.
+        if syncing_month {
+            syncing_month = false;
+            if native_stats {
+                native_stats_handoff(1, 0);
+            } else {
+                server.attempted = false;
+                server.attempts = 0;
+                server.fetch(&pairing);
+            }
+            continue;
+        }
+        // Show local statistics promptly. Fetch account-wide statistics once
+        // after the initial frame, or again when explicitly refreshed.
+        if page == 0 && pairing.phase == PairPhase::Paired && !server.attempted {
+            if native_stats { server.load_cached(); } else { server.fetch(&pairing); }
+            continue;
+        }
         loop {
+            // First repaint the "Requesting/Checking" state. Run the blocking
+            // network syscall only after Dessen has queued that display update.
+            if pairing.pending && !native_stats {
+                pairing.activate();
+                break;
+            }
             let e = dsn_wait_event();
+            if confirm_disconnect {
+                match e & 0xff {
+                    1 => { confirm_disconnect = false; native_stats_handoff(2, 0); break; }
+                    2 => { confirm_disconnect = false; break; }
+                    5 => {
+                        let x = ((e >> 8) & 0xfff) as i32;
+                        let y = ((e >> 20) & 0xfff) as i32;
+                        let (yes_x, no_x, by, bw, bh) = ui.overall_sync_confirmation_buttons();
+                        if y >= by && y < by + bh && x >= yes_x && x < yes_x + bw {
+                            confirm_disconnect = false;
+                            native_stats_handoff(2, 0);
+                        } else if x >= no_x && x < no_x + bw && y >= by && y < by + bh {
+                            confirm_disconnect = false;
+                        }
+                        break;
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+            if confirm_month_sync {
+                match e & 0xff {
+                    1 => { confirm_month_sync = false; syncing_month = true; break; }
+                    2 => { confirm_month_sync = false; break; }
+                    5 => {
+                        let x = ((e >> 8) & 0xfff) as i32;
+                        let y = ((e >> 20) & 0xfff) as i32;
+                        let (yes_x, no_x, by, bw, bh) = ui.overall_sync_confirmation_buttons();
+                        if y >= by && y < by + bh && x >= yes_x && x < yes_x + bw {
+                            confirm_month_sync = false;
+                            syncing_month = true;
+                        } else if y < by || y >= by + bh || x >= no_x && x < no_x + bw {
+                            confirm_month_sync = false;
+                        }
+                        break;
+                    }
+                    _ => {}
+                }
+                continue;
+            }
             match e & 0xff {
+                11 if !native_stats && page == 0 && pairing.phase == PairPhase::Paired &&
+                    server.attempted && !server.available && server.attempts < 3 => {
+                    // Retry twice after transient Wi-Fi/TLS startup failures.
+                    // Don't redraw e-paper unless remote data actually arrives.
+                    server.fetch(&pairing);
+                    if server.available { break; }
+                }
                 1 if page == 0 => {
                     if let Some(book) = carousel.current() { dsn_open_book(book.path()); }
                 }
                 1 if page == 2 && home.has_book() => { dsn_open_book(home.field(0)); }
+                1 if page == 6 => {
+                    if native_stats { native_stats_handoff(if pairing.phase == PairPhase::Paired { 1 } else { 0 }, 0); }
+                    else { pairing.schedule(); }
+                    break;
+                }
+                11 if !native_stats && page == 6 && pairing.phase == PairPhase::Paired && pairing.web_valid => {
+                    if dsn_time().wrapping_sub(pairing.web_started) >= 600 {
+                        pairing.web_valid = false;
+                        pairing.message = b"Web PIN expired. Generate a new one";
+                        break;
+                    }
+                }
+                11 if !native_stats && page == 6 && pairing.phase == PairPhase::Code => {
+                    // Firmware's five-second wake event. Check quietly without
+                    // two full e-ink refreshes per poll; repaint only when the
+                    // visible status/phase actually changes.
+                    let previous_message = pairing.message;
+                    pairing.poll();
+                    if pairing.phase != PairPhase::Code || pairing.message != previous_message {
+                        break;
+                    }
+                }
                 2 if page == 0 => return 0,
                 2 => { page = 0; break; }
                 3 | 8 | 10 => {
+                    if native_stats && page == 6 && pairing.phase == PairPhase::Paired && (e & 0xff) == 3 {
+                        confirm_disconnect = true;
+                        break;
+                    }
                     // Front Previous browses books when there are multiple.
                     // The configured side key always pages, regardless of book count.
                     if page == 0 && carousel.count > 1 &&
@@ -398,7 +549,7 @@ pub extern "C" fn main() -> i32 {
                         break;
                     }
                     if page == 5 && book_offset >= 5 { book_offset -= 5; }
-                    else { page = (page + 5) % 6; }
+                    else { page = (page + 6) % 7; }
                     break;
                 }
                 4 | 7 | 9 => {
@@ -410,7 +561,7 @@ pub extern "C" fn main() -> i32 {
                         break;
                     }
                     if page == 5 && book_offset + 5 < st.book_count { book_offset += 5; }
-                    else { page = (page + 1) % 6; }
+                    else { page = (page + 1) % 7; }
                     break;
                 }
                 5 => {
@@ -422,6 +573,17 @@ pub extern "C" fn main() -> i32 {
                         page = 0;
                         break;
                     } else if page == 0 {
+                        let (mx, my, mw, mh) = ui.overall_month_bounds();
+                        if ui.touch && x >= mx && x < mx + mw &&
+                           y >= my && y < my + mh {
+                            // The entire month widget opens a confirmation,
+                            // never starts networking or advances the page.
+                            if pairing.phase == PairPhase::Paired {
+                                server.icon_revealed = true;
+                                confirm_month_sync = true;
+                            }
+                            break;
+                        }
                         if ui.overall_carousel_contains(x, y) && carousel.count > 0 {
                             if let Some(book) = carousel.current() { dsn_open_book(book.path()); }
                         } else {
@@ -436,10 +598,34 @@ pub extern "C" fn main() -> i32 {
                               y < 13 + ui.ls + ui.lt * 2 + 20 && x > ui.w * 3 / 4 {
                         calendar_offset = calendar_offset.saturating_sub(1);
                         break;
+                    } else if page == 6 {
+                        // This is a single-action page. Accept taps anywhere
+                        // in the content card: real devices may report a small
+                        // offset between FreeInk drawing and touch coordinates.
+                        if ui.touch && y >= 13 + ui.ls + ui.lt &&
+                            x >= G && x < ui.w - G &&
+                            y < ui.content_bottom() {
+                            if native_stats && pairing.phase == PairPhase::Paired {
+                                let (dx, dy, dw, dh) = ui.disconnect_button_bounds();
+                                if x >= dx && x < dx + dw && y >= dy && y < dy + dh {
+                                    confirm_disconnect = true;
+                                    break;
+                                }
+                            }
+                            let (bx, by, bw, bh) = ui.sync_button_bounds();
+                            // A scanned PIN must remain valid while viewing
+                            // the QR: only its action button regenerates it.
+                            if pairing.phase != PairPhase::Paired ||
+                                (x >= bx && x < bx + bw && y >= by && y < by + bh) {
+                                if native_stats { native_stats_handoff(if pairing.phase == PairPhase::Paired { 1 } else { 0 }, 0); }
+                                else { pairing.schedule(); }
+                                break;
+                            }
+                        }
                     } else if page == 2 && home.has_book() && y < (13 + ui.ls + ui.lt) + (ui.content_bottom() - (13 + ui.ls + ui.lt) - 33) * 35 / 100 {
                         dsn_open_book(home.field(0));
                     } else {
-                        page = (page + 1) % 6;
+                        page = (page + 1) % 7;
                         break;
                     }
                 }

@@ -118,7 +118,57 @@ impl Ui {
         x >= G && x < self.w - G && y >= top && y < top + height
     }
 
-    fn overall_preview(&self, st: &Stats, month_day: u32, clock_ok: bool, carousel: &BookCarousel) {
+    fn overall_month_bounds(&self) -> (i32, i32, i32, i32) {
+        let y = 13 + self.ls + self.lt;
+        let available = (self.content_bottom() - y - 13).max(1);
+        (G, y, self.w - 2 * G, available * 31 / 100)
+    }
+
+    // Sync icon stays hidden after a fresh successful sync until the user
+    // touches This Month, or the last success ages beyond 24 hours.
+    fn overall_refresh_bounds(&self) -> (i32, i32, i32, i32) {
+        let top = 13 + self.ls + self.lt;
+        (self.w - G - 42, top + 1, 38, 34)
+    }
+
+    // Confirmation replaces the Overall viewport but keeps its page index.
+    // Touch zones and hardware Confirm/Back are both supported.
+    fn overall_sync_confirmation(&self) {
+        dsn_clear();
+        self.header(0);
+        let x = G;
+        let w = self.w - 2 * G;
+        let y = 13 + self.ls + self.lt;
+        let h = (self.content_bottom() - y - 13).max(1);
+        self.panel(x, y, w, h);
+        let mid = y + h / 2;
+        text(x + 10, mid - 2 * self.lt - 18, w - 20, self.lt,
+             b"Sync with server?", TITLE, CENTER, BOLD);
+        text(x + 10, mid - self.ls - 8, w - 20, self.ls,
+             b"Download updated reading totals", SMALL, CENTER, 0);
+        let (yes_x, no_x, by, bw, bh) = self.overall_sync_confirmation_buttons();
+        dsn_stroke(yes_x, by, bw, bh, BLACK, 2, 7, 15);
+        dsn_stroke(no_x, by, bw, bh, BLACK, 1, 7, 15);
+        text(yes_x + 4, by + (bh - self.lb) / 2, bw - 8, self.lb,
+             b"Sync now", BODY, CENTER, BOLD);
+        text(no_x + 4, by + (bh - self.lb) / 2, bw - 8, self.lb,
+             b"Cancel", BODY, CENTER, 0);
+    }
+
+    fn overall_sync_confirmation_buttons(&self) -> (i32, i32, i32, i32, i32) {
+        let x = G;
+        let w = self.w - 2 * G;
+        let y = 13 + self.ls + self.lt;
+        let h = (self.content_bottom() - y - 13).max(1);
+        let gap = 12;
+        let width = (w - 32 - gap) / 2;
+        let bh = (self.lb + 19).max(36);
+        let button_y = (y + h / 2 + 12).min(y + h - bh - 10);
+        (x + 10, x + w - 10 - width, button_y, width, bh)
+    }
+
+    fn overall_preview(&self, st: &Stats, month_day: u32, clock_ok: bool, carousel: &BookCarousel,
+                       server: &ServerOverall, paired: bool, syncing: bool) {
         dsn_clear();
         self.header(0);
         let x = G;
@@ -132,7 +182,35 @@ impl Ui {
         let recent_h = (y + available - recent_y).max(1);
 
         self.panel(x, y, w, hero_h);
-        text(x + 8, y + 6, w - 16, self.ls, b"THIS MONTH - LOCAL PREVIEW", SMALL, CENTER, BOLD);
+        let headline: &[u8] = if server.available { b"THIS MONTH - SERVER" }
+            else { b"THIS MONTH" };
+        let stale = server.last_synced == 0 || dsn_time().saturating_sub(server.last_synced) >= 86_400;
+        let show_icon = paired && (server.icon_revealed || stale);
+        let heading_width = if show_icon { w - 58 } else { w - 16 };
+        text(x + 8, y + 6, heading_width, self.ls, headline, SMALL, CENTER, BOLD);
+        if show_icon {
+            let (bx, by, bw, bh) = self.overall_refresh_bounds();
+            let cx = bx + bw / 2;
+            let cy = by + bh / 2;
+            // Circular sync arrows, pure line geometry: no font glyph or
+            // extra Dessen ABI dependency, clearly visible on grayscale e-ink.
+            for (ax, ay, ex, ey) in [
+                (cx - 8, cy, cx - 6, cy - 6),
+                (cx - 6, cy - 6, cx, cy - 9),
+                (cx, cy - 9, cx + 7, cy - 7),
+                (cx + 7, cy - 7, cx + 9, cy - 3),
+                (cx + 8, cy, cx + 6, cy + 6),
+                (cx + 6, cy + 6, cx, cy + 9),
+                (cx, cy + 9, cx - 7, cy + 7),
+                (cx - 7, cy + 7, cx - 9, cy + 3),
+                (cx + 9, cy - 3, cx + 3, cy - 4),
+                (cx + 9, cy - 3, cx + 11, cy - 9),
+                (cx - 9, cy + 3, cx - 3, cy + 4),
+                (cx - 9, cy + 3, cx - 11, cy + 9),
+            ] {
+                dsn_line(ax, ay, ex, ey, 2, BLACK);
+            }
+        }
         let mut month_secs = 0u64;
         let mut active = 0u32;
         if clock_ok {
@@ -142,16 +220,20 @@ impl Ui {
                 if seconds > 0 { active += 1; }
             }
         }
-        let month = if clock_ok {
+        if server.available { month_secs = server.month_seconds as u64; active = server.month_active_days; }
+        let month = if syncing { S::new().s(b"Syncing...")
+        } else if clock_ok || server.available {
             dur(month_secs.min(u32::MAX as u64) as u32)
         } else { S::new().s(b"--") };
         let big_h = dsn_line_height(LARGE);
         text(x + 8, y + self.ls + 12, w - 16, big_h, month.get(), LARGE, CENTER, BOLD);
         let line_y = y + hero_h * 56 / 100;
         dsn_line(x + 8, line_y, x + w - 8, line_y, 1, DARK);
-        let values = [S::new().n(st.streaks().0),
-            if clock_ok { S::new().n(active) } else { S::new().s(b"--") },
-            S::new().n(st.book_count)];
+        let values = [
+            S::new().n(if server.available { server.current_streak } else { st.streaks().0 }),
+            if clock_ok || server.available { S::new().n(active) } else { S::new().s(b"--") },
+            S::new().n(if server.available { server.books } else { st.book_count }),
+        ];
         let labels: [&[u8]; 3] = [b"Day Streak", b"Active Days", b"Books"];
         for i in 0..3 {
             let cx = x + (w * (2 * i + 1)) / 6;
@@ -166,14 +248,18 @@ impl Ui {
 
         let mw = (w - gap) / 2;
         let mh = (metrics_h - gap) / 2;
-        self.metric(x, y + hero_h + gap, mw, mh, b"Sessions", S::new().n(st.sessions).get(), 0);
+        self.metric(x, y + hero_h + gap, mw, mh, b"Sessions",
+            S::new().n(if server.available { server.sessions } else { st.sessions }).get(), 0);
         self.metric(x + mw + gap, y + hero_h + gap, w - mw - gap, mh,
-            b"Page Turns", S::new().n(st.progress_bp).get(), 1);
+            b"Page Turns", S::new().n(if server.available { server.page_turns } else { st.progress_bp }).get(), 1);
         // Two distinct statistics from retained device history (up to 371
         // days). Avoid repeating the month's time and book count above.
         let (best_day, daily_average, active_days) = st.daily_summary();
-        let best_label = if active_days > 0 { dur(best_day) } else { S::new().s(b"--") };
-        let avg_label = if active_days > 0 { dur(daily_average) } else { S::new().s(b"--") };
+        let best = if server.available { server.best_day_seconds } else { best_day };
+        let avg = if server.available { server.daily_average_seconds } else { daily_average };
+        let have_days = if server.available { server.month_active_days > 0 } else { active_days > 0 };
+        let best_label = if have_days { dur(best) } else { S::new().s(b"--") };
+        let avg_label = if have_days { dur(avg) } else { S::new().s(b"--") };
         self.metric(x, y + hero_h + gap + mh + gap, mw, mh,
             b"Best Day", best_label.get(), 3);
         self.metric(x + mw + gap, y + hero_h + gap + mh + gap, w - mw - gap, mh,

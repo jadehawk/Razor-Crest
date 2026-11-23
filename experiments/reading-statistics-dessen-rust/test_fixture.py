@@ -47,7 +47,7 @@ def main(host,app):
     with tempfile.TemporaryDirectory() as temp:
         root=Path(temp)
         empty=run(host,app,root,b"b")
-        assert "Overall Statistics" in empty and "LOCAL PREVIEW" in empty and "Continue Reading" in empty,empty[-2000:]
+        assert "Overall Statistics" in empty and "THIS MONTH" in empty and "Continue Reading" in empty,empty[-2000:]
         assert "Best Day" in empty and "Daily Avg." in empty
         assert not re.search(r"(?m)^text \d+,\d+ Total Time$", empty), "Repeated total time widget"
         assert not re.search(r"(?m)^text \d+,\d+ Books$", empty.split("Continue Reading")[0].split("Page Turns")[-1]), "Repeated books widget"
@@ -115,11 +115,11 @@ def main(host,app):
         side_next = run(host, app, root, b"db", touch=False)
         assert "Device Statistics" in side_next, "Side Next must switch statistics pages"
         side_prev = run(host, app, root, b"ub", touch=False)
-        assert "All Books" in side_prev, "Side Previous must switch statistics pages"
+        assert "Server Sync" in side_prev, "Side Previous must switch statistics pages"
         single = run(host, app, root, b"nb", touch=False, one_book=True)
         assert "Device Statistics" in single, "With one book, front Next must page"
         single_prev = run(host, app, root, b"pb", touch=False, one_book=True)
-        assert "All Books" in single_prev, "With one book, front Prev must page"
+        assert "Server Sync" in single_prev, "With one book, front Prev must page"
         single_home = run(host, app, root, b"b", touch=False, one_book=True)
         assert "Prev Book" not in single_home and "Next Book" not in single_home
         assert "Prev Page" in single_home and "Next Page" in single_home
@@ -195,7 +195,7 @@ def main(host,app):
         assert "Overall Statistics" in run(host,app,root,b"b")
         (folder/"global_v2.bin.bak").write_bytes(b"corrupt")
         assert "0m" in run(host,app,root,b"b")
-        print("PASS: six offline pages; local overall preview; native totals; book data; period bars; calendar; page turns; read-only; backup; corruption")
+        print("PASS: six offline pages plus Server Sync; local overall totals; native totals; book data; period bars; calendar; page turns; read-only; backup; corruption")
 
 if __name__=="__main__":
     main(*sys.argv[1:3])

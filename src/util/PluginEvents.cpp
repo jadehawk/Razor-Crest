@@ -51,10 +51,10 @@ struct Subscriber {
   uint8_t mask = 0;            // bit per Event
   uint8_t connectMask = 0;     // events whose handler declares "connect": true
   uint8_t sleepImageMask = 0;  // events whose handler downloads a sleep-screen source
-  uint8_t appMask = 0;       // events whose handler routes to a dessen app ("app")
-  uint8_t launchMask = 0;    // app events with "mode": "launch" (open the app now)
-  bool replacesEob = false;  // reader.end handler marked "replaces": "end of book"
-  char launchBin[40] = {0};  // launch handler's declared "app" binary; "" = app.bin
+  uint8_t appMask = 0;         // events whose handler routes to a dessen app ("app")
+  uint8_t launchMask = 0;      // app events with "mode": "launch" (open the app now)
+  bool replacesEob = false;    // reader.end handler marked "replaces": "end of book"
+  char launchBin[40] = {0};    // launch handler's declared "app" binary; "" = app.bin
   // Hash of each handler's "require_meta" key, 0 = unfiltered. A hash keeps
   // emit() free of manifest reads; a collision only queues an extra event.
   uint32_t metaKeyHash[static_cast<size_t>(pluginevents::Event::COUNT)] = {};
@@ -218,6 +218,11 @@ uint8_t subscriptionMask(const char* plugin) {
 bool wantsConnect(const DrainKind kind) {
   for (const auto& sub : subscribers) {
     if (sub.name[0] == '\0' || sub.connectMask == 0) continue;
+    if (strcmp(sub.name, "reading-statistics") == 0) {
+      std::string token;
+      if (!pluginhttp::loadTokenFromFile("/.crosspoint/reading-statistics-token.json", "token", token) || token.empty())
+        continue;
+    }
     std::string raw;
     if (!Storage.readFileToString("PEVT", outboxPath(sub), MAX_OUTBOX_BYTES + MAX_EVENT_LINE, raw)) continue;
     for (size_t i = 0; i < static_cast<size_t>(Event::COUNT); i++) {
@@ -269,6 +274,14 @@ bool emit(const Event e, const Var* vars, const size_t varCount) {
   bool armedReplacer = false;  // a "replaces: end of book" handler actually fired and launched
   for (const auto& sub : subscribers) {
     if (sub.name[0] == '\0' || !(sub.mask & eventBit(e))) continue;
+    // Avoid bringing Wi-Fi up on every sleep for an unpaired statistics
+    // reader. Its sleep download is only meaningful with the native SD
+    // plugin's persistent account token; leave other event handlers alone.
+    if (e == Event::SleepEnter && strcmp(sub.name, "reading-statistics") == 0) {
+      std::string token;
+      if (!pluginhttp::loadTokenFromFile("/.crosspoint/reading-statistics-token.json", "token", token) || token.empty())
+        continue;
+    }
     const uint32_t wanted = sub.metaKeyHash[static_cast<size_t>(e)];
     if (wanted != 0) {
       // Filtered at queue time, so other books' events take no outbox space
@@ -395,8 +408,19 @@ bool loadDrainManifest(const Subscriber& sub, DrainManifest& out) {
     JsonVariantConst dl = kv.value()["download"];
     if (dl["url"].as<const char*>()) {
       pluginhttp::readRequest(dl, "GET", h.req);
-      h.dest = dl["dest"] | "";
-      if (h.dest.empty()) continue;  // a download without a destination is meaningless
+      const char* rawDest = dl["dest"] | "";
+      if (!rawDest[0]) continue;  // download without a destination
+      if (rawDest[0] == '/') {
+        h.dest = rawDest;  // existing absolute plugin download destinations
+      } else {
+        // Optional plugin-local basename. Never let a manifest traverse into
+        // another plugin's directory or select a protected credential path.
+        const size_t nameLen = strlen(rawDest);
+        if (nameLen > 64 || strstr(rawDest, "..") || strpbrk(rawDest, "/\\") ||
+            strspn(rawDest, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-") != nameLen)
+          continue;
+        h.dest = std::string(sub.dir) + "/" + rawDest;
+      }
     } else {
       pluginhttp::readRequest(kv.value()["request"], "POST", h.req);
     }

@@ -199,7 +199,8 @@ impl Ui {
             2 => b"Current Book",
             3 => b"Your Week",
             4 => b"Reading Calendar",
-            _ => b"All Books",
+            5 => b"All Books",
+            _ => b"Server Sync",
         };
         if self.touch {
             let arrow_y = 5 + self.ls + self.lt / 2;

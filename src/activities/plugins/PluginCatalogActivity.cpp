@@ -433,7 +433,12 @@ bool PluginCatalogActivity::loadManifest() {
   // Do not allow arbitrary plugin manifests to read/replace the unified
   // Reading Statistics credential through declarative auth or settings.
   constexpr const char* statsToken = "/.crosspoint/reading-statistics-token.json";
-  const bool trustedStatisticsPlugin = pluginDir == PluginLocations::findPluginDir("reading-statistics");
+  const bool trustedDessenStats =
+      ((pluginDir == PluginLocations::findPluginDir("reading-stats-dessen") && !pluginDir.empty()) ||
+       (pluginDir == PluginLocations::findPluginDir("reading-statistics-dessen-rust") && !pluginDir.empty())) &&
+      Storage.exists((pluginDir + "/app.bin").c_str());
+  const bool trustedStatisticsPlugin =
+      pluginDir == PluginLocations::findPluginDir("reading-statistics") || trustedDessenStats;
   if ((manifest.tokenFile == statsToken && !trustedStatisticsPlugin) || manifest.configFile == statsToken) return false;
 
   JsonVariantConst browse = doc["browse"];
@@ -889,10 +894,12 @@ std::string PluginCatalogActivity::downloadDir() const {
 }
 
 PluginCatalogActivity::PluginCatalogActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                             const bool rootMode, std::string initialPlugin)
+                                             const bool rootMode, std::string initialPlugin,
+                                             const bool forceInitialCatalog)
     : CatalogActivity("PluginCatalog", renderer, mappedInput, /*wantsTouchLongPress=*/true),
       rootMode(rootMode),
-      initialPlugin(std::move(initialPlugin)) {}
+      initialPlugin(std::move(initialPlugin)),
+      forceInitialCatalog(forceInitialCatalog) {}
 
 PluginCatalogActivity::~PluginCatalogActivity() = default;
 
@@ -1254,6 +1261,14 @@ void PluginCatalogActivity::enterCatalog() {
     return;
   }
   loadConfig();
+  if (forceInitialCatalog && loadToken()) {
+    // The one-shot pairing handoff was already authorized (for example,
+    // after a user-triggered retry). Return through the parent callback,
+    // never open the descriptor's normal browsing UI.
+    LOG_INF("PCAT", "Dessen pairing already authorized: returning to app");
+    finish();
+    return;
+  }
   if (!manifest.tabs.empty()) {
     activePluginTab = 0;
     for (size_t i = 0; i < manifest.tabs.size(); ++i) {
@@ -3700,6 +3715,16 @@ void PluginCatalogActivity::pollAuth() {
         return;
       }
       token = newToken;
+      if (forceInitialCatalog) {
+        // A Dessen app requested *pairing*, not access to a legacy catalog.
+        // Complete the child activity as soon as the persistent device token
+        // is saved. The parent then fetches the server overview with the guest
+        // unloaded and reboots back to Dessen. Without this the catalog stays
+        // open and a Home gesture bypasses the parent result callback.
+        LOG_INF("PCAT", "Dessen pairing complete: returning to app");
+        finish();
+        return;
+      }
       startBrowse();
       return;
     }
@@ -4640,7 +4665,21 @@ void PluginCatalogActivity::retryBrowse() {
 // Back on the picker leaves the activity; the base routes it here via
 // handleButtons. The catalog states route their Back through exitCatalog()
 // instead, landing back on the picker.
+bool PluginCatalogActivity::handleHomeGesture() {
+  if (!forceInitialCatalog) return false;
+  // On a pairing-only Dessen handoff, Home/Cancel must pop to the suspended
+  // Dessen parent. Going straight to Home would discard its reboot callback.
+  LOG_INF("PCAT", "Dessen pairing cancelled by Home gesture: returning to app");
+  finish();
+  return true;
+}
+
 void PluginCatalogActivity::onBackButton() {
+  if (forceInitialCatalog) {
+    LOG_INF("PCAT", "Dessen pairing cancelled: returning to app");
+    finish();
+    return;
+  }
   if (settingsTabActive() && cacheSettingsExpanded) {
     cacheSettingsExpanded = false;
     activeNav().selected = contentSelectionOffset();
@@ -4749,7 +4788,7 @@ void PluginCatalogActivity::activateIndex(const int index) {
     const PluginRef& plugin = installedPlugins[pluginIndex];
 #if CROSSPOINT_DESSEN_APPS
     // A plugin that ships an app binary runs it; this wins over its catalog or README.
-    if (!plugin.appPath.empty()) {
+    if (!plugin.appPath.empty() && !(forceInitialCatalog && plugin.name == initialPlugin)) {
       auto appActivity = makeUniqueNoThrow<DessenAppActivity>(renderer, mappedInput, plugin.appPath);
       if (!appActivity) {
         LOG_ERR("PCAT", "OOM: app activity");

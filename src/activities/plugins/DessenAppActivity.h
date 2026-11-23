@@ -17,7 +17,7 @@
 class DessenAppActivity final : public Activity {
  public:
   DessenAppActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string appPath,
-                    bool homeLauncher = false);
+                    bool homeLauncher = false, int nativeOperation = 0, bool resumeAfterNetwork = false);
 
   void onEnter() override;
   void loop() override;
@@ -38,10 +38,13 @@ class DessenAppActivity final : public Activity {
   bool loadApp();
   void leaveApp();
   void openKeyboard();  // service asked for text input
+  void unloadGuestForNativeStats();
 
   std::string appPath;
   const bool homeLauncher;
   freeink::ui::GfxRendererTarget uiTarget;
+  const int nativeOperation;
+  const bool resumeAfterNetwork;
   std::unique_ptr<uint8_t[]> memory;
   // host, pendingInput: written by the render task and by loop() under RenderLock.
   dessen::FreeInkHost host;
@@ -53,6 +56,8 @@ class DessenAppActivity final : public Activity {
   // wait_event and cannot repaint itself, so the overlay would otherwise linger
   // until the app next draws.
   bool frameStored = false;
+  unsigned long lastPairingWakeMs = 0;
+  bool suppressTimerFrameRestore = false;
 };
 
 #endif  // CROSSPOINT_DESSEN_APPS
