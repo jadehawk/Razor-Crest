@@ -646,6 +646,13 @@ void setupDisplayAndFonts(bool seamless = false) {
   sdFontSystem.begin(renderer);
   UITheme::getInstance().syncFonts();
 
+  // Let the user swap the whole UI font (menus, home, dessen apps) to an installed
+  // family. applyUiFont() re-points the UI font slots above, or keeps the built-in.
+#if CROSSPOINT_VECTOR_FONTS
+  sdFontSystem.setBuiltinUiFonts(&smallFontFamily, &ui10FontFamily, &ui12FontFamily);
+  sdFontSystem.applyUiFont(renderer);
+#endif
+
   LOG_DBG("MAIN", "Fonts setup");
 }
 
