@@ -8,6 +8,14 @@ using readingstats::kHistoryDays;
 using readingstats::Snapshot;
 
 int main() {
+  Snapshot boundary{};
+  boundary.addSession(9, 1, 20000);
+  assert(boundary.sessions == 0);
+  boundary.addSession(10, 1, 20000);
+  assert(boundary.sessions == 1);
+  boundary.addSession(59, 1, 0);
+  assert(boundary.sessions == 2);
+
   Snapshot stats{};
   assert(stats.totalSeconds() == 0);
   assert(!stats.valid());
@@ -23,6 +31,7 @@ int main() {
   assert(stats.sessions == 1);  // Short reading contributes, not a new session.
   assert(stats.secondsOnDay(20000) == 74);
   stats.addSession(30, 2, 0);  // Unknown clock: all-time metrics still work.
+  assert(stats.sessions == 2);
   assert(stats.totalSeconds() == 104);
   assert(stats.secondsOnDay(20000) == 74);
 

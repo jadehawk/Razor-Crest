@@ -255,7 +255,8 @@ class PluginCatalogActivity : public CatalogActivity {
   bool rootMode = false;
   std::string initialPlugin;
   bool forceInitialCatalog = false;  // Dessen pairing: use bundled device.json instead of recursively launching app.bin
-  std::string pickerReturnName;      // plugin identity to reselect after leaving a catalog
+  std::string pickerReturnName;  // plugin identity to reselect after leaving a catalog
+  std::string downloadFailure;   // shown after "Download failed", e.g. "HTTP 404"
   std::vector<Item> items;
   // Row buffer over the active content. Footer paging is a separate native
   // FreeInkUI control and never occupies an item row.
@@ -490,6 +491,7 @@ class PluginCatalogActivity : public CatalogActivity {
   bool shouldStreamLowMemoryImage(const Item& item) const;
   HttpDownloader::DownloadError downloadImageLowMemory(const std::string& url, const std::string& stagingPath,
                                                        const std::string& publishPath = {});
+  void noteFileFailure();
   void beginAuth();
   void pollAuth();
   bool refreshCredentialToken();  // password grant: mint a token from config creds

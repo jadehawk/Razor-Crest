@@ -37,9 +37,7 @@ enum class SettingAction {
 #if CROSSPOINT_DESSEN_APPS
   HomeApp,
 #endif
-#if CROSSPOINT_VECTOR_FONTS
   UiFont,
-#endif
   HomeButton,
   HomeMenuButtons,
   ContinueReading,
@@ -215,6 +213,7 @@ class SettingsActivity final : public UiTabListActivity {
   bool quickResumeTimeoutAutoEnabled = false;
 
   OptionPopup optionPopup;
+  bool redrawFontPopupBackground = false;
 
   // Row structure (label/actionValue), rebuilt only when the setting list
   // changes; rowValues_ holds the live value text, refreshed every

@@ -35,9 +35,10 @@ bool CatalogActivity::wifiConnected() {
   return WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0);
 }
 
-void CatalogActivity::fail(const StrId message) {
+void CatalogActivity::fail(const StrId message, const std::string& detail) {
   state = State::ERROR;
-  errorMessage = I18N.get(message);
+  // One assignment: a render may read errorMessage once the state is ERROR.
+  errorMessage = detail.empty() ? std::string(I18N.get(message)) : std::string(I18N.get(message)) + " (" + detail + ")";
   requestUpdate();
 }
 
@@ -179,6 +180,7 @@ HttpDownloader::DownloadError CatalogActivity::downloadFile(const std::string& u
                                                             const std::vector<HttpDownloader::Header>& headers,
                                                             const std::string* postBody, const char* postContentType) {
   downloadProgress = downloadTotal = 0;
+  lastDownloadStatus = 0;
   lastRenderedPercent = -1;
   lastProgressUpdateMs = 0;
   downloadFirstChunkMs = 0;
@@ -203,19 +205,24 @@ HttpDownloader::DownloadError CatalogActivity::downloadFile(const std::string& u
         url, *postBody, postContentType ? postContentType : "application/octet-stream", dest,
         [this](size_t downloaded, size_t total) { onDownloadProgress(downloaded, total); }, &cancelDownload);
   }
-  return HttpDownloader::downloadToFile(
+  const auto result = HttpDownloader::downloadToFile(
       url, dest, [this](size_t downloaded, size_t total) { onDownloadProgress(downloaded, total); }, &cancelDownload,
       user, password, headers);
+  // lastStatus() is only fresh when this request reached the server.
+  if (result == HttpDownloader::HTTP_ERROR || result == HttpDownloader::UNAUTHORIZED) {
+    lastDownloadStatus = HttpDownloader::lastStatus();
+  }
+  return result;
 }
 
-void CatalogActivity::finishDownload(const HttpDownloader::DownloadError result) {
+void CatalogActivity::finishDownload(const HttpDownloader::DownloadError result, const std::string& detail) {
   if (result == HttpDownloader::ABORTED && goHomeAfterCancel) {
     onGoHome();
   } else if (result == HttpDownloader::OK || result == HttpDownloader::ABORTED) {
     downloadFinished(result == HttpDownloader::ABORTED);
   } else {
-    LOG_ERR("CAT", "Download failed: %d", static_cast<int>(result));
-    fail(StrId::STR_DOWNLOAD_FAILED);
+    LOG_ERR("CAT", "Download failed: %d %s", static_cast<int>(result), detail.c_str());
+    fail(StrId::STR_DOWNLOAD_FAILED, detail);
   }
 }
 

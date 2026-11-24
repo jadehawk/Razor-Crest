@@ -48,7 +48,7 @@ Razor-Crest reuses the active-dwell accounting of its existing
 page dwelled for 2..1800 seconds contributes time and one qualified turn.
 Reverse turns, failed turns, and page skips are excluded. At exit/sleep a
 session of at least 10 active seconds is recorded locally; sessions reaching
-60 seconds increment the session count.
+10 seconds increment the session count.
 
 The existing `reader.session` plugin-event protocol remains unchanged:
 only time measured with a trustworthy clock is exported. Untrusted-clock

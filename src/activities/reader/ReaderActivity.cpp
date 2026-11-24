@@ -19,6 +19,7 @@
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
 #include "XtcReaderActivity.h"
+#include "activities/RenderLock.h"
 #include "sync/ReadingSessionLog.h"
 #include "util/PluginEvents.h"
 #include "util/ReadingStatsStore.h"
@@ -76,7 +77,10 @@ void ReaderActivity::onEnter() {
     APP_STATE.saveToFile();
   }
 
-  sdFontSystem.ensureLoaded(renderer);
+  {
+    RenderLock lock;
+    sdFontSystem.ensureLoaded(renderer);
+  }
   applyInitialOrientation();
 
   if (!loadBook()) {
@@ -149,7 +153,7 @@ void ReaderActivity::flushReaderSession() {
     readingstats::record(bookPath.c_str(), readerSession.trackedSeconds(), readerSession.qualifiedTurns(),
                          readerSession.startTime(), title.c_str(), author.c_str());
   }
-  if (!readerSession.isEmitWorthy() || !pluginevents::anySubscriber(pluginevents::Event::ReaderSession)) {
+  if (!readerSession.isEmitWorthy()) {
     readerSession.reset();
     return;
   }

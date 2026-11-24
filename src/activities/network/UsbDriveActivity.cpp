@@ -7,6 +7,7 @@
 #include <I18n.h>
 
 #include "MappedInputManager.h"
+#include "SdCardFontSystem.h"
 #include "SilentRestart.h"
 #include "components/UITheme.h"
 #include "components/icons/transfer.h"
@@ -67,8 +68,12 @@ bool drawUsbGrayscale(const std::string& path, GfxRenderer& renderer) {
 
 void UsbDriveActivity::onEnter() {
   Activity::onEnter();
-  resetUi();
-  app.setScreen(&UsbDriveActivity::driveScreen, this);
+  {
+    RenderLock lock;
+    sdFontSystem.releaseForStorage(renderer);
+    resetUi();
+    app.setScreen(&UsbDriveActivity::driveScreen, this);
+  }
 
   // Show the safety instructions before giving the raw SD card to the USB host.
   requestUpdateAndWait();
