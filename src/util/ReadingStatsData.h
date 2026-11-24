@@ -53,7 +53,7 @@ struct Snapshot {
 
   void addSession(uint32_t seconds, uint32_t qualifiedTurns, uint32_t localDay) {
     if (seconds == 0) return;
-    if (seconds >= 60 && sessions != UINT32_MAX) ++sessions;
+    if (seconds >= 10 && sessions != UINT32_MAX) ++sessions;
     const uint64_t old = totalSeconds();
     const uint64_t updated = old > UINT64_MAX - seconds ? UINT64_MAX : old + seconds;
     totalSecondsLo = static_cast<uint32_t>(updated);

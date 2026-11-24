@@ -153,7 +153,7 @@ void ReaderActivity::flushReaderSession() {
     readingstats::record(bookPath.c_str(), readerSession.trackedSeconds(), readerSession.qualifiedTurns(),
                          readerSession.startTime(), title.c_str(), author.c_str());
   }
-  if (!readerSession.isEmitWorthy() || !pluginevents::anySubscriber(pluginevents::Event::ReaderSession)) {
+  if (!readerSession.isEmitWorthy()) {
     readerSession.reset();
     return;
   }
