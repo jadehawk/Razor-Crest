@@ -1,5 +1,5 @@
 {
   "title": "Reading Statistics (Rust)",
-  "description": "Razor-Crest statistics: six offline dashboards and optional Techy-Notes server pairing",
-  "version": "0.6.11"
+  "description": "Razor-Crest statistics, server pairing and optional automatic refresh",
+  "version": "0.6.16"
 }

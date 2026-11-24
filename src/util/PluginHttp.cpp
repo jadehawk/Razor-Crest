@@ -29,14 +29,17 @@ constexpr char kUnifiedStatsToken[] = "/.crosspoint/reading-statistics-token.jso
 
 void invalidateStatsOverviewCache() {
   // A new reader token may belong to a different account. Never display
-  // cached totals from a previous account after re-pairing or unpairing.
+  // cached totals or web login codes from a previous account.
   constexpr const char* names[] = {"reading-statistics", "reading-stats-dessen", "reading-statistics-dessen-rust"};
   for (const char* root : PluginLocations::ROOTS) {
     for (const char* name : names) {
-      const std::string cache = std::string(root) + "/" + name + "/server-overview.json";
-      Storage.remove(cache.c_str());
-      Storage.remove((cache + ".bak").c_str());
-      Storage.remove((cache + ".part").c_str());
+      const std::string directory = std::string(root) + "/" + name;
+      for (const char* file : {"/server-overview.json", "/web-login.json"}) {
+        const std::string cache = directory + file;
+        Storage.remove(cache.c_str());
+        Storage.remove((cache + ".bak").c_str());
+        Storage.remove((cache + ".part").c_str());
+      }
     }
   }
 }
@@ -89,13 +92,14 @@ void releaseIdleTlsSessionIfTight(freeink::SecureHttpClient* session) {
 // connected client, or nullptr if begin() or the connection failed.
 freeink::SecureHttpClient* openClient(freeink::SecureHttpClient* session, freeink::SecureHttpClient& tmp,
                                       const std::string& url, const pluginhttp::Headers& headers,
-                                      const std::function<bool()>& shouldAbort = nullptr) {
+                                      const std::function<bool()>& shouldAbort = nullptr,
+                                      const uint32_t timeoutMs = 30000) {
   freeink::SecureHttpClient& http = session ? *session : tmp;
   http.setUserAgent("CrossPoint");
   // Same trust posture as every other SecureNet consumer: no CA bundle ships
   // with the transport, so verification is skipped; traffic stays encrypted.
   http.setInsecure();
-  http.setTimeout(30000);
+  http.setTimeout(timeoutMs);
   if (!http.begin(pluginhttp::escapeUrl(url))) return nullptr;
   // Handshake first: the client's copy of a large header (a session cookie can
   // be several KB) would otherwise take heap the handshake needs.
@@ -456,7 +460,7 @@ int requestStream(freeink::SecureHttpClient* session, const std::string& url, co
 int requestToFile(freeink::SecureHttpClient* session, const std::string& url, const std::string& method,
                   const std::string& body, const Headers& headers, const char* destPath, const size_t maxResponse,
                   const std::function<void(size_t, size_t)>& progress, const std::function<bool()>& shouldAbort,
-                  const bool followAnonymousRedirects) {
+                  const bool followAnonymousRedirects, const uint32_t timeoutMs) {
   if (!networkReady()) {
     LOG_ERR("PHTP", "Network request blocked: WiFi is not connected");
     return -1;
@@ -464,7 +468,7 @@ int requestToFile(freeink::SecureHttpClient* session, const std::string& url, co
   releaseFontCachesBeforeTls(url);
   WifiPowerSaveGuard psGuard;
   freeink::SecureHttpClient tmp;
-  freeink::SecureHttpClient* httpPtr = openClient(session, tmp, url, headers, shouldAbort);
+  freeink::SecureHttpClient* httpPtr = openClient(session, tmp, url, headers, shouldAbort, timeoutMs);
   if (!httpPtr) return -1;
   freeink::SecureHttpClient& http = *httpPtr;
   if (followAnonymousRedirects && method == "GET" && body.empty() && headers.empty()) http.setFollowRedirects(5);

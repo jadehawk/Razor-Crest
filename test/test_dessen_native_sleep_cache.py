@@ -12,6 +12,40 @@ class DessenNativeSleepCacheTests(unittest.TestCase):
     def text(self, path):
         return (ROOT / path).read_text(encoding="utf-8")
 
+    def test_dessen_picker_releases_borrowed_rows_before_launch(self):
+        src = self.text("src/activities/plugins/PluginCatalogActivity.cpp")
+        launch = src.split("auto appActivity = makeUniqueNoThrow<DessenAppActivity>", 1)[1].split(
+            "const auto action = PluginLocations::pickerAction", 1)[0]
+        self.assertLess(launch.index("pickerReturnName = plugin.name;"),
+                        launch.index("decltype(installedPlugins){}.swap(installedPlugins);"))
+        self.assertLess(launch.index("releaseRows();"), launch.index("decltype(rowItems){}.swap(rowItems);"))
+        self.assertLess(launch.index("decltype(rowItems){}.swap(rowItems);"),
+                        launch.index("decltype(installedPlugins){}.swap(installedPlugins);"))
+        self.assertLess(launch.index("decltype(installedExtensions){}.swap(installedExtensions);"),
+                        launch.index("startActivityForResult(std::move(appActivity)"))
+        self.assertLess(launch.index("enterPluginPicker();"), launch.index("pickerSuspendedForDessen = false;"))
+        self.assertIn("if (pickerSuspendedForDessen) return;", src)
+        self.assertIn("Dessen picker release: free=%u->%u max_block=%u->%u", launch)
+
+    def test_pairing_preserves_connection_for_parent_overview(self):
+        catalog = self.text("src/activities/plugins/PluginCatalogActivity.cpp")
+        exit_body = catalog.split("void PluginCatalogActivity::onExit()", 1)[1].split("void PluginCatalogActivity::startBrowse()", 1)[0]
+        self.assertLess(exit_body.index("session.reset()"), exit_body.index("if (forceInitialCatalog)"))
+        self.assertIn("if (forceInitialCatalog) {\n    Activity::onExit();\n  } else {\n    CatalogActivity::onExit();", exit_body)
+        host = self.text("src/activities/plugins/DessenAppActivity.cpp")
+        callback = host.split("startActivityForResult(std::move(native)", 1)[1].split("});", 1)[0]
+        self.assertLess(callback.index("refreshNativeStatsSnapshot(appPath)"), callback.index("silentRestartToDessen(appPath)"))
+
+    def test_empty_wifi_scans_retry_before_hidden_network(self):
+        header = self.text("src/activities/network/WifiSelectionActivity.h")
+        src = self.text("src/activities/network/WifiSelectionActivity.cpp")
+        self.assertIn("MAX_EMPTY_SCAN_RETRIES = 2", header)
+        self.assertIn("if (!retry) emptyScanRetries = 0;", src)
+        self.assertIn("if (emptyScanRetries >= MAX_EMPTY_SCAN_RETRIES) return false;", src)
+        self.assertIn("if (retryEmptyScan()) return;", src)
+        self.assertIn("if (realNetworkCount == 0 && retryEmptyScan()) return;", src)
+        self.assertIn("startWifiScan(autoConnecting && !manualRequested, true);", src)
+
     def test_native_handoff_frees_guest_before_http_or_pairing(self):
         src = self.text("src/activities/plugins/DessenAppActivity.cpp")
         self.assertIn("void DessenAppActivity::unloadGuestForNativeStats()", src)
@@ -31,6 +65,18 @@ class DessenNativeSleepCacheTests(unittest.TestCase):
         self.assertIn('silentRestartToDessen(appPath);', src)
         self.assertIn('pluginhttp::requestToFile(', src)
         self.assertIn('silentRestartToDessen(appPath);', src)  # reboot discards Wi-Fi heap
+
+    def test_native_refresh_fetches_both_caches_after_one_wifi_join(self):
+        firmware = self.text("src/activities/plugins/DessenAppActivity.cpp")
+        refresh = firmware.split("bool refreshNativeStatsSnapshot(", 1)[1].split("}  // namespace", 1)[0]
+        self.assertEqual(refresh.count("connectStatsWifi()"), 1)
+        self.assertLess(refresh.index("connectStatsWifi()"), refresh.index("refreshNativeWebLogin(dir, headers)"))
+        self.assertIn('kStatsOverviewUrl, "GET"', refresh)
+        self.assertIn("replaceStatsCache(target, tmp)", refresh)
+        login = firmware.split("bool refreshNativeWebLogin(", 1)[1].split("bool disconnectNativeStats(", 1)[0]
+        self.assertIn('kStatsLoginUrl, "POST"', login)
+        self.assertIn('"/web-login.json"', login)
+        self.assertLess(login.index("expiresIn <= 86400"), login.index("replaceStatsCache(target, tmp)"))
 
     def test_guest_network_disabled_in_native_mode(self):
         rust = self.text("experiments/reading-statistics-dessen-rust/readstats.rs")
@@ -139,7 +185,7 @@ class DessenNativeSleepCacheTests(unittest.TestCase):
         self.assertIn("snapshotTarget == SILENT_REBOOT_TARGET_DESSEN)", boot)
         self.assertIn("if native_stats {", rust)
         self.assertIn("if dsn_fs_read(&path[..n], &mut previous) == 1", rust)
-        self.assertIn("native_stats_handoff(if pairing.phase == PairPhase::Paired { 1 } else { 0 }, 0);", rust)
+        self.assertIn("native_stats_handoff(0, 0);", rust)
         self.assertNotIn("native_stats_handoff(if pairing.phase == PairPhase::Paired { 1 } else { 0 }, 6);", rust)
 
     def test_protected_token_reset_is_firmware_owned_and_confirmed(self):
@@ -154,7 +200,10 @@ class DessenNativeSleepCacheTests(unittest.TestCase):
         self.assertIn("SILENT_REBOOT_TARGET_DESSEN_UNPAIR = 7", main)
         self.assertIn("SILENT_REBOOT_TARGET_DESSEN_UNPAIR", main)
         self.assertIn("nativeOperation == 3", firmware)
-        self.assertIn("nativeOperation == 3", firmware)
+        disconnect = firmware.split("bool disconnectNativeStats(", 1)[1].split("bool refreshNativeStatsSnapshot(", 1)[0]
+        self.assertLess(disconnect.index('"DELETE"'), disconnect.index("pluginhttp::removeTokenFile(kStatsToken)"))
+        self.assertIn('"/web-login.json"', disconnect)
+        self.assertIn('"/web-login.json"', token_service)
         self.assertIn("pluginhttp::removeTokenFile(kStatsToken)", firmware)
         self.assertIn("silentRestartToDessen(appPath);", firmware)
         self.assertIn("NativeStatsUnpair", firmware)
@@ -165,7 +214,7 @@ class DessenNativeSleepCacheTests(unittest.TestCase):
         self.assertIn("confirm_disconnect = true;", rust)
         self.assertIn("native_stats_handoff(2, 0);", rust)
         self.assertIn("fn sync_unpair_confirmation(", ui)
-        self.assertIn("fn disconnect_button_bounds(", ui)
+        self.assertIn("fn native_sync_action_bounds(", ui)
         # No direct access to the credential path is exposed to the guest.
         self.assertNotIn("dsn_fs_delete(TOKEN_PATH)", rust)
 
@@ -180,11 +229,34 @@ class DessenNativeSleepCacheTests(unittest.TestCase):
         # the FreeRTOS task-name limit. On X3 the render stack had earlier
         # reached 80 bytes free; other platforms keep their existing size.
 
+    def test_horizontal_stats_swipe_is_not_a_back_action(self):
+        source = self.text("src/activities/plugins/DessenAppActivity.cpp")
+        swipe = source.split("const SwipeDir swipe = mappedInput.wasSwipe", 1)[1]
+        self.assertIn("isStandaloneStatsApp(appPath) && (swipe == SwipeDir::Left || swipe == SwipeDir::Right)", swipe)
+        self.assertLess(swipe.index("snap.back = false;"), swipe.index("appSwipe = swipe =="))
+        inp = self.text("src/MappedInputManager.cpp")
+        self.assertIn("gpio.hasHomeKey() ? homeAction == HomeButtonAction::Home : wasBottomEdgeUpSwipe()", inp)
+
+    def test_x3_covers_reuse_existing_bounded_bitmap_cache(self):
+        source = self.text("src/activities/plugins/CrosspointServices.cpp")
+        cached = source.split("static std::string cachedBookThumbnail(", 1)[1].split("#endif", 1)[0]
+        self.assertIn("getThumbBmpPath()", cached)
+        self.assertIn('upstreamPrefix = "thumb_"', cached)
+        self.assertIn("len <= prefixLength + suffix.size()", cached)
+        self.assertNotIn("reading-stats/covers", cached)
+        self.assertIn("dir.openNextFile()", cached)
+        self.assertIn("sourceWidth > 1024", cached)
+        self.assertIn("rowBytes > 4096", cached)
+        self.assertIn("bmp->readRowGray(sourceY, gray, row)", cached)
+        self.assertNotIn("generateThumbBmp", cached)
+        device_path = source.split("int CrosspointServices::bookCover(", 1)[1].split("#else", 1)[0]
+        self.assertIn("packCachedBookCover(cachedBookThumbnail(path, height)", device_path)
+
     def test_month_taps_refresh_without_changing_page(self):
         ui = self.text("experiments/reading-statistics-dessen-rust/preview.rs")
         rust = self.text("experiments/reading-statistics-dessen-rust/readstats.rs")
         self.assertIn("fn overall_month_bounds(", ui)
-        self.assertIn("let stale = server.last_synced == 0", ui)
+        self.assertIn("let stale = server.stale(dsn_time())", ui)
         self.assertIn("let show_icon = paired && (server.icon_revealed || stale);", ui)
         self.assertIn("let (mx, my, mw, mh) = ui.overall_month_bounds();", rust)
         self.assertIn("confirm_month_sync = true;", rust)

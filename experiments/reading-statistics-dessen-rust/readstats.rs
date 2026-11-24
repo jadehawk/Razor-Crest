@@ -19,6 +19,7 @@ include!("pages.rs"); // Your Week and All Books.
 include!("calendar.rs"); // Native-style Reading Calendar.
 include!("sync.rs"); // Optional Techy-Notes device-code registration.
 include!("qr.rs"); // Scannable QR with prefilled pairing link.
+include!("settings.rs");
 include!("server.rs"); // Account-scoped server totals; local offline fallback.
 // Resume marker follows the Dessen app's actual SD root. All supported
 // plugin roots work; the firmware has already unloaded the VM on handoff.
@@ -30,10 +31,13 @@ fn native_resume_path(path: &mut [u8; 192]) -> usize {
     path[end..end + SUFFIX.len()].copy_from_slice(SUFFIX);
     end + SUFFIX.len()
 }
+fn next_page(page: i32) -> i32 { match page { 5 => 7, 7 => 6, 6 => 0, _ => page + 1 } }
+fn prev_page(page: i32) -> i32 { match page { 0 => 6, 6 => 7, 7 => 5, _ => page - 1 } }
+
 fn native_stats_handoff(action: i32, page: u8) {
     let mut path = [0u8; 192];
     let n = native_resume_path(&mut path);
-    if n > 0 { let _ = dsn_fs_write(&path[..n], &[page]); }
+    if n == 0 || dsn_fs_write(&path[..n], &[page]) != 0 { return; }
     let _ = dsn_native_stats(action);
 }
 
@@ -81,6 +85,7 @@ impl Home {
     fn has_book(&self) -> bool {
         self.field(0).first() == Some(&b'/')
     }
+    #[inline(never)]
     fn load(&mut self) {
         let n = dsn_recent_shelf(0, 1, &mut self.rec);
         let n = if n > 0 { (n as usize).min(self.rec.len()) } else { 0 };
@@ -137,6 +142,7 @@ fn read_native(path: &[u8], output: &mut [u8], magic: u32, version: u32) -> bool
 }
 
 impl Stats {
+    #[inline(never)]
     fn load(&mut self, have_clock: bool) {
         let mut raw = [0u8; 1500];
         let mut ok = read_native(GLOBAL, &mut raw, 0x32545352, 2);
@@ -207,24 +213,6 @@ impl Stats {
             }
             self.book_count = self.book_count.saturating_add(1);
         }
-    }
-
-    // Best recorded reading day, average over days with reading, and number
-    // of active days. Uses only the retained daily history, never the all-time
-    // total which may extend beyond that window.
-    fn daily_summary(&self) -> (u32, u32, u32) {
-        let mut best = 0u32;
-        let mut total = 0u64;
-        let mut active = 0u32;
-        for &seconds in self.day.iter() {
-            if seconds > 0 {
-                best = best.max(seconds);
-                total += seconds as u64;
-                active += 1;
-            }
-        }
-        let average = if active == 0 { 0 } else { (total / active as u64).min(u32::MAX as u64) as u32 };
-        (best, average, active)
     }
 
     // (current, best) runs of consecutive days with reading. Today not having
@@ -376,31 +364,46 @@ pub extern "C" fn main() -> i32 {
 
     let detail = load_current(&home);
     let month_day = if have_clock { c[3] as u32 } else { 0 };
-    let mut carousel = BookCarousel::new();
+    // One guest invocation owns this storage; avoid a large constructor copy on the stack.
+    static mut CAROUSEL: BookCarousel = BookCarousel::new();
+    let carousel = unsafe { &mut *core::ptr::addr_of_mut!(CAROUSEL) };
     carousel.load();
     let native_stats = dsn_native_stats_mode() > 0;
     let mut pairing = Pairing::new();
+    pairing.load_web_login();
     let mut server = ServerOverall::new();
     if native_stats && pairing.phase == PairPhase::Paired { server.load_cached(); }
-    let mut page = 0;
+    let mut page = if pairing.phase == PairPhase::Paired { 0 } else { 1 };
+    let mut resumed = false;
+    let mut disconnect_failed = false;
+    let mut settings = StatsSettings::load();
     if native_stats {
         let mut previous = [0u8; 1];
         let mut path = [0u8; 192];
         let n = native_resume_path(&mut path);
         if n > 0 {
-            if dsn_fs_read(&path[..n], &mut previous) == 1 && previous[0] <= 6 {
-                page = previous[0] as i32;
+            if dsn_fs_read(&path[..n], &mut previous) == 1 && previous[0] <= 8 {
+                disconnect_failed = previous[0] == 8;
+                page = if disconnect_failed { 6 } else { previous[0] as i32 };
+                resumed = true;
             }
             let _ = dsn_fs_delete(&path[..n]);
         }
     }
     let mut previous_page = 0;
     let mut confirm_month_sync = false;
+    let mut confirm_web_login = false;
+    let mut generating_web_login = false;
     let mut confirm_disconnect = false;
-    let mut syncing_month = false;
+    let mut syncing_month = native_stats && !resumed && settings.auto_fetch &&
+        pairing.phase == PairPhase::Paired && server.last_synced != 0 && server.stale(dsn_time());
+    let mut sync_focus = 0u8;
+    let mut settings_focus = 0u8;
     let mut book_offset = 0u32;
     let mut calendar_offset = 0u32; // months before the current month
     loop {
+        let first_page = if pairing.phase == PairPhase::Paired { 0 } else { 1 };
+        if page == 0 && first_page == 1 { page = 1; }
         // A first attempt can fail quietly while Wi-Fi is initially off.
         // Returning from Server Sync (where Wi-Fi may have been connected
         // for Web PIN generation) must retry the account-wide Overview.
@@ -411,13 +414,17 @@ pub extern "C" fn main() -> i32 {
         previous_page = page;
         if page == 6 && confirm_disconnect {
             ui.sync_unpair_confirmation();
-        } else if page == 0 && confirm_month_sync {
+        } else if confirm_web_login || generating_web_login {
+            ui.web_login_dialog(generating_web_login);
+        } else if confirm_month_sync {
             ui.overall_sync_confirmation();
         } else if page == 0 {
-            ui.overall_preview(&st, month_day, have_clock, &carousel, &server,
+            ui.overall_preview(carousel, &server,
                                pairing.phase == PairPhase::Paired, syncing_month);
+        } else if page == 7 {
+            ui.settings_page(&settings, &server, pairing.phase == PairPhase::Paired, settings_focus);
         } else if page == 6 {
-            ui.sync_page(&pairing, native_stats);
+            ui.sync_page(&pairing, native_stats, sync_focus, disconnect_failed);
         } else if page <= 2 {
             ui.dashboard_render(&st, &home, &detail, page - 1, month_day, have_clock);
         } else {
@@ -429,8 +436,13 @@ pub extern "C" fn main() -> i32 {
             let shown_day = if calendar_offset == 0 { month_day } else { 0 };
             ui.extra_page(&st, page - 1, shown_year, shown_month, shown_day, book_offset);
         }
-        ui.draw_footer(page, carousel.count);
+        ui.draw_footer(page, carousel.count, native_stats && page == 6 && pairing.phase == PairPhase::Paired && !confirm_disconnect);
         dsn_refresh();
+        if generating_web_login {
+            generating_web_login = false;
+            native_stats_handoff(1, 6);
+            continue;
+        }
         // The confirmation is painted first. Only after a second, explicit
         // confirmation do we display Syncing... before the firmware reboot.
         if syncing_month {
@@ -478,9 +490,28 @@ pub extern "C" fn main() -> i32 {
                 }
                 continue;
             }
+            if confirm_web_login {
+                match e & 0xff {
+                    1 => { confirm_web_login = false; generating_web_login = true; break; }
+                    2 => { confirm_web_login = false; break; }
+                    5 => {
+                        let x = ((e >> 8) & 0xfff) as i32;
+                        let y = ((e >> 20) & 0xfff) as i32;
+                        let (yes_x, no_x, by, bw, bh) = ui.overall_sync_confirmation_buttons();
+                        if y >= by && y < by + bh {
+                            if x >= yes_x && x < yes_x + bw { generating_web_login = true; }
+                            else if x < no_x || x >= no_x + bw { continue; }
+                            confirm_web_login = false;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                continue;
+            }
             if confirm_month_sync {
                 match e & 0xff {
-                    1 => { confirm_month_sync = false; syncing_month = true; break; }
+                    1 => { confirm_month_sync = false; page = 0; syncing_month = true; break; }
                     2 => { confirm_month_sync = false; break; }
                     5 => {
                         let x = ((e >> 8) & 0xfff) as i32;
@@ -488,6 +519,7 @@ pub extern "C" fn main() -> i32 {
                         let (yes_x, no_x, by, bw, bh) = ui.overall_sync_confirmation_buttons();
                         if y >= by && y < by + bh && x >= yes_x && x < yes_x + bw {
                             confirm_month_sync = false;
+                            page = 0;
                             syncing_month = true;
                         } else if y < by || y >= by + bh || x >= no_x && x < no_x + bw {
                             confirm_month_sync = false;
@@ -506,17 +538,31 @@ pub extern "C" fn main() -> i32 {
                     server.fetch(&pairing);
                     if server.available { break; }
                 }
+                1 if page == 7 => {
+                    if settings_focus == 0 { settings.toggle(); }
+                    else if pairing.phase == PairPhase::Paired { confirm_month_sync = true; }
+                    else { page = 6; }
+                    break;
+                }
                 1 if page == 0 => {
                     if let Some(book) = carousel.current() { dsn_open_book(book.path()); }
                 }
                 1 if page == 2 && home.has_book() => { dsn_open_book(home.field(0)); }
                 1 if page == 6 => {
-                    if native_stats { native_stats_handoff(if pairing.phase == PairPhase::Paired { 1 } else { 0 }, 0); }
-                    else { pairing.schedule(); }
+                    if native_stats {
+                        if pairing.phase != PairPhase::Paired { native_stats_handoff(0, 0); }
+                        else if !ui.touch {
+                            match sync_focus {
+                                0 => confirm_web_login = true,
+                                1 => { page = 0; confirm_month_sync = true; }
+                                _ => confirm_disconnect = true,
+                            }
+                        }
+                    } else { pairing.schedule(); }
                     break;
                 }
-                11 if !native_stats && page == 6 && pairing.phase == PairPhase::Paired && pairing.web_valid => {
-                    if dsn_time().wrapping_sub(pairing.web_started) >= 600 {
+                11 if page == 6 && pairing.phase == PairPhase::Paired && pairing.web_valid => {
+                    if !pairing.web_login_available() {
                         pairing.web_valid = false;
                         pairing.message = b"Web PIN expired. Generate a new one";
                         break;
@@ -532,11 +578,14 @@ pub extern "C" fn main() -> i32 {
                         break;
                     }
                 }
-                2 if page == 0 => return 0,
-                2 => { page = 0; break; }
+                2 if page == first_page => return 0,
+                2 => { page = first_page; break; }
                 3 | 8 | 10 => {
-                    if native_stats && page == 6 && pairing.phase == PairPhase::Paired && (e & 0xff) == 3 {
-                        confirm_disconnect = true;
+                    if page == 7 && (e & 0xff) == 3 && (e & SIDE_KEY) == 0 {
+                        settings_focus = 0; break;
+                    }
+                    if native_stats && page == 6 && pairing.phase == PairPhase::Paired && (e & 0xff) == 3 && (e & SIDE_KEY) == 0 {
+                        sync_focus = (sync_focus + 2) % 3;
                         break;
                     }
                     // Front Previous browses books when there are multiple.
@@ -549,10 +598,17 @@ pub extern "C" fn main() -> i32 {
                         break;
                     }
                     if page == 5 && book_offset >= 5 { book_offset -= 5; }
-                    else { page = (page + 6) % 7; }
+                    else { page = prev_page(page); if page == 0 && first_page == 1 { page = 6; } }
                     break;
                 }
                 4 | 7 | 9 => {
+                    if native_stats && page == 6 && pairing.phase == PairPhase::Paired && (e & 0xff) == 4 && (e & SIDE_KEY) == 0 {
+                        sync_focus = (sync_focus + 1) % 3;
+                        break;
+                    }
+                    if page == 7 && (e & 0xff) == 4 && (e & SIDE_KEY) == 0 {
+                        settings_focus = 1; break;
+                    }
                     if page == 0 && carousel.count > 1 &&
                         (((e & 0xff) == 4 && (e & SIDE_KEY) == 0) ||
                          ((e & 0xff) == 9 && ui.overall_carousel_contains(
@@ -561,7 +617,7 @@ pub extern "C" fn main() -> i32 {
                         break;
                     }
                     if page == 5 && book_offset + 5 < st.book_count { book_offset += 5; }
-                    else { page = (page + 1) % 7; }
+                    else { page = next_page(page); if page == 0 { page = first_page; } }
                     break;
                 }
                 5 => {
@@ -569,8 +625,8 @@ pub extern "C" fn main() -> i32 {
                     let x = ((e >> 8) & 0xfff) as i32;
                     let y = ((e >> 20) & 0xfff) as i32;
                     if x < G + 55 && y < 13 + ui.ls + ui.lt {
-                        if page == 0 { return 0; }
-                        page = 0;
+                        if page == first_page { return 0; }
+                        page = first_page;
                         break;
                     } else if page == 0 {
                         let (mx, my, mw, mh) = ui.overall_month_bounds();
@@ -598,6 +654,14 @@ pub extern "C" fn main() -> i32 {
                               y < 13 + ui.ls + ui.lt * 2 + 20 && x > ui.w * 3 / 4 {
                         calendar_offset = calendar_offset.saturating_sub(1);
                         break;
+                    } else if page == 7 {
+                        let (bx, by, bw, bh) = ui.settings_bounds(0);
+                        let (rx, ry, rw, rh) = ui.settings_bounds(1);
+                        if x >= bx && x < bx+bw && y >= by && y < by+bh { settings.toggle(); }
+                        else if x >= rx && x < rx+rw && y >= ry && y < ry+rh {
+                            if pairing.phase == PairPhase::Paired { confirm_month_sync = true; } else { page = 6; }
+                        }
+                        break;
                     } else if page == 6 {
                         // This is a single-action page. Accept taps anywhere
                         // in the content card: real devices may report a small
@@ -606,11 +670,15 @@ pub extern "C" fn main() -> i32 {
                             x >= G && x < ui.w - G &&
                             y < ui.content_bottom() {
                             if native_stats && pairing.phase == PairPhase::Paired {
-                                let (dx, dy, dw, dh) = ui.disconnect_button_bounds();
-                                if x >= dx && x < dx + dw && y >= dy && y < dy + dh {
-                                    confirm_disconnect = true;
-                                    break;
+                                for action in [0, 2] {
+                                    let (bx, by, bw, bh) = ui.native_sync_action_bounds(action);
+                                    if x >= bx && x < bx + bw && y >= by && y < by + bh {
+                                        if action == 0 { confirm_web_login = true; }
+                                        else { confirm_disconnect = true; }
+                                        break;
+                                    }
                                 }
+                                break;
                             }
                             let (bx, by, bw, bh) = ui.sync_button_bounds();
                             // A scanned PIN must remain valid while viewing
@@ -625,7 +693,7 @@ pub extern "C" fn main() -> i32 {
                     } else if page == 2 && home.has_book() && y < (13 + ui.ls + ui.lt) + (ui.content_bottom() - (13 + ui.ls + ui.lt) - 33) * 35 / 100 {
                         dsn_open_book(home.field(0));
                     } else {
-                        page = (page + 1) % 7;
+                        page = next_page(page); if page == 0 { page = first_page; }
                         break;
                     }
                 }

@@ -3,7 +3,7 @@
 fn draw_pairing_qr(code: &[u8; 9], web_login: bool, x: i32, y: i32, side: i32) -> bool {
     const PAIR: &[u8] = b"https://sync.techy-notes.com/link?code=";
     const LOGIN: &[u8] = b"https://sync.techy-notes.com/signin?code=";
-    const FRAGMENT: &[u8] = b"#reader-login";
+    const LOGIN_QUERY: &[u8] = b"&qr=1";
     let prefix = if web_login { LOGIN } else { PAIR };
     let mut url = [0u8; 72];
     let mut n = prefix.len();
@@ -11,8 +11,8 @@ fn draw_pairing_qr(code: &[u8; 9], web_login: bool, x: i32, y: i32, side: i32) -
     url[n..n + 9].copy_from_slice(code);
     n += 9;
     if web_login {
-        url[n..n + FRAGMENT.len()].copy_from_slice(FRAGMENT);
-        n += FRAGMENT.len();
+        url[n..n + LOGIN_QUERY.len()].copy_from_slice(LOGIN_QUERY);
+        n += LOGIN_QUERY.len();
     }
     let mut pixels = [0u8; 176];
     let bytes = dsn_qr_bitmap(&url[..n], &mut pixels);
@@ -23,7 +23,11 @@ fn draw_pairing_qr(code: &[u8; 9], web_login: bool, x: i32, y: i32, side: i32) -
         return false;
     }
     // Four-module quiet zone with integer scaling for e-ink readability.
-    let scale = ((side - 32) / 33).max(2);
+    let scale = side / 41;
+    if scale < 2 { return false; }
+    let offset = (side - 41 * scale) / 2;
+    let x = x + offset;
+    let y = y + offset;
     let length = scale * 33;
     let pad = 4 * scale;
     dsn_fill(x, y, length + 2 * pad, length + 2 * pad, 0);

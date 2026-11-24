@@ -10,6 +10,7 @@
 #include <esp_random.h>
 #include <sdk/dessen_abi.h>  // DSN_HOME_*
 
+#include <ctime>
 #include <utility>
 
 #include "MappedInputManager.h"
@@ -130,6 +131,109 @@ namespace {
 constexpr char kStatsToken[] = "/.crosspoint/reading-statistics-token.json";
 constexpr char kStatsOverviewUrl[] = "https://sync.techy-notes.com/api/device/overview";
 
+constexpr char kStatsLoginUrl[] = "https://sync.techy-notes.com/api/device/login-code";
+
+bool connectStatsWifi() {
+  return WiFi.status() == WL_CONNECTED || connectLastUsedWifi(10000, false);
+}
+
+bool replaceStatsCache(const std::string& target, const std::string& tmp) {
+  const std::string backup = target + ".bak";
+  if (!Storage.exists(target.c_str()) && Storage.exists(backup.c_str()) &&
+      !Storage.rename(backup.c_str(), target.c_str())) {
+    Storage.remove(tmp.c_str());
+    return false;
+  }
+  Storage.remove(backup.c_str());
+  const bool had = Storage.exists(target.c_str());
+  if (had && !Storage.rename(target.c_str(), backup.c_str())) {
+    Storage.remove(tmp.c_str());
+    return false;
+  }
+  if (!Storage.rename(tmp.c_str(), target.c_str())) {
+    Storage.remove(tmp.c_str());
+    if (had) Storage.rename(backup.c_str(), target.c_str());
+    return false;
+  }
+  Storage.remove(backup.c_str());
+  return true;
+}
+
+bool writeStatsCacheJson(const std::string& path, const JsonDocument& doc, size_t limit) {
+  std::string payload;
+  serializeJson(doc, payload);
+  if (payload.empty() || payload.size() > limit) return false;
+  HalFile file;
+  return Storage.openFileForWrite("DSN", path, file) &&
+         file.write(reinterpret_cast<const uint8_t*>(payload.data()), payload.size()) == payload.size();
+}
+
+bool refreshNativeWebLogin(const std::string& dir, const pluginhttp::Headers& headers) {
+  constexpr size_t limit = 384;
+  const std::string target = dir + "/web-login.json";
+  const std::string tmp = target + ".part";
+  const int status = pluginhttp::requestToFile(nullptr, kStatsLoginUrl, "POST", "", headers,
+                                               tmp.c_str(), limit, nullptr, nullptr, false, 4000);
+  std::string raw;
+  JsonDocument doc;
+  if (status != 200 || !Storage.readFileToString("DSN", tmp, limit, raw) ||
+      deserializeJson(doc, raw) != DeserializationError::Ok || !doc["user_code"].is<const char*>() ||
+      !doc["expires_in"].is<uint32_t>()) {
+    LOG_ERR("DSN", "Native web login response unavailable or invalid: HTTP %d", status);
+    Storage.remove(tmp.c_str());
+    return false;
+  }
+  const std::string code = doc["user_code"].as<const char*>();
+  const uint32_t expiresIn = doc["expires_in"].as<uint32_t>();
+  const auto now = std::time(nullptr);
+  bool valid = code.size() == 9 && code[4] == '-' && expiresIn > 0 && expiresIn <= 86400 &&
+               now >= 946684800 && static_cast<uint64_t>(now) + expiresIn <= UINT32_MAX;
+  for (size_t i = 0; valid && i < code.size(); ++i) {
+    const char c = code[i];
+    valid = i == 4 || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+  }
+  if (!valid) {
+    Storage.remove(tmp.c_str());
+    LOG_ERR("DSN", "Native web login has invalid code, lifetime, or reader clock");
+    return false;
+  }
+  // Compare freshness using the same reader clock that will read the cache.
+  // The server continues enforcing the original expiry and single use.
+  doc.clear();
+  doc["user_code"] = code;
+  doc["expires_at"] = static_cast<uint32_t>(now) + expiresIn;
+  if (!writeStatsCacheJson(tmp, doc, limit) || !replaceStatsCache(target, tmp)) {
+    Storage.remove(tmp.c_str());
+    LOG_ERR("DSN", "Native web login cache could not be saved");
+    return false;
+  }
+  LOG_INF("DSN", "Native web login cache updated");
+  return true;
+}
+
+bool disconnectNativeStats(const std::string& appPath) {
+  std::string token;
+  if (Storage.exists(kStatsToken)) {
+    if (!pluginhttp::loadTokenFromFile(kStatsToken, "token", token)) return false;
+    const pluginhttp::Headers headers = {{"Authorization", "Bearer " + token}};
+    const std::string tmp = appPath.substr(0, appPath.find_last_of('/')) + "/disconnect.part";
+    if (!connectStatsWifi()) return false;
+    const int status = pluginhttp::requestToFile(nullptr, kStatsLoginUrl, "DELETE", "", headers,
+                                                 tmp.c_str(), 128, nullptr, nullptr, false, 4000);
+    Storage.remove(tmp.c_str());
+    if (status != 200 && status != 401) return false;
+    if (!pluginhttp::removeTokenFile(kStatsToken)) return false;
+  }
+  const auto dir = appPath.substr(0, appPath.find_last_of('/'));
+  for (const char* cache : {"/server-overview.json", "/web-login.json"}) {
+    const std::string path = dir + cache;
+    Storage.remove(path.c_str());
+    Storage.remove((path + ".part").c_str());
+    Storage.remove((path + ".bak").c_str());
+  }
+  return true;
+}
+
 bool refreshNativeStatsSnapshot(const std::string& appPath) {
   const auto slash = appPath.find_last_of('/');
   if (slash == std::string::npos) return false;
@@ -145,35 +249,48 @@ bool refreshNativeStatsSnapshot(const std::string& appPath) {
   }
   // The guest is already gone before this call. One native saved-network join
   // (10 seconds) matches the established sleep-sync behavior on X3.
-  if (WiFi.status() != WL_CONNECTED && !connectLastUsedWifi(10000, false)) {
+  if (!connectStatsWifi()) {
     LOG_ERR("DSN", "Native overview: saved Wi-Fi connection unavailable");
     return false;
   }
   const std::string target = dir + "/server-overview.json";
   const std::string tmp = target + ".part";
-  const std::string backup = target + ".bak";
   const pluginhttp::Headers headers = {{"Authorization", "Bearer " + token}};
-  const int status = pluginhttp::requestToFile(nullptr, kStatsOverviewUrl, "GET", "", headers, tmp.c_str(), 2048);
+  const int status = pluginhttp::requestToFile(nullptr, kStatsOverviewUrl, "GET", "", headers, tmp.c_str(), 640, nullptr,
+                                               nullptr, false, 4000);
   token.clear();
+  const bool loginRefreshed = refreshNativeWebLogin(dir, headers);
   if (status != 200) {
     Storage.remove(tmp.c_str());
     LOG_ERR("DSN", "Native overview refresh failed: HTTP %d", status);
     return false;
   }
-  Storage.remove(backup.c_str());
-  const bool had = Storage.exists(target.c_str());
-  if (had && !Storage.rename(target.c_str(), backup.c_str())) {
-    Storage.remove(tmp.c_str());
-    return false;
+  // Reject malformed or incomplete successful responses before replacing the cache.
+  {
+    std::string raw;
+    JsonDocument doc;
+    bool valid = Storage.readFileToString("DSN", tmp, 640, raw) &&
+                 deserializeJson(doc, raw) == DeserializationError::Ok &&
+                 doc["source"] == "server" && doc["synced_at"].is<uint32_t>() &&
+                 doc["synced_at"].as<uint32_t>() != 0;
+    for (const char* field : {"total_seconds", "month_seconds", "month_active_days", "current_streak", "books",
+                              "sessions", "page_turns", "best_day_seconds", "daily_average_seconds"}) {
+      valid = valid && doc[field].is<uint32_t>();
+    }
+    const auto now = std::time(nullptr);
+    if (valid && now >= 946684800 && static_cast<uint64_t>(now) <= UINT32_MAX) {
+      doc["fetched_at"] = static_cast<uint32_t>(now);
+      valid = writeStatsCacheJson(tmp, doc, 640);
+    }
+    if (!valid) {
+      Storage.remove(tmp.c_str());
+      LOG_ERR("DSN", "Native overview refresh returned invalid statistics");
+      return false;
+    }
   }
-  if (!Storage.rename(tmp.c_str(), target.c_str())) {
-    Storage.remove(tmp.c_str());
-    if (had) Storage.rename(backup.c_str(), target.c_str());
-    return false;
-  }
-  Storage.remove(backup.c_str());
+  if (!replaceStatsCache(target, tmp)) return false;
   LOG_INF("DSN", "Native overview snapshot updated: %s", target.c_str());
-  return true;
+  return loginRefreshed;
 }
 }  // namespace
 
@@ -206,7 +323,14 @@ void DessenAppActivity::onEnter() {
   }
   if (nativeOperation != 0) {
     if (nativeOperation == 3) {
-      const bool cleared = pluginhttp::removeTokenFile(kStatsToken);
+      const bool cleared = disconnectNativeStats(appPath);
+      if (!cleared) {
+        // The guest treats this one-shot marker as an error on Server Sync.
+        const auto marker = appPath.substr(0, appPath.find_last_of('/')) + "/resume-page";
+        HalFile file;
+        const uint8_t errorPage = 8;
+        if (Storage.openFileForWrite("DSN", marker, file)) file.write(&errorPage, sizeof(errorPage));
+      }
       LOG_INF("DSN", "Reset Reading Statistics pairing: success=%d", cleared);
       silentRestartToDessen(appPath);
       return;
@@ -342,6 +466,11 @@ void DessenAppActivity::loop() {
   dessen::FreeInkHost::Swipe appSwipe = dessen::FreeInkHost::SwipeNone;
   if (swipe != SwipeDir::None) {
     snap.touchReleased = false;  // never also read the swipe as a tap on what it passed over
+    // Picco maps a left-edge swipe to Back as well as a horizontal swipe.
+    // Reading Statistics owns horizontal page navigation, including edges.
+    if (isStandaloneStatsApp(appPath) && (swipe == SwipeDir::Left || swipe == SwipeDir::Right)) {
+      snap.back = false;
+    }
     // Carry the start point in the existing touch fields. The Dessen adapter
     // converts panel coordinates to the app's safe-area coordinates.
     snap.touchX = swipeStartX;

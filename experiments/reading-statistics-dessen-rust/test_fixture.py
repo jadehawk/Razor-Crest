@@ -46,8 +46,20 @@ def run(host,app,root,keys, touch=True, one_book=False, series=False, portrait=F
 def main(host,app):
     with tempfile.TemporaryDirectory() as temp:
         root=Path(temp)
+        unpaired = run(host, app, root, b"dddddddd")
+        assert unpaired.index("Device Statistics") < unpaired.index("Current Book")
+        assert "Server Statistics" not in unpaired
+        assert "Server Sync" in unpaired and "Settings" in unpaired
+        backwards = run(host, app, root, b"uuuuuuuu")
+        assert "Server Statistics" not in backwards
+        assert "Server Sync" in backwards and "Settings" in backwards
+
+        token = root / ".crosspoint" / "reading-statistics-token.json"
+        token.parent.mkdir()
+        token.write_text('{"token":"tnstats_' + 'a' * 64 + '"}')
         empty=run(host,app,root,b"b")
-        assert "Overall Statistics" in empty and "THIS MONTH" in empty and "Continue Reading" in empty,empty[-2000:]
+        assert len(re.findall(r"(?m)^text \d+,\d+ N/A$", empty.split("refresh", 1)[0])) == 9, empty[:4200]
+        assert "Server Statistics" in empty and "THIS MONTH" in empty and "Continue Reading" in empty,empty[-2000:]
         assert "Best Day" in empty and "Daily Avg." in empty
         assert not re.search(r"(?m)^text \d+,\d+ Total Time$", empty), "Repeated total time widget"
         assert not re.search(r"(?m)^text \d+,\d+ Books$", empty.split("Continue Reading")[0].split("Page Turns")[-1]), "Repeated books widget"
@@ -101,7 +113,7 @@ def main(host,app):
         # X3-style narrow four-key footer measures labels instead of four
         # equal cells; confirm each label fits in its actual stroke rectangle.
         narrow_buttons = run(host, app, root, b"b", touch=False, portrait=True)
-        footer_strokes = re.findall(r"(?m)^stroke (\d+),766 (\d+)x32 w1$", narrow_buttons)
+        footer_strokes = re.findall(r"(?m)^stroke (\d+),766 (\d+)x32 w1$", narrow_buttons.split("refresh", 1)[0])
         assert len(footer_strokes) == 4, "Four hardware-footer cells missing"
         for (_, width), label in zip(footer_strokes, ("Back","Open","Prev Book","Next Book")):
             assert int(width) - 8 >= len(label) * 8, f"Footer label {label} clipped"
@@ -142,6 +154,7 @@ def main(host,app):
         assert len(re.findall(r"(?m)^text \d+,\d+ 1/2$", wrapped)) >= 2, "Carousel next must loop"
         restored = run(host, app, root, b"db")
         assert "Device Statistics" in restored, "Side Next must preserve page navigation"
+        token.unlink()
         folder=root/".crosspoint"/"reading-stats"
         folder.mkdir(parents=True)
         (folder/"global_v2.bin").write_bytes(snapshot())
@@ -153,24 +166,19 @@ def main(host,app):
         output=run(host,app,root,b"dddddddddddddb")
         device=run(host,app,root,b"db")
         assert "Device Statistics" in device and "Time of Day" in device
-        preview = run(host, app, root, b"b")
-        # Fixture contains 30m, 15m and 20m reading days. Average is
-        # 3900/3 = 1300 seconds, displayed in whole minutes as 21m.
-        for value in ("Best Day", "Daily Avg.", "30m", "21m"):
-            assert value in preview, f"Missing history-derived preview metric {value}: {preview[-6000:]}"
         offline_pages=run(host,app,root,b"dddddbb")
         for value in ("Your Week", "Reading Calendar", "All Books", "Last Read Day",
                       "Best Day", "Daily Average", "Reading Consistency",
                       "None", "<15m", "15-44m", "45m+", "Books with statistics: 1", "Dune", "Next >"):
             assert value in offline_pages, f"Missing offline page content {value}:\\n{offline_pages[-5000:]}"
-        for value in ["Overall Statistics","Device Statistics","Current Book","THIS MONTH","12","234","Time of Day",
+        for value in ["Device Statistics","Current Book","THIS MONTH","12","234","Time of Day",
                       "Morning","Afternoon","Evening","Night","Latest 7 Days",
                       "Dune","Page Turns","Active Days","Avg. / Turn","33","3"]:
             assert value in output,f"Missing {value}:\n{output[-5000:]}"
         for value in ("3", "33", "109s"):
             assert re.search(r"(?m)^text \d+,\d+ " + re.escape(value) + r"$", output), f"Missing book metric {value}"
         # The shared Time of Day widget must render all four labels on
-        # Overall Statistics, Current Book, and Your Week.
+        # Device Statistics, Current Book, and Your Week.
         for label in ("Morning", "Afternoon", "Evening", "Night"):
             count = len(re.findall(r"(?m)^text \d+,\d+ " + label + r"$", output))
             assert count >= 3, f"Time of Day label {label} rendered only {count} times"
@@ -192,10 +200,11 @@ def main(host,app):
         # Check backup fallback, and never present data from corrupted backups.
         (folder/"global_v2.bin").write_bytes(b"corrupt")
         (folder/"global_v2.bin.bak").write_bytes(snapshot())
-        assert "Overall Statistics" in run(host,app,root,b"b")
+        backup = run(host,app,root,b"b")
+        assert re.search(r"(?m)^text \d+,\d+ 234$", backup), backup[-2000:]
         (folder/"global_v2.bin.bak").write_bytes(b"corrupt")
         assert "0m" in run(host,app,root,b"b")
-        print("PASS: six offline pages plus Server Sync; local overall totals; native totals; book data; period bars; calendar; page turns; read-only; backup; corruption")
+        print("PASS: six offline pages plus Server Sync; paired availability; native totals; book data; period bars; calendar; page turns; read-only; backup; corruption")
 
 if __name__=="__main__":
     main(*sys.argv[1:3])

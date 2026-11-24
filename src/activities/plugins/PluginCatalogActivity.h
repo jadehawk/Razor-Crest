@@ -261,6 +261,9 @@ class PluginCatalogActivity : public CatalogActivity {
   // FreeInkUI control and never occupies an item row.
   std::vector<freeink::ui::ListItem> rowItems;
   bool rowsDirty = true;
+#if CROSSPOINT_DESSEN_APPS
+  bool pickerSuspendedForDessen = false;  // guarded by RenderLock
+#endif
   uint16_t previewReadyMask = 0;
   HalFile previewFile;
   Bitmap previewBitmap{previewFile};

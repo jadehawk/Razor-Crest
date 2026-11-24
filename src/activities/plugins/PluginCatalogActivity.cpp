@@ -1616,7 +1616,12 @@ void PluginCatalogActivity::onExit() {
   clearEphemeralToken();
   Storage.remove(BROWSE_TMP_PATH);
   Storage.remove(CACHE_SEED_TMP_PATH);
-  CatalogActivity::onExit();
+  // Native Dessen pairing owns the Wi-Fi lifecycle in its parent callback.
+  if (forceInitialCatalog) {
+    Activity::onExit();
+  } else {
+    CatalogActivity::onExit();
+  }
 }
 
 void PluginCatalogActivity::startBrowse() {
@@ -4794,8 +4799,34 @@ void PluginCatalogActivity::activateIndex(const int index) {
         LOG_ERR("PCAT", "OOM: app activity");
         return;
       }
-      app.clearTapFlash();
-      startActivityForResult(std::move(appActivity), [](const ActivityResult&) {});
+      {
+        RenderLock lock;
+        const auto before = HalMemory::getInternalHeap();
+        pickerReturnName = plugin.name;
+        app.clearTapFlash();
+        pickerSuspendedForDessen = true;
+        releaseRows();
+        // Rows borrow strings from the picker lists. Free their storage first.
+        decltype(rowItems){}.swap(rowItems);
+        decltype(installedPlugins){}.swap(installedPlugins);
+        decltype(installedExtensions){}.swap(installedExtensions);
+        decltype(items){}.swap(items);
+        decltype(pluginTabNavs){}.swap(pluginTabNavs);
+        decltype(browseHistory){}.swap(browseHistory);
+        const auto after = HalMemory::getInternalHeap();
+        LOG_INF("PCAT", "Dessen picker release: free=%u->%u max_block=%u->%u",
+                static_cast<unsigned>(before.freeBytes), static_cast<unsigned>(after.freeBytes),
+                static_cast<unsigned>(before.largestBlockBytes), static_cast<unsigned>(after.largestBlockBytes));
+      }
+      startActivityForResult(std::move(appActivity), [this](const ActivityResult&) {
+        // Keep rendering suspended until all row sources have been rebuilt.
+        enterPluginPicker();
+        {
+          RenderLock lock;
+          pickerSuspendedForDessen = false;
+        }
+        requestUpdate();
+      });
       return;
     }
 #endif
@@ -5086,6 +5117,9 @@ void PluginCatalogActivity::drawFooter() {
 }
 
 void PluginCatalogActivity::render(RenderLock&& lock) {
+#if CROSSPOINT_DESSEN_APPS
+  if (pickerSuspendedForDessen) return;
+#endif
   // Avoid SD-backed theme art while the X3 renders a download over TLS. The
   // progress UI and theme fonts are retained; other screens are unchanged.
 #if FREEINK_DEVICE_X3
@@ -5125,8 +5159,13 @@ void PluginCatalogActivity::buildScreen(UiScreen& screen) {
       catalogCenteredBlock(screen, {{tr(STR_DOWNLOAD_COMPLETE), true}, {statusMessage.c_str()}});
       return;
     case State::NO_TOKEN:
-      catalogCenteredBlock(screen,
-                           {{manifest.hasDeviceCode() ? tr(STR_PLUGIN_SIGN_IN_HINT) : tr(STR_PLUGIN_NOT_SIGNED_IN)}});
+      if (forceInitialCatalog && manifest.hasDeviceCode()) {
+        catalogCenteredBlock(screen, {{tr(STR_PLUGIN_SIGN_IN_HINT)},
+                                     {mappedInput.hasTouch() ? "Tap to sign in" : "Press Open to sign in"}});
+      } else {
+        catalogCenteredBlock(screen,
+                             {{manifest.hasDeviceCode() ? tr(STR_PLUGIN_SIGN_IN_HINT) : tr(STR_PLUGIN_NOT_SIGNED_IN)}});
+      }
       return;
     default:
       return;

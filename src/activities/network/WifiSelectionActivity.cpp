@@ -179,7 +179,8 @@ void WifiSelectionActivity::onExit() {
   LOG_DBG("WIFI", "Free heap at onExit end: %d bytes", ESP.getFreeHeap());
 }
 
-void WifiSelectionActivity::startWifiScan(const bool autoScan) {
+void WifiSelectionActivity::startWifiScan(const bool autoScan, const bool retry) {
+  if (!retry) emptyScanRetries = 0;
   autoConnecting = autoScan;
   manualNetworkListRequested = false;
   listNav.reset();
@@ -199,6 +200,18 @@ void WifiSelectionActivity::startWifiScan(const bool autoScan) {
   WiFi.scanNetworks(true);  // true = async scan
 }
 
+bool WifiSelectionActivity::retryEmptyScan() {
+  if (emptyScanRetries >= MAX_EMPTY_SCAN_RETRIES) return false;
+  ++emptyScanRetries;
+  LOG_INF("WIFI", "Empty scan; retry %u/%u", static_cast<unsigned>(emptyScanRetries),
+          static_cast<unsigned>(MAX_EMPTY_SCAN_RETRIES));
+  WiFi.scanDelete();
+  const bool manualRequested = manualNetworkListRequested;
+  startWifiScan(autoConnecting && !manualRequested, true);
+  manualNetworkListRequested = manualRequested;
+  return true;
+}
+
 void WifiSelectionActivity::processWifiScanResults() {
   const int16_t scanResult = WiFi.scanComplete();
 
@@ -207,7 +220,9 @@ void WifiSelectionActivity::processWifiScanResults() {
     return;
   }
 
-  if (scanResult == WIFI_SCAN_FAILED) {
+  if (scanResult < 0) {
+    if (retryEmptyScan()) return;
+    WiFi.scanDelete();
     networks.clear();
     realNetworkCount = 0;
     appendHiddenNetworkEntry();
@@ -257,6 +272,7 @@ void WifiSelectionActivity::processWifiScanResults() {
   });
 
   realNetworkCount = networks.size();
+  if (realNetworkCount == 0 && retryEmptyScan()) return;
   appendHiddenNetworkEntry();
   rebuildNetworkRowItems();
 

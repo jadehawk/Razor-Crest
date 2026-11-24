@@ -51,17 +51,18 @@ struct Pairing {
     code: [u8; 9],
     access_token: [u8; 72],
     web_code: [u8; 9],
-    web_started: u32,
+    web_expires: u32,
     web_valid: bool,
     started: u32,
     message: &'static [u8],
     pending: bool,
 }
 impl Pairing {
+    #[inline(never)]
     fn new() -> Self {
         let mut result = Self {
             phase: PairPhase::Ready, secret: [0; 64], code: [0; 9],
-            access_token: [0; 72], web_code: [0; 9], web_started: 0, web_valid: false,
+            access_token: [0; 72], web_code: [0; 9], web_expires: 0, web_valid: false,
             started: 0, message: b"Generate a pairing code to begin", pending: false,
         };
         let mut file = [0u8; 192];
@@ -124,19 +125,44 @@ impl Pairing {
         Self::send(&head[..prefix.len() + 73], b"", buffer, interactive)
     }
 
+    fn load_web_login(&mut self) {
+        if self.phase != PairPhase::Paired { return; }
+        let mut path = [0u8; 192];
+        let suffix = b"/web-login.json";
+        let n = dsn_fs_app_dir(&mut path);
+        if n <= 0 || n as usize + suffix.len() > path.len() { return; }
+        let n = n as usize;
+        path[n..n + suffix.len()].copy_from_slice(suffix);
+        let mut payload = [0u8; 384];
+        let len = dsn_fs_read(&path[..n + suffix.len()], &mut payload);
+        if len > 0 && len as usize <= payload.len() {
+            self.parse_web_login(&payload[..len as usize]);
+        }
+    }
+
+    fn parse_web_login(&mut self, payload: &[u8]) -> bool {
+        let Some(code) = json_string(payload, b"user_code").filter(|code| valid_user_code(code)) else { return false; };
+        let Some(expiry) = json_u32(payload, b"expires_at") else { return false; };
+        let now = dsn_time();
+        if now < 946_684_800 || expiry <= now || expiry - now > 86_400 { return false; }
+        self.web_code.copy_from_slice(code);
+        self.web_expires = expiry;
+        self.web_valid = true;
+        true
+    }
+
+    fn web_login_available(&self) -> bool {
+        let now = dsn_time();
+        self.web_valid && now >= 946_684_800 && self.web_expires > now && self.web_expires - now <= 86_400
+    }
+
     fn request_web_login(&mut self) {
         let mut response = [0u8; 512];
-        self.web_valid = false;
         match self.authorized(LOGIN_HEAD, &mut response, true) {
             Ok(n) => {
-                if let Some(code) = json_string(&response[..n], b"user_code") {
-                    if valid_user_code(code) {
-                        self.web_code.copy_from_slice(code);
-                        self.web_started = dsn_time();
-                        self.web_valid = true;
-                        self.message = b"Scan to open private statistics";
-                        return;
-                    }
+                if self.parse_web_login(&response[..n]) {
+                    self.message = b"Scan to open private statistics";
+                    return;
                 }
                 self.message = b"Invalid web sign-in response";
             }
@@ -258,9 +284,35 @@ impl Ui {
         ((self.w - width) / 2, self.content_bottom() - height - 28, width, height)
     }
 
-    fn disconnect_button_bounds(&self) -> (i32, i32, i32, i32) {
+    fn native_sync_action_bounds(&self, action: u8) -> (i32, i32, i32, i32) {
         let (x, y, w, h) = self.sync_button_bounds();
-        (x, y - h - 12, w, h)
+        if self.touch {
+            let height = 62;
+            let bottom = self.content_bottom() - 18;
+            let rows_below = i32::from(action == 2);
+            return (G + 24, bottom - height - rows_below * (height + 20), self.w - 2 * (G + 24), height);
+        }
+        (x, y - i32::from(2 - action) * (h + 8), w, h)
+    }
+
+    fn web_login_dialog(&self, generating: bool) {
+        dsn_clear();
+        self.header(6);
+        let top = 13 + self.ls + self.lt;
+        let width = self.w - 2 * G;
+        let height = self.content_bottom() - top - 13;
+        self.panel(G, top, width, height);
+        let mid = top + height / 2;
+        let title: &[u8] = if generating { b"Generating web login..." } else { b"Generate a web login?" };
+        text(G + 10, mid - 2 * self.lt - 18, width - 20, self.lt, title, TITLE, CENTER, BOLD);
+        let message: &[u8] = if generating { b"Connecting to Wi-Fi. Please wait." } else { b"The reader will connect to Wi-Fi." };
+        text(G + 10, mid - self.ls - 8, width - 20, self.ls, message, SMALL, CENTER, 0);
+        if generating { return; }
+        let (yes, no, y, w, h) = self.overall_sync_confirmation_buttons();
+        for (x, label) in [(yes, b"Continue".as_slice()), (no, b"Cancel".as_slice())] {
+            dsn_stroke(x, y, w, h, BLACK, 2, 7, 15);
+            text(x + 4, y + (h - self.lb) / 2, w - 8, self.lb, label, BODY, CENTER, BOLD);
+        }
     }
 
     fn sync_unpair_confirmation(&self) {
@@ -283,7 +335,8 @@ impl Ui {
         text(no_x + 4, by + (bh - self.lb) / 2, bw - 8, self.lb, b"Cancel", BODY, CENTER, 0);
     }
 
-    fn sync_page(&self, pairing: &Pairing, native: bool) {
+    #[inline(never)]
+    fn sync_page(&self, pairing: &Pairing, native: bool, focus: u8, disconnect_failed: bool) {
         dsn_clear();
         self.header(6);
         let x = G;
@@ -296,30 +349,42 @@ impl Ui {
             let tw = w - 24;
             text(tx, y + 18, tw, self.lt, b"Techy-Notes Sync", TITLE, CENTER, BOLD);
             if pairing.phase == PairPhase::Paired {
-                text(tx, y + self.lt + 38, tw, self.lb, b"READER PAIRED", BODY, CENTER, BOLD);
-                text(tx, y + self.lt + self.lb + 59, tw, self.lb, b"Refresh pulls totals from Techy-Notes", SMALL, CENTER, 0);
-                text(tx, y + self.lt + self.lb + 83, tw, self.lb, b"Open: Refresh stats", BODY, CENTER, BOLD);
-                if !self.touch {
-                    text(tx, y + self.lt + self.lb + 111, tw, self.lb,
-                         b"Previous: Disconnect reader", BODY, CENTER, 0);
+                let actions_top = self.native_sync_action_bounds(if self.touch { 2 } else { 0 }).1;
+                let url_y = y + self.lt + 25 + self.lb + 6;
+                let qr_y = url_y + self.lb + 14;
+                let qr_size = (actions_top - qr_y - 2 * self.lb - 12).clamp(0, 200);
+                text(tx, y + self.lt + 25, tw, self.lb, b"READER PAIRED", BODY, CENTER, BOLD);
+                text(tx, url_y, tw, self.lb, b"sync.techy-notes.com", SMALL, CENTER, 0);
+                if disconnect_failed {
+                    text(tx, qr_y, tw, self.lb, b"Could not disconnect. Check Wi-Fi and retry.", SMALL, CENTER, 0);
+                } else if pairing.web_login_available() && qr_size >= 90 {
+                    draw_pairing_qr(&pairing.web_code, true, (self.w - qr_size) / 2, qr_y, qr_size);
+                    text(tx, qr_y + qr_size, tw, self.lb, &pairing.web_code, BODY, CENTER, BOLD);
+                    text(tx, qr_y + qr_size + self.lb, tw, self.lb,
+                         b"Single use, up to 24 hours", SMALL, CENTER, 0);
+                }
+                if !disconnect_failed && !pairing.web_login_available() {
+                    text(tx, qr_y, tw, self.lb, b"No active web login. Generate a code below.", SMALL, CENTER, 0);
+                }
+                let actions: [(u8, &[u8]); 3] = [
+                    (0, b"Generate Web Login"), (1, b"Refresh Statistics"), (2, b"Disconnect Reader"),
+                ];
+                for (action, label) in actions {
+                    if self.touch && action == 1 { continue; }
+                    let (bx, by, bw, bh) = self.native_sync_action_bounds(action);
+                    let selected = !self.touch && focus == action;
+                    dsn_stroke(bx, by, bw, bh, BLACK, if selected { 2 } else { 1 }, 8, 15);
+                    text(bx + 8, by + (bh - self.lb) / 2, bw - 16, self.lb,
+                         label, BODY, CENTER, if selected { BOLD } else { 0 });
                 }
             } else {
                 text(tx, y + self.lt + 38, tw, self.lb, b"NOT PAIRED", BODY, CENTER, BOLD);
                 text(tx, y + self.lt + self.lb + 59, tw, self.lb, b"Connect using this Dessen app", SMALL, CENTER, 0);
-                text(tx, y + self.lt + self.lb + 83, tw, self.lb, b"Open: Pair reader", BODY, CENTER, BOLD);
-            }
-            if self.touch {
-                if pairing.phase == PairPhase::Paired {
-                    let (dx, dy, dw, dh) = self.disconnect_button_bounds();
-                    dsn_stroke(dx, dy, dw, dh, BLACK, 1, 8, 15);
-                    text(dx + 8, dy + (dh - self.lb) / 2, dw - 16, self.lb,
-                         b"Disconnect reader", BODY, CENTER, 0);
+                if self.touch {
+                    let (bx, by, bw, bh) = self.sync_button_bounds();
+                    dsn_stroke(bx, by, bw, bh, BLACK, 2, 8, 15);
+                    text(bx + 8, by + (bh - self.lb) / 2, bw - 16, self.lb, b"Pair Reader", BODY, CENTER, BOLD);
                 }
-                let (bx, by, bw, bh) = self.sync_button_bounds();
-                dsn_stroke(bx, by, bw, bh, BLACK, 2, 8, 15);
-                text(bx + 8, by + (bh - self.lb) / 2, bw - 16, self.lb,
-                     if pairing.phase == PairPhase::Paired { b"Refresh Stats" } else { b"Pair Reader" },
-                     BODY, CENTER, BOLD);
             }
             return;
         }
@@ -363,7 +428,7 @@ impl Ui {
                 }
             }
         } else if pairing.phase == PairPhase::Paired {
-            let valid = pairing.web_valid && dsn_time().wrapping_sub(pairing.web_started) < 600;
+            let valid = pairing.web_login_available();
             if valid {
                 if self.w >= 640 {
                     let qr_x = x + 18;
@@ -373,7 +438,7 @@ impl Ui {
                     let rw = (w - 260).max(100);
                     text(rx, y + 138, rw, self.lt, &pairing.web_code, TITLE, CENTER, BOLD);
                     text(rx, y + 174, rw, self.lb, b"sync.techy-notes.com/signin", SMALL, CENTER, 0);
-                    text(rx, y + 206, rw, self.lb, b"Single-use PIN: 10 minutes", SMALL, CENTER, 0);
+                    text(rx, y + 206, rw, self.lb, b"Single-use PIN: up to 24 hours", SMALL, CENTER, 0);
                     if !self.touch {
                         text(rx, y + 248, rw, self.lb, b"Open: New web PIN", BODY, CENTER, BOLD);
                     }
@@ -408,7 +473,7 @@ impl Ui {
             dsn_stroke(bx, by, bw, bh, BLACK, 2, 8, 15);
             let label: &[u8] = match pairing.phase {
                 PairPhase::Code => b"Check Pairing",
-                PairPhase::Paired => if pairing.web_valid && dsn_time().wrapping_sub(pairing.web_started) < 600 {
+                PairPhase::Paired => if pairing.web_login_available() {
                     b"New Web PIN"
                 } else { b"Open Web Stats" },
                 _ => b"Generate Code",

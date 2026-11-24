@@ -1,6 +1,3 @@
-// Offline preview of the future cross-device Overall Statistics page.
-// Everything shown here is genuine device-local data, never a fabricated server total.
-
 #[derive(Clone, Copy)]
 struct CarouselBook {
     path: [u8; 512],
@@ -19,7 +16,7 @@ impl CarouselBook {
         path: [0; 512], path_n: 0,
         title: [0; 192], title_n: 0,
         author: [0; 128], author_n: 0,
-        series: [0; 112], series_n: 0, percent: -1,
+        series: [0; 112], series_n: 0, percent: 0,
     };
     fn path(&self) -> &[u8] { &self.path[..self.path_n] }
     fn title(&self) -> &[u8] { &self.title[..self.title_n] }
@@ -34,10 +31,11 @@ struct BookCarousel {
 }
 
 impl BookCarousel {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self { books: [CarouselBook::EMPTY; 5], count: 0, selected: 0 }
     }
 
+    #[inline(never)]
     fn load(&mut self) {
         // One bounded scan during startup. Never reopen the index on redraw.
         let mut shelf = [0u8; 2400];
@@ -160,14 +158,15 @@ impl Ui {
         let w = self.w - 2 * G;
         let y = 13 + self.ls + self.lt;
         let h = (self.content_bottom() - y - 13).max(1);
-        let gap = 12;
+        let gap = if self.touch { 28 } else { 12 };
         let width = (w - 32 - gap) / 2;
-        let bh = (self.lb + 19).max(36);
+        let bh = if self.touch { 62 } else { (self.lb + 19).max(36) };
         let button_y = (y + h / 2 + 12).min(y + h - bh - 10);
         (x + 10, x + w - 10 - width, button_y, width, bh)
     }
 
-    fn overall_preview(&self, st: &Stats, month_day: u32, clock_ok: bool, carousel: &BookCarousel,
+    #[inline(never)]
+    fn overall_preview(&self, carousel: &BookCarousel,
                        server: &ServerOverall, paired: bool, syncing: bool) {
         dsn_clear();
         self.header(0);
@@ -182,12 +181,11 @@ impl Ui {
         let recent_h = (y + available - recent_y).max(1);
 
         self.panel(x, y, w, hero_h);
-        let headline: &[u8] = if server.available { b"THIS MONTH - SERVER" }
-            else { b"THIS MONTH" };
-        let stale = server.last_synced == 0 || dsn_time().saturating_sub(server.last_synced) >= 86_400;
+        let stale = server.stale(dsn_time());
         let show_icon = paired && (server.icon_revealed || stale);
-        let heading_width = if show_icon { w - 58 } else { w - 16 };
-        text(x + 8, y + 6, heading_width, self.ls, headline, SMALL, CENTER, BOLD);
+        let half = w / 2;
+        text(x + 8, y + 6, half - 16, self.ls, b"THIS MONTH", SMALL, CENTER, BOLD);
+        text(x + half + 8, y + 6, half - if show_icon { 54 } else { 16 }, self.ls, b"ALL TIME", SMALL, CENTER, BOLD);
         if show_icon {
             let (bx, by, bw, bh) = self.overall_refresh_bounds();
             let cx = bx + bw / 2;
@@ -211,28 +209,27 @@ impl Ui {
                 dsn_line(ax, ay, ex, ey, 2, BLACK);
             }
         }
-        let mut month_secs = 0u64;
-        let mut active = 0u32;
-        if clock_ok {
-            for ago in 0..month_day.min(DAYS as u32) {
-                let seconds = st.day[DAYS - 1 - ago as usize];
-                month_secs += seconds as u64;
-                if seconds > 0 { active += 1; }
-            }
-        }
-        if server.available { month_secs = server.month_seconds as u64; active = server.month_active_days; }
-        let month = if syncing { S::new().s(b"Syncing...")
-        } else if clock_ok || server.available {
-            dur(month_secs.min(u32::MAX as u64) as u32)
-        } else { S::new().s(b"--") };
+        let metric = |value: S| {
+            if server.available { value } else { S::new().s(b"N/A") }
+        };
+        let month = if syncing { S::new().s(b"Syncing...") }
+                    else { metric(dur(server.month_seconds)) };
         let big_h = dsn_line_height(LARGE);
-        text(x + 8, y + self.ls + 12, w - 16, big_h, month.get(), LARGE, CENTER, BOLD);
+        let total = server.total_seconds;
+        let all_time = metric(S::new().n(total / 3600).s(b"h ").n(total / 60 % 60).s(b"m"));
+        let value_y = y + self.ls + 12;
+        let value_w = half - 16;
+        let month_font = metric_font(month.get(), LARGE, TITLE, value_w);
+        let all_font = metric_font(all_time.get(), LARGE, TITLE, value_w);
+        text(x + 8, value_y, value_w, big_h, month.get(), month_font, CENTER, BOLD);
+        text(x + half + 8, value_y, value_w, big_h, all_time.get(), all_font, CENTER, BOLD);
+        dsn_line(x + half, y + 6, x + half, y + hero_h * 56 / 100 - 4, 1, DARK);
         let line_y = y + hero_h * 56 / 100;
         dsn_line(x + 8, line_y, x + w - 8, line_y, 1, DARK);
         let values = [
-            S::new().n(if server.available { server.current_streak } else { st.streaks().0 }),
-            if clock_ok || server.available { S::new().n(active) } else { S::new().s(b"--") },
-            S::new().n(if server.available { server.books } else { st.book_count }),
+            metric(S::new().n(server.current_streak)),
+            metric(S::new().n(server.month_active_days)),
+            metric(S::new().n(server.books)),
         ];
         let labels: [&[u8]; 3] = [b"Day Streak", b"Active Days", b"Books"];
         for i in 0..3 {
@@ -249,17 +246,11 @@ impl Ui {
         let mw = (w - gap) / 2;
         let mh = (metrics_h - gap) / 2;
         self.metric(x, y + hero_h + gap, mw, mh, b"Sessions",
-            S::new().n(if server.available { server.sessions } else { st.sessions }).get(), 0);
+            metric(S::new().n(server.sessions)).get(), 0);
         self.metric(x + mw + gap, y + hero_h + gap, w - mw - gap, mh,
-            b"Page Turns", S::new().n(if server.available { server.page_turns } else { st.progress_bp }).get(), 1);
-        // Two distinct statistics from retained device history (up to 371
-        // days). Avoid repeating the month's time and book count above.
-        let (best_day, daily_average, active_days) = st.daily_summary();
-        let best = if server.available { server.best_day_seconds } else { best_day };
-        let avg = if server.available { server.daily_average_seconds } else { daily_average };
-        let have_days = if server.available { server.month_active_days > 0 } else { active_days > 0 };
-        let best_label = if have_days { dur(best) } else { S::new().s(b"--") };
-        let avg_label = if have_days { dur(avg) } else { S::new().s(b"--") };
+            b"Page Turns", metric(S::new().n(server.page_turns)).get(), 1);
+        let best_label = metric(dur(server.best_day_seconds));
+        let avg_label = metric(dur(server.daily_average_seconds));
         self.metric(x, y + hero_h + gap + mh + gap, mw, mh,
             b"Best Day", best_label.get(), 3);
         self.metric(x + mw + gap, y + hero_h + gap + mh + gap, w - mw - gap, mh,

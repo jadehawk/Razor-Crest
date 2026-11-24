@@ -1,7 +1,7 @@
 # Reading Statistics — Dessen Rust dashboard and server pairing
 
 Standalone experimental **Rust/Dessen application** with six offline
-statistics pages and a seventh Server Sync page. It operates without the
+statistics pages, Server Sync and Settings pages. It operates without the
 older `reading-statistics` SD plugin: the installable app folder contains
 `app.bin`, `manifest.json`, and its own `device.json` carrying the
 firmware-readable pairing grant. Server totals are cached in
@@ -48,6 +48,46 @@ WebUI/WebDAV. Local reading history is not touched. App build uses
 runtime stack headroom on X3; the larger size-optimized-for-speed build
 showed corrupted on-screen labels in host tests.
 
+**Automatic server refresh (0.6.12):** Settings is available on all devices.
+Auto-fetch is off by default and persists in the app's stats-settings file.
+On a normal launch, a paired reader with an absent or at least 24-hour-old
+snapshot uses the native GET-only refresh handoff once. A returned app does
+not repeat the attempt, even after failure. Settings also offers confirmed
+manual refresh, independent of cache age. Side keys/swipes change pages;
+front keys on Settings select the toggle or refresh action. Firmware allows
+one 10-second saved Wi-Fi join and a 4-second HTTP timeout; invalid or failed
+responses leave the old cache intact. No additional SD plugin is required.
+
+**Picco pairing and dashboard corrections (0.6.13):** Server Statistics shows
+month and all-time totals. Paired touch readers refresh via the hero or Settings,
+not a redundant Server Sync button. Non-touch readers retain Open to refresh
+with confirmation. The unpaired Settings action opens Server Sync. Firmware
+retries empty or failed Wi-Fi scans twice and keeps the existing Wi-Fi connection
+through the native pairing callback, fetching Overview before resuming the app.
+
+**Server Statistics and Web Login (0.6.14):** Unpaired readers start on
+Device Statistics. Both navigation directions skip Server Statistics until the
+reader is paired. Server Statistics shows `N/A` until an account snapshot is
+available and keeps the previous snapshot if refresh fails.
+
+Pairing and every refresh fetch account totals and a new single-use web login
+over one Wi-Fi connection after the firmware unloads the guest. The app reads
+the cached PIN and renders its QR until the server-issued expiry, up to 24
+hours. Generating another login replaces the preceding code. The X3/X4 front
+buttons select actions on Server Sync, and the side buttons change pages.
+On Picco, use the Generate Web Login and Disconnect Reader touch actions.
+The month card and Settings provide manual refresh. Confirmed disconnect
+revokes the reader credential and outstanding login, clears the caches, and
+returns to Device Statistics. A failed network disconnect leaves pairing
+available for retry.
+
+**Server Sync hardware follow-up (0.6.15):** Touch actions have larger
+targets and more space between them. Generate Web Login asks before connecting
+to Wi-Fi and shows progress before the native handoff. Firmware saves the login
+lifetime and last successful statistics fetch against the reader clock. Auto-fetch
+runs only when enabled, paired, and the last successful fetch is at least 24 hours
+old. Pairing and manual refresh can populate an empty cache.
+
 **Deliberately deferred:** Dessen-owned `sleep.enter` subscriptions.
 First verify interactive pairing, cached server totals, native refresh,
 cancel, and both silent resume paths on X3 and Picco. The standard declarative
@@ -56,21 +96,16 @@ Firmware still owns any reading-session uploads, not the Dessen guest.
 
 ## Pages
 
-1. **Overall Statistics:** Paired readers load account-wide Techy-Notes
+1. **Server Statistics:** Paired readers load account-wide Techy-Notes
    statistics (including combined native snapshots and reader sessions).
-   The header shows **THIS MONTH - SERVER** only when server totals are
-   available; otherwise it simply says **THIS MONTH** (never "LOCAL FALLBACK").
-   On touch devices the entire month card refreshes without changing pages.
-   The sync-arrow icon appears after a tap or 24 hours after the last successful
-   server update; its age survives app restarts through the server's
-   `synced_at` snapshot timestamp.
-   On X3, Overall reads an authenticated SD snapshot instead of networking
-   while the Dessen guest is resident. Without that cache it displays device-local
-   statistics and leaves their original history untouched. The four detail cards
-   show sessions, page turns, the best reading day, and average time per active
-   day. With server data, Best Day uses uploaded account history and Daily Avg.
-   uses the current month's active days. With offline local data those fields
-   use retained local daily history (up to 371 days); missing history shows `--`. The Continue Reading
+   The hero splits **THIS MONTH** and **ALL TIME**, retaining minutes even for
+   totals above 99 hours. Unavailable server metrics display `N/A`.
+   On touch devices the month card opens a refresh confirmation. The refresh
+   icon appears after a tap or 24 hours after the last successful server
+   update. The server's `synced_at` timestamp survives app restarts.
+   Firmware downloads the account snapshot while the guest is unloaded.
+   Best Day uses uploaded account history, and Daily Avg. uses the current
+   month's active days. The Continue Reading
    carousel holds up to five genuine recently opened unfinished books, shows
    one at a time using the same portrait-cover, two-line title/series, author,
    and right-column progress layout as Current Book, and loops in either

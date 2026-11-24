@@ -117,7 +117,8 @@ int requestStream(freeink::SecureHttpClient* session, const std::string& url, co
 int requestToFile(freeink::SecureHttpClient* session, const std::string& url, const std::string& method,
                   const std::string& body, const Headers& headers, const char* destPath, size_t maxResponse,
                   const std::function<void(size_t, size_t)>& progress = nullptr,
-                  const std::function<bool()>& shouldAbort = nullptr, bool followAnonymousRedirects = false);
+                  const std::function<bool()>& shouldAbort = nullptr, bool followAnonymousRedirects = false,
+                  uint32_t timeoutMs = 30000);
 
 // Password-grant token mint: runs the (already-substituted) auth request and
 // extracts the token at `tokenPath` from a 2xx JSON response.

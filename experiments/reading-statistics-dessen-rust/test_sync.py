@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 
 CODE = "A" * 64
 TOKEN = "tnstats_" + "b" * 64
@@ -61,10 +62,10 @@ def main(host, app):
                                   "verification_uri": "https://sync.techy-notes.com/link?code=" + PAIR_CODE,
                                   "interval": 5, "expires_in": 600})
         fixture(network, "token", {"access_token": TOKEN, "token_type": "Bearer"})
-        fixture(network, "login-code", {"user_code": PAIR_CODE, "expires_in": 600,
+        fixture(network, "login-code", {"user_code": PAIR_CODE, "expires_in": 86400, "expires_at": int(time.time()) + 86400,
                    "verification_uri": "https://sync.techy-notes.com/signin?code=" + PAIR_CODE + "#reader-login"})
         fixture(network, "overview", {
-            "source": "server", "total_seconds": 12345,
+            "source": "server", "total_seconds": 4730460,
             "month_seconds": 7200, "month_active_days": 8,
             "current_streak": 5, "books": 13, "sessions": 19,
             "page_turns": 327, "best_day_seconds": 1800,
@@ -109,13 +110,13 @@ def main(host, app):
         assert json.loads(target.read_text())["token"] == TOKEN, "Web login must never replace pairing credential"
         portrait_web = run(host, app, sd, network, keys=b"ucbb", touch=True, portrait=True)
         assert PAIR_CODE in portrait_web and "New Web PIN" in portrait_web
-        assert "THIS MONTH - SERVER" in portrait_web, "Paired Overall must use remote stats"
+        assert "THIS MONTH" in portrait_web, "Paired Overall must use remote stats"
         assert "TAP TO REFRESH" not in portrait_web, "Clipped refresh instruction still present"
         # Refresh is an e-ink vector sync icon, not a text label.
-        assert "THIS MONTH - SERVER" in portrait_web and portrait_web.count("line ") >= 12, "Refresh icon missing"
+        assert "THIS MONTH" in portrait_web and portrait_web.count("line ") >= 12, "Refresh icon missing"
         assert "13" in portrait_web and "327" in portrait_web, "Remote statistics not displayed"
         revisit = run(host, app, sd, network, keys=b"ubb", touch=False)
-        assert revisit.count("THIS MONTH - SERVER") >= 2, "Returning from Server Sync did not retry Overall"
+        assert revisit.count("THIS MONTH") >= 2, "Returning from Server Sync did not retry Overall"
         offline_web = run(host, app, sd, None, keys=b"b", touch=True)
         assert "THIS MONTH" in offline_web and "FALLBACK" not in offline_web, "Offline UI exposed fallback label"
         assert json.loads(target.read_text())["token"] == TOKEN
@@ -154,36 +155,70 @@ def main(host, app):
         x3_token = x3 / ".crosspoint" / "reading-statistics-token.json"
         x3_token.write_text(json.dumps({"token": TOKEN}))
         cache_dir.joinpath("server-overview.json").write_text(json.dumps({
-            "source": "server", "synced_at": 1763884800, "total_seconds": 12345,
+            "source": "server", "synced_at": 1763884800, "total_seconds": 4730460,
             "month_seconds": 7200, "month_active_days": 8, "current_streak": 5,
             "books": 13, "sessions": 19, "page_turns": 327,
             "best_day_seconds": 1800, "daily_average_seconds": 900
         }))
         offline_x3 = run(host, app, x3, keys=b"b", native=True)
-        assert "THIS MONTH - SERVER" in offline_x3 and "327" in offline_x3
+        assert "THIS MONTH" in offline_x3 and "327" in offline_x3 and "1314h 1m" in offline_x3 and "ALL TIME" in offline_x3
         assert "FALLBACK" not in offline_x3
+        resume.write_bytes(b"\x08")
+        failed_disconnect = run(host, app, x3, keys=b"bb", native=True)
+        assert "Could not disconnect. Check Wi-Fi and retry." in failed_disconnect
+        assert "READER PAIRED" in failed_disconnect and x3_token.exists()
+        assert not resume.exists()
+        login_cache = cache_dir / "web-login.json"
+        login_cache.write_text(json.dumps({"user_code": PAIR_CODE, "expires_at": int(time.time()) - 1}))
+        expired = run(host, app, x3, keys=b"ub", native=True)
+        assert PAIR_CODE not in expired
+        login_cache.write_text(json.dumps({"user_code": PAIR_CODE, "expires_at": int(time.time()) + 86300}))
+        for touch in (False, True):
+            login = run(host, app, x3, keys=b"ub", native=True, touch=touch)
+            assert PAIR_CODE in login and "Generate Web Login" in login
+            # The desktop service stub cannot encode QR bitmaps.
+            assert "Single use, up to 24 hours" in login and TOKEN not in login
+        prompt = run(host, app, x3, keys=b"ucb", native=True)
+        assert "Generate a web login?" in prompt and "The reader will connect to Wi-Fi." in prompt
+        assert "[launch stats-refresh" not in prompt and not resume.exists()
+        selected = run(host, app, x3, keys=b"ucc", native=True)
+        assert selected.index("Generating web login...") < selected.index("[launch stats-refresh")
+        assert "Select" in selected and "Up" in selected and "Down" in selected
+        assert "[launch stats-refresh" in selected and resume.read_bytes() == b"\x06"
+        resume.unlink()
+        cancelled = run(host, app, x3, keys=b"utN", native=True, touch=True)
+        assert "Generate a web login?" in cancelled and not resume.exists()
+        assert "[launch stats-refresh" not in cancelled
+        tapped = run(host, app, x3, keys=b"utY", native=True, touch=True)
+        assert tapped.index("Generating web login...") < tapped.index("[launch stats-refresh")
+        assert "[launch stats-refresh" in tapped and resume.read_bytes() == b"\x06"
+        resume.unlink()
+
         # Reset pairing is an explicit two-step operation; the guest must
         # never delete protected credentials or server caches itself.
         before_token = x3_token.read_bytes()
         before_cache = cache_dir.joinpath("server-overview.json").read_bytes()
-        ask_disconnect = run(host, app, x3, keys=b"up", native=True)
+        ask_disconnect = run(host, app, x3, keys=b"upc", native=True)
         assert "Disconnect this reader?" in ask_disconnect, "X3 Previous did not show disconnect confirmation"
         assert "[launch stats-unpair" not in ask_disconnect, "Previous alone unpaired without approval"
-        cancel_disconnect = run(host, app, x3, keys=b"upb", native=True)
+        cancel_disconnect = run(host, app, x3, keys=b"upcb", native=True)
         assert "Disconnect this reader?" in cancel_disconnect and "[launch stats-unpair" not in cancel_disconnect, (
             "Cancel unexpectedly requested unpair"
         )
         assert x3_token.read_bytes() == before_token and cache_dir.joinpath("server-overview.json").read_bytes() == before_cache
-        confirm_disconnect = run(host, app, x3, keys=b"upc", native=True)
+        confirm_disconnect = run(host, app, x3, keys=b"upcc", native=True)
         assert "[launch stats-unpair" in confirm_disconnect, "Confirm did not request firmware-owned unpair"
         assert resume.read_bytes() == b"\x00", "Unpair must return to Overall"
         resume.unlink()
         assert x3_token.read_bytes() == before_token, "Untrusted Dessen guest deleted protected credentials"
         assert cache_dir.joinpath("server-overview.json").read_bytes() == before_cache, "Guest deleted server cache"
-        native_refresh = run(host, app, x3, keys=b"uc", native=True)
+        native_refresh = run(host, app, x3, keys=b"uncc", native=True)
         assert "[launch stats-refresh" in native_refresh, "Paired X3 should refresh through native firmware"
         assert resume.read_bytes() == b"\x00", "Manual refresh must return to Overall"
         resume.unlink()
+        touch_sync = run(host, app, x3, keys=b"ub", native=True, touch=True)
+        assert "Disconnect Reader" in touch_sync and "Refresh Statistics" not in touch_sync
+        assert "Open: Refresh stats" not in touch_sync and "[launch stats-refresh" not in touch_sync
         # Touch tests run in an X3-native capability simulation to validate the
         # whole month widget; X3 hardware itself uses physical buttons.
         month_touch = run(host, app, x3, keys=b"m", native=True, touch=True)
@@ -192,7 +227,7 @@ def main(host, app):
         assert not resume.exists(), "Unconfirmed tap created a native resume marker"
         cancelled = run(host, app, x3, keys=b"mb", native=True, touch=True)
         assert "Sync with server?" in cancelled and "[launch stats-refresh" not in cancelled
-        assert "THIS MONTH - SERVER" in cancelled, "Cancel failed to return to Overall"
+        assert "THIS MONTH" in cancelled, "Cancel failed to return to Overall"
         assert not resume.exists(), "Cancelled sync wrote a resume marker"
         tap_cancelled = run(host, app, x3, keys=b"mN", native=True, touch=True)
         assert "[launch stats-refresh" not in tap_cancelled, "Cancel touch launched networking"
@@ -218,7 +253,6 @@ def main(host, app):
         assert not (x3 / ".crosspoint" / "plugins" / "reading-statistics").exists()
         # A recent successful sync hides the icon until the user touches
         # This Month; an aged cache shows it without a tap.
-        import time
         cached = json.loads(alt_cache.read_text())
         cached["synced_at"] = int(time.time())
         alt_cache.write_text(json.dumps(cached))
@@ -228,7 +262,59 @@ def main(host, app):
         alt_cache.write_text(json.dumps(cached))
         stale = run(host, app, x3, keys=b"b", native=True, touch=True)
         assert "line 751,63 - 753,57" in stale, "Old snapshot failed to show the sync icon"
-    print("Dessen device pairing fixtures: PASS")
+        # All real devices use native mode; exercise both input layouts.
+        prefs = cache_dir / "stats-settings"
+        assert not prefs.exists()
+        disabled = run(host, app, x3, keys=b"b", native=True)
+        assert "[launch stats-refresh" not in disabled
+        for touch in (False, True):
+            for portrait in (False, True):
+                prefs.write_bytes(b"\x00")
+                settings_trace = run(host, app, x3, keys=b"uub", native=True, touch=touch, portrait=portrait)
+                assert "Settings" in settings_trace and "Auto-fetch server statistics" in settings_trace
+                assert "Refresh now" in settings_trace and "Last refresh:" in settings_trace
+        toggled = run(host, app, x3, keys=b"uucbb", native=True, portrait=True)
+        assert prefs.read_bytes() == b"\x01", toggled[-2000:]
+        login_cache.unlink()
+        # A missing login must not restart auto-sync when the statistics are fresh.
+        # Server clock skew does not override the reader-local last successful fetch.
+        for touch in (False, True):
+            cached["synced_at"] = int(time.time()) + 3600
+            cached["fetched_at"] = int(time.time())
+            alt_cache.write_text(json.dumps(cached))
+            fresh = run(host, app, x3, keys=b"b", native=True, touch=touch)
+            assert "[launch stats-refresh" not in fresh
+            cached["fetched_at"] = int(time.time()) - 86401
+            alt_cache.write_text(json.dumps(cached))
+            stale_bytes = alt_cache.read_bytes()
+            stale = run(host, app, x3, keys=b"b", native=True, touch=touch)
+            assert "[launch stats-refresh" in stale and "Syncing..." in stale
+            assert resume.read_bytes() == b"\x00"
+            # A failed native request leaves the previous snapshot and returns once.
+            returned = run(host, app, x3, keys=b"b", native=True, touch=touch)
+            assert "[launch stats-refresh" not in returned and "THIS MONTH" in returned
+            assert not resume.exists() and alt_cache.read_bytes() == stale_bytes
+        cached.pop("fetched_at")
+        # Manual refresh still works with fresh data and needs confirmation.
+        cached["synced_at"] = int(time.time())
+        alt_cache.write_text(json.dumps(cached))
+        manual = run(host, app, x3, keys=b"uunc", native=True)
+        assert "Sync with server?" in manual and "[launch stats-refresh" not in manual
+        manual = run(host, app, x3, keys=b"uuncc", native=True)
+        assert "[launch stats-refresh" in manual
+        resume.unlink()
+        alt_cache.unlink()
+        missing = run(host, app, x3, keys=b"b", native=True)
+        assert "[launch stats-refresh" not in missing and not resume.exists()
+        x3_token.unlink()
+        unpaired = run(host, app, x3, keys=b"b", native=True)
+        assert "[launch stats-refresh" not in unpaired
+        for portrait in (False, True):
+            pair_touch = run(host, app, x3, keys=b"uutb", native=True, touch=True, portrait=portrait)
+            assert "Pair reader first" in pair_touch and "NOT PAIRED" in pair_touch
+        pair_keys = run(host, app, x3, keys=b"uuncb", native=True)
+        assert "Pair reader first" in pair_keys and "NOT PAIRED" in pair_keys
+    print("Dessen device pairing and automatic refresh fixtures: PASS")
 
 
 if __name__ == "__main__":

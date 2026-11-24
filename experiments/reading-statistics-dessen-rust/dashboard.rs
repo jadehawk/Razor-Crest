@@ -11,6 +11,7 @@ struct Current {
     periods: [u32; 4],
 }
 
+#[inline(never)]
 fn load_current(home: &Home) -> Current {
     let mut out = Current { found: false, secs: 0, sessions: 0, turns: 0, active: 0, periods: [0; 4] };
     if !home.has_book() { return out; }
@@ -194,12 +195,13 @@ impl Ui {
                 S::new().n(battery as u32 & 255).s(b"%").get(), SMALL, RIGHT, 0);
         }
         let title: &[u8] = match page {
-            0 => b"Overall Statistics",
+            0 => b"Server Statistics",
             1 => b"Device Statistics",
             2 => b"Current Book",
             3 => b"Your Week",
             4 => b"Reading Calendar",
             5 => b"All Books",
+            7 => b"Settings",
             _ => b"Server Sync",
         };
         if self.touch {
@@ -212,6 +214,7 @@ impl Ui {
         dsn_line(g, 7 + self.ls + self.lt, self.w - g, 7 + self.ls + self.lt, 1, DARK);
     }
 
+    #[inline(never)]
     fn dashboard_render(&self, st: &Stats, home: &Home, detail: &Current, page: i32, month_day: u32, clock_ok: bool) {
         dsn_clear();
         self.header(page + 1);

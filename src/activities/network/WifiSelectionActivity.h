@@ -56,6 +56,8 @@ class WifiSelectionActivity final : public Activity, private UiAppHost {
   std::vector<WifiNetworkInfo> networks;
   // Number of real (scanned) networks, excluding the synthetic hidden-network entry
   size_t realNetworkCount = 0;
+  uint8_t emptyScanRetries = 0;
+  static constexpr uint8_t MAX_EMPTY_SCAN_RETRIES = 2;
 
   // Row buffers derived from `networks`, rebuilt only when it changes
   // (processWifiScanResults()) instead of on every repaint — buildListScreen()
@@ -123,7 +125,8 @@ class WifiSelectionActivity final : public Activity, private UiAppHost {
   void renderConnected(const Rect* screen, const ThemeMetrics* metrics) const;
   void renderConnectionFailed(const Rect* screen, const ThemeMetrics* metrics) const;
 
-  void startWifiScan(bool autoScan = false);
+  void startWifiScan(bool autoScan = false, bool retry = false);
+  bool retryEmptyScan();
   void processWifiScanResults();
   void appendHiddenNetworkEntry();
   void selectNetwork(int index);

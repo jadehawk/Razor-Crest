@@ -63,6 +63,7 @@ fn book_time(record: &[u8; 316]) -> Option<u32> {
 }
 
 impl Ui {
+    #[inline(never)]
     fn extra_page(&self, st: &Stats, page: i32, year: u32, month: u32, day: u32, book_offset: u32) {
         let x = G;
         let w = self.w - G * 2;

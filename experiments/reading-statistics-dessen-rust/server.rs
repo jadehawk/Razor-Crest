@@ -1,7 +1,7 @@
 // Compact account-wide server digest, read through a scoped device token.
 // The cache belongs to the Dessen app, independent of legacy SD plugins.
 const STATS_CACHE_FILE: &[u8] = b"/server-overview.json";
-// A failed request never replaces the locally collected offline statistics.
+// A failed request leaves the last account snapshot available.
 fn json_u32(json: &[u8], name: &[u8]) -> Option<u32> {
     let mut i = 0;
     while i + name.len() + 3 <= json.len() {
@@ -34,6 +34,7 @@ struct ServerOverall {
     available: bool,
     last_synced: u32,
     icon_revealed: bool,
+    total_seconds: u32,
     month_seconds: u32,
     month_active_days: u32,
     current_streak: u32,
@@ -45,10 +46,15 @@ struct ServerOverall {
 }
 impl ServerOverall {
     fn new() -> Self {
-        Self { attempted: false, attempts: 0, available: false, last_synced: 0, icon_revealed: false, month_seconds: 0,
+        Self { attempted: false, attempts: 0, available: false, last_synced: 0, icon_revealed: false, total_seconds: 0, month_seconds: 0,
             month_active_days: 0, current_streak: 0, books: 0, sessions: 0,
             page_turns: 0, best_day_seconds: 0, daily_average_seconds: 0 }
     }
+    fn stale(&self, now: u32) -> bool {
+        !self.available || self.last_synced == 0 ||
+            (now >= 946_684_800 && now.saturating_sub(self.last_synced) >= 86_400)
+    }
+    #[inline(never)]
     fn load_cached(&mut self) {
         self.attempted = true;
         self.available = false;
@@ -59,20 +65,21 @@ impl ServerOverall {
         let end = n as usize;
         path[end..end + STATS_CACHE_FILE.len()].copy_from_slice(STATS_CACHE_FILE);
         let size = dsn_fs_read(&path[..end + STATS_CACHE_FILE.len()], &mut response);
-        if size > 0 { self.parse_overview(&response[..size as usize]); }
+        if size > 0 && size as usize <= response.len() { self.parse_overview(&response[..size as usize]); }
     }
 
     fn parse_overview(&mut self, payload: &[u8]) {
         if json_string(payload, b"source") != Some(b"server".as_slice()) { return; }
-        if let (Some(month_seconds), Some(month_active_days), Some(current_streak),
+        if let (Some(total_seconds), Some(month_seconds), Some(month_active_days), Some(current_streak),
             Some(books), Some(sessions), Some(page_turns),
             Some(best_day_seconds), Some(daily_average_seconds)) = (
-            json_u32(payload, b"month_seconds"), json_u32(payload, b"month_active_days"),
+            json_u32(payload, b"total_seconds"), json_u32(payload, b"month_seconds"), json_u32(payload, b"month_active_days"),
             json_u32(payload, b"current_streak"), json_u32(payload, b"books"),
             json_u32(payload, b"sessions"), json_u32(payload, b"page_turns"),
             json_u32(payload, b"best_day_seconds"), json_u32(payload, b"daily_average_seconds")
         ) {
-            self.last_synced = json_u32(payload, b"synced_at").unwrap_or(0);
+            self.last_synced = json_u32(payload, b"fetched_at").or_else(|| json_u32(payload, b"synced_at")).unwrap_or(0);
+            self.total_seconds = total_seconds;
             self.month_seconds = month_seconds;
             self.month_active_days = month_active_days;
             self.current_streak = current_streak;
@@ -85,10 +92,10 @@ impl ServerOverall {
         }
     }
 
+    #[inline(never)]
     fn fetch(&mut self, pairing: &Pairing) {
         self.attempted = true;
         self.attempts = self.attempts.saturating_add(1);
-        self.available = false;
         if pairing.phase != PairPhase::Paired { return; }
         let mut response = [0u8; 640];
         if let Ok(n) = pairing.authorized(OVERVIEW_HEAD, &mut response, false) {

@@ -1,7 +1,7 @@
 # Dessen Reading Statistics: firmware and SDK upstream checklist
 
-> Status: **working Razor-Crest integration**, verified with host-side tests; actual upstream CrossPoint compatibility is **not yet established**.
-> Baseline integration snapshot: `thinkforge/dessen-runtime`, Rust app **0.5.7** (November 2026); later uncommitted Server Sync work is tracked separately below (app manifest **0.6.9**, November 23, 2026).
+> Status: **working Razor-Crest read-only server integration**, with X3/Picco hardware results and passing host tests. Upstream CrossPoint compatibility remains to be established.
+> Baseline: `thinkforge/dessen-runtime`, Rust app 0.5.7; current milestone: **v0.6.16**, November 23, 2026. The latest status below supersedes historical pending results and obsolete behavior in the change log.
 > Purpose: retain the concrete firmware/SDK requirements needed to run the Rust Reading Statistics app on a future upstream CrossPoint build, rather than assuming that upstream Dessen support alone provides all of them.
 
 ## Trial stage: standalone pairing and Overview fetch (0.6.8)
@@ -60,14 +60,67 @@ dedicated X3 keys/Picco landscape/portrait confirm/cancel tests; firmware
 static source contracts and clang-format; hardware unpair + re-pair still
 required. No firmware compilation by assistant.
 
+## Current milestone: standalone server read and web login (0.6.14–0.6.16)
+
+The Dessen app is a standalone SD package containing `app.bin`, `manifest.json`
+and its own `device.json`. The original declarative Reading Statistics SD
+plugin is not an installation dependency. Source changes are tracked in
+`thinkforge/dessen-runtime` and the separate Techy-Notes Sync Server checkout.
+The latest package is `experiments/reading-statistics-dessen-rust/build/reading-statistics-dessen-rust-0.6.16.zip`.
+The following records supersede older experimental behavior above.
+
+### Firmware and Dessen runtime port requirements
+
+| ID | Source and capability | Required behavior and evidence |
+| --- | --- | --- |
+| N22 | `DessenAppActivity.cpp`, `PluginHttp.cpp/.h`: combined native refresh and durable caches | Both devices use the allowlisted native handoff; pairing or refresh unloads the 80 KiB guest and reuses a single Wi-Fi connection. GET `/api/device/overview` (640-byte bound) and POST `/api/device/login-code` (384-byte bound) update separate app-local `server-overview.json` and `web-login.json` caches through temporary/backup promotion. Required fields and lifetime are validated; failed responses preserve previous valid data. Preserve the one-shot resume page. X3 serial-log (10) showed overview success but login failure; serial-log (11) confirms both caches updated after the clock fix. |
+| N23 | `DessenAppActivity.cpp`, `PluginHttp.cpp`: disconnect and account isolation | Confirmed native action 2 (RTC target 7) calls the authenticated DELETE login-code endpoint, revokes the reader and outstanding login, then clears the reserved credential and both caches. Failure keeps pairing available for retry and returns to Server Sync with an error. Token rotation/removal invalidates overview and login caches for supported app identities and plugin roots. No change to protected-path policy. User verified unpair hides Server Statistics and re-pair restores it. |
+| N24 | `DessenAppActivity.cpp`, `server.rs`, `settings.rs`: persisted reader-clock timestamps | Use server lifetime (positive, maximum 86,400 seconds) to calculate local login expiry and record local `fetched_at` for successful statistics snapshots, preserving the server `synced_at` field. Firmware and guest use the same reader clock. Logs distinguish HTTP/validation/cache-write failures without secrets. Auto-sync requires opt-in, valid pairing, and a last successful statistics fetch aged at least 24 hours; missing QR or missing snapshot does not trigger automatic networking. Pairing/manual refresh can fill an empty cache. Resume prevents immediate repeated sync. |
+| N25 | `DessenAppActivity.cpp`: Picco horizontal swipe ownership | Picco maps left-edge horizontal swipes to both Back and SwipeRight. Suppress the duplicate Back for the two allowlisted Reading Statistics app identities when delivering either horizontal swipe. Preserve native bottom-edge-up Home gesture, other Dessen apps, header Back, and physical controls. Source regression passes; Picco hardware retest pending. |
+| N26 | `CrosspointServices.cpp`: book covers on no-PSRAM boards | Previous book-cover syscall returned unavailable unconditionally on X3. Resolve normal EPUB/XTC cached thumbnail locations through the book handlers, select the nearest cached size, and stream one bitmap row into the existing guest output as packed 1-bit pixels. Bounds: source dimensions at most 1024, row bytes at most 4096, combined row/luminance scratch at most 5 KiB, checked allocation failure and guest capacity limits. No EPUB decode next to the resident guest, no Cover Grid enablement, no dependency on `/.crosspoint/reading-stats/covers/`. User verified X3 covers after the first fix; upstream-name fallback added afterward and needs hardware retest. Picco retains its original PSRAM path. |
+
+Normal cover-cache formats (checked against local `origin/develop` and Razor-Crest):
+
+- Upstream EPUB: `/.crosspoint/epub_<hash>/thumb_<height>.bmp`.
+- Razor-Crest EPUB: `/.crosspoint/epub_<hash>/thumb_bw_fill_<height>.bmp`.
+- XTC: `/.crosspoint/xtc_<hash>/thumb_<height>.bmp`.
+
+Use the firmware book-handler cache path rather than reimplementing the hash.
+The original SD dashboard has an independent Razor-Crest-only cover cache;
+Dessen uses ordinary book thumbnails and falls back to a placeholder when
+none are usable. The additional X3 fix accepts both EPUB filename variants,
+preferring the current format at equal size.
+
+### App and server changes
+
+| ID | Layer | Contract |
+| --- | --- | --- |
+| A23 | Rust v0.6.14–0.6.16 | Unpaired startup uses Device Statistics; navigation skips Server Statistics. Paired startup uses Server Statistics; unavailable server fields show N/A, real zero stays zero. Local book hero and device statistics remain available. |
+| A24 | Rust v0.6.15–0.6.16 | Server Sync has selectable X3/X4 actions and larger separated Picco touch targets. Generate Web Login asks for network confirmation and renders progress before native action 1; disconnect requires confirmation. QR and PIN are cached; URL and four-module QR quiet zone are laid out separately, and the short single-use caption fits small screens. |
+| S03 | Techy-Notes `device-pairing.ts`, `web.ts` | Pairing remains a short device-code grant. Web login issuance returns an account-scoped one-use code valid at most 24 hours; replacement invalidates the prior code. QR uses `/signin?code=...&qr=1` (fragment-free); a valid browser scan posts to `/auth/login-reader`, establishes a normal session and opens `/stats` automatically. Used/expired codes show regeneration instructions. Ordinary link-preview GET does not redeem. DELETE `/api/device/login-code` revokes the reader and outstanding codes. Server changes deployed on Unraid by the user; successful scans and rejection of reuse confirmed. |
+| S04 | Techy-Notes `observability.ts`, `device-pairing.ts` | Structured audit events `reader_login.issue` and `reader_login.redeem` report issuance, redemption and rejection. Device identifier is logged when known; PIN, bearer token, device secret and URL query are excluded. 18 server pairing/observability tests passed; changes copied and checksum-verified on Unraid. Container rebuild and live audit output have not been independently confirmed. |
+
+No new syscall numbers or ABI changes were introduced for N22–N26 or
+v0.6.14–v0.6.16. Preserve existing native statistics mode/action syscalls 107/108,
+QR syscall 106, bitmap/cover, event and font contracts noted below. Do not
+weaken TLS/heap preflight or the 80 KiB guest reservation to obtain parity.
+
+### Hardware and verification status (November 23, 2026)
+
+- User confirmed X3 unpaired page hiding, paired N/A with no snapshot, fresh server data and disconnect/reconnect. Both X3 and Picco displayed web-login QR and PIN; phone sign-in/reuse rejection worked after updated Unraid deployment.
+- User confirmed the initial X3 cached-cover firmware fix displays covers; the additional upstream filename compatibility and Picco horizontal swipe fix still need a device retest.
+- Three standalone Rust app suites and 17 firmware source-contract checks passed; server TypeScript and 18 pairing/logging tests passed. Browser smoke test used a mobile viewport and synthetic local account. The user built/flashed firmware; source checks are not a firmware compilation.
+- Latest pinned local engine/SDK gitlinks checked: Dessen `8c843954d2583a67981459e3cc71dc7abce5874a`, FreeInk SDK `b81de9400b9e8b17825a7ebccd64ee101f18ea8e`. Verify upstream availability before a port.
+
 ## Source of truth and commits
 
-| Layer | Current local commit | Relevant source |
+| Layer | Integration commit or current pin | Relevant source |
 | --- | --- | --- |
 | Razor-Crest firmware integration | `dd99ea59` | Root firmware worktree; Dessen host, plugin launcher, native-services adapter, font wiring, reader/library integration |
+| Current firmware worktree HEAD | `b8ec6c11` | Later v0.6.16 app/firmware changes are still in the working tree; this HEAD alone is insufficient to reproduce current behavior |
 | Rust Reading Statistics app | `1675d633` | `experiments/reading-statistics-dessen-rust/`; package version 0.5.7 |
 | Earlier C proof of concept (reference only) | `6b89a8ac` | `experiments/reading-statistics-dessen/`; **not** the Rust app's runtime dependency |
-| Dessen engine / ABI | `2c8d944` | `dessen/` gitlink in firmware |
+| Dessen engine / ABI | `8c843954` | Current `dessen/` gitlink; original integration pin was `2c8d944` |
 | FreeInk SDK extensions | `b81de94` | `freeink-sdk/` gitlink in firmware |
 
 **Important:** Dessen and FreeInk SDK modifications are **required parts of this working integration**. The parent commit pins both local submodule commits. The commits are local until pushed to suitable remotes; their hashes alone do not make them fetchable by another checkout or CI. Ensure commits are published/reachable *before* using them on upstream/CI, but do **not** silently move submodule pins to different upstream revisions. Check remotes and licenses before porting. This document is an inventory, not upstream acceptance.
@@ -106,6 +159,13 @@ when creating an upstream PR or comparing a new CrossPoint firmware version.
 | N17 | **Techy-Notes server**, `GET /api/device/overview` response adds `synced_at` | Need last successful sync time to persist across app restarts and control when refresh icon appears. | Server returns authoritative Unix seconds `synced_at` in authenticated snapshot. Dessen Rust parses it and shows sync-arrow icon after explicit widget touch or when 24h has elapsed. Invalid/missing timestamp counts as not recently synced; no token or private server field is stored in UI text. **Deploy updated server source before hardware test.** | **Server deployment dependency** on top of existing S02 read-only endpoint; verify timestamp, account isolation and cache freshness after sleep. |
 | A19 | **Rust app v0.6.7**, `readstats.rs`, `server.rs`, `sync.rs`, `preview.rs` | X3 must use offline cache and native pairing/manual refresh, while Picco retains live QR and HTTPS. Overall touch previously advanced to next page and showed an unwanted LOCAL FALLBACK label. | On X3, native mode reads `server-overview.json` from any installed plugin root, never issues guest HTTPS; unpaired Server Sync launches native pairing and paired Server Sync manual native cache refresh. The whole This Month card refreshes without page navigation, while the sync icon shows only after widget touch or 24h since `synced_at`. No 'LOCAL FALLBACK' label. Both Rust fixtures and desktop host native mode tests pass. | **Requires N14–N17** for X3. Picco live behavior must be regression-tested; X3 native interaction, 80-KiB guest allocator, book/ZIP/BW OOM and sleeping network session need physical validation. |
 | B01 | **Local firmware builder**, `C:\\XP-FW\\sync-source.ps1`: seed pinned FreeInk and Dessen gitlinks from their **local source repositories**, rather than running a recursive remote submodule update | Picco build aborted with `fatal: remote error: upload-pack: not our ref 2c8d944...` because the Dessen integration revision (and custom FreeInk revision) is committed locally but unavailable from the remote listed in `.gitmodules`. The builder already had logic to mirror Dessen's tracked edits, but that logic ran after the remote update failure. | **November 22, 2026**: `sync-source.ps1` completed using worktree `thinkforge/dessen-runtime`; build mirror revisions match Dessen `2c8d944` and FreeInk `b81de94`, and both submodule patch hashes match. The firmware Wi-Fi patch's **normalized source lines** also match the mirror (raw hashes differ due to CRLF/LF). **No firmware compilation performed.** | **Builder-only, outside the firmware repo; not an upstream firmware code dependency.** Preserve the builder fix locally, and publish the pinned commits or provide an equivalent local-source sync mechanism before attempting reproducible CI/upstream builds. Never substitute a different SDK revision silently. |
+| N18 | **Firmware**, `DessenAppActivity.cpp` (`refreshNativeStatsSnapshot`), `PluginHttp.cpp/.h` (`requestToFile`, `openClient`) | Automatic statistics downloads must not stall on unavailable Wi-Fi or replace valid offline totals with an invalid server response. Applies to all devices. | Reuse the existing native unload/reboot/resume handoff and one 10-second saved-network join without a picker; pass a 4-second HTTP timeout matching background KOSync while retaining the default 30-second timeout for other plugin callers. Authenticated GET only; validate the source, timestamp and required metrics before atomic cache promotion. No new ABI, SDK or server endpoint. | **Required upstream firmware change.** Standalone Rust build and desktop app regression suites pass; firmware compilation and hardware tests pending. Verify unavailable Wi-Fi, HTTP timeout, invalid responses and preservation of previous cache. |
+| N19 | **Firmware**, `PluginCatalogActivity.cpp/.h`: release suspended picker allocations around Dessen launch | X3 serial log showed 114,488 bytes free but only 81,908 contiguous bytes, 12 bytes short of the unchanged 80 KiB guest request. The picker remains on the activity stack while its child runs. | Save selection by plugin name, close input routing, release borrowed rows before their backing plugin/extension lists, free idle browse vectors, suppress parent repaint until rediscovery on return. Log free heap and largest block before/after. All Dessen picker launches use the cleanup; no guest memory reduction. | **Upstream firmware port required.** Source-contract regression added; hardware must confirm contiguous-block recovery and picker selection restoration. Root cause of all heap fragmentation is not yet proven. |
+| A20 | **Rust app**, `settings.rs`, `readstats.rs`, `server.rs`, `dashboard.rs`/`bookhero.rs` navigation, `preview.rs`, Makefile | Non-touch readers need manual refresh access and all readers need optional automatic refresh. | App-owned persistent opt-in (default off); Settings page offers refresh status and confirmed manual refresh; startup checks paired state and cached `synced_at` against 24 hours, then uses the existing native handoff. Resume marker suppresses automatic refresh after network return to prevent restart loops. | **Updated existing Dessen app required**, v0.6.12; no separate SD plugin or server update. Desktop fixtures pass for fresh/stale/missing cache, disabled/unpaired settings, failed refresh return, touch and physical navigation. Guest stack pressure fixed by avoiding duplicate carousel construction and isolating rendering/initialization frames; 80 KiB allocation unchanged. Hardware verification pending. |
+| N20 | **Firmware**, `PluginCatalogActivity::onExit`, native pairing callback | Picco returned Home after QR authorization because base catalog exit silently rebooted before the parent's Overview fetch. | Pairing-only child releases TLS but calls `Activity::onExit` instead of normal catalog Wi-Fi teardown. Parent fetches authenticated Overview using the existing connection, validates required `total_seconds`, then resumes Dessen. Device-appropriate sign-in hint. Ordinary catalog exit unchanged. | **Required upstream firmware port.** Source contract tests pass; Picco/X3 hardware verification pending. |
+| N21 | **Firmware**, `WifiSelectionActivity.cpp/.h` | Empty or failed scans immediately showed only Add hidden network. | Retry twice before showing results, preserve saved-network auto-connect and manual scan behavior, reset retry budget for new scans. | **Required upstream firmware port.** Source contracts pass; verify on hardware with empty and populated scan results. |
+| A21 | **Rust app v0.6.13**, `dashboard.rs`, `preview.rs`, `server.rs`, `sync.rs`, `readstats.rs`, `settings.rs` | Picco redundant refresh button, missing all-time duration and inactive pairing action. | Server Statistics title, split month/all-time duration, paired touch refresh via hero or Settings, non-touch confirmed refresh via Open, unpaired Settings action opens Server Sync. | Desktop dashboard, pairing/auto-fetch and reset fixtures pass; hardware pending. No server/SDK/ABI change. |
+| A22 | **Rust app v0.6.14 and native firmware**, `DessenAppActivity.cpp`, `PluginHttp.cpp`, `readstats.rs`, `server.rs`, `preview.rs`, `sync.rs` | Unpaired page navigation, unavailable server metrics, temporary web login, and disconnect revocation. | Pairing and refresh use one saved Wi-Fi connection to update separately validated, bounded overview and web login caches. Unpaired users start on Device Statistics. Paired users can generate a login or disconnect using touch or button controls. Confirmed disconnect requires server revocation and clears both caches. The 80 KiB guest and ABI are unchanged. | **Test with updated firmware and sync server** supporting overview, login issuance and reader-scoped revocation. Check QR scan, offline cache preservation and disconnect on X3 and Picco. |
 | S01 | **Firmware + Dessen ABI**, baseline Dessen host/SDK/launcher/statistics/font/touch/book-data extensions (IDs F01–F06, A01–A16 below) | The Rust app needs native reading-statistics files, stable fonts/layout, accurate touch/button events, recent-book metadata, book launch and Dessen app loading. | Baseline app previously exercised on X3/Picco; host and Rust tests exist. Version, platform and test caveats detailed below. | **Required capability audit for every firmware integration/upstream sync**. Compare with upstream, port only missing contracts, keep local uncommitted work and submodule pins intact. |
 
 **Memory reservation interpretation:** `dessen/sdk/app.ld` defaults to `APP_MEM=64K`.
@@ -198,7 +258,7 @@ Do **not** assume a future upstream Dessen merge contains our native stats colle
 
 - [ ] Obtain a source revision of CrossPoint **with Dessen accepted and buildable**; record its commit and ABI revision. If no upstream Dessen exists, upstreaming the dashboard alone is premature.
 - [ ] Inspect upstream feature flags and plugin SD install/launcher behavior; ensure `app.bin` can run, and verify the actual device build enables it.
-- [ ] Compare upstream `dessen` and `freeink-sdk` with pinned local commits `2c8d944` and `b81de94` before applying patches. Avoid duplicating already-merged SDK features.
+- [ ] Compare upstream `dessen` and `freeink-sdk` with current pinned local commits `8c843954` and `b81de94` before applying patches. Avoid duplicating already-merged SDK features.
 - [ ] Verify a compatible native stats collector actually writes all required records; preserve users' existing `/.crosspoint/reading-stats/` data.
 - [ ] Verify stats-file read permissions and bounded `FS_READ`/`FS_READ_AT` calls.
 - [ ] Check clock local-day semantics and counts against native on-device stats. Test empty/corrupt/backup data.
@@ -208,15 +268,15 @@ Do **not** assume a future upstream Dessen merge contains our native stats colle
 - [ ] Verify PSRAM-aware repeated HTTPS code/token requests stay within memory limits and do not reboot; exercise manual network picker, cancel, and app resumption.
 - [ ] Verify automatic five-second approval checks, expiry, Back cancellation, and that no simulated touch input affects other Dessen apps.
 - [ ] **X3:** verify 80 KiB app loads, heap/max-block before and after stored-frame reclaim, Wi-Fi and repeated TLS, and no render stack overflow.
-- [ ] **Picco:** scan larger paired Web PIN QR, confirm browser PIN prefill and explicit submit, then regenerate; old PIN must fail.
-- [ ] **Both:** Overall shows server account totals once deployed; disconnect Wi-Fi to verify immediate LOCAL FALLBACK and manually refresh while online.
+- [ ] **Both:** scan the paired web login QR, confirm direct browser Statistics sign-in, then regenerate; old or used PIN must fail.
+- [ ] **Both:** Server Statistics shows account totals; offline refresh preserves the last valid snapshot, and an absent snapshot displays N/A. Unpaired navigation hides the server page.
 - [ ] **Techy-Notes:** deploy tested server routes before app regression; verify account isolation, revocation, and guest reader statistics.
-- [ ] Verify covers on PSRAM boards and expected placeholders on non-PSRAM boards.
+- [ ] Verify normal cached covers on PSRAM and non-PSRAM boards (N26), including stock CrossPoint thumbnails, missing caches, invalid files and both hero cards.
 - [ ] Verify touch swipe origin and X3/X4 side-key source flag semantics; check zero/one/multiple-book carousel behavior.
 - [ ] Confirm app launches/resumes books, exits, and doesn't break normal page navigation.
 - [ ] Run Dessen host/ABI suite and Rust app regression suite; user builds firmware and conducts X3/Picco device tests.
 - [ ] Validate server device-code pairing on Picco/X3 (guest and existing account), including a Wi-Fi join already in progress; preserve the firmware's Dessen Wi-Fi connection guard and 20-second timeout.
-- [ ] Keep **session upload, import, and remote Overall** explicitly out of scope until implemented and validated. Device-code pairing is implemented in the Rust app, but the current Overall page is a local preview, not all-device totals.
+- [ ] Verify the next milestone, Dessen-triggered local reading statistics and reading progress uploads, before treating the integration as bidirectional.
 - [ ] Only after upstream parity and hardware tests: plan commits/PRs. Do not publish or push without approval.
 
 ## 5. Reproduction / verification
@@ -244,7 +304,7 @@ source ~/.cargo/env
 make test
 ```
 
-Install the resulting **`build/app.bin` plus `manifest.json`** to the device SD path:
+Install all three resulting files, **`build/app.bin`, `manifest.json`, and `device.json`**, to the device's actual Dessen app directory:
 
 ```text
 /.crosspoint/plugins/reading-statistics-dessen-rust/
@@ -254,4 +314,16 @@ The current local firmware worktree is `thinkforge/dessen-runtime`; it has the l
 
 ## 6. Future additions to track
 
-The initial **read-only account-wide Overall** and **paired-reader Web PIN** are implemented locally as S02/A15, but **not deployed or hardware-verified**. The existing local statistics remain the offline fallback. Future full-device sync work still needs verified session upload, auth/linking, token storage outside removable app folders, write endpoints, book identity, session de-duplication, device attribution, optional offline server caches, cover transport and schema/version negotiation. A working Dessen networking syscall alone does not establish any of those capabilities.
+### Next milestone: upload local statistics and reading progress
+
+The current app has hardware-confirmed registration/pairing, authenticated
+web login and download of account-wide statistics. It reads native local
+stats and book progress for display. Dessen-owned upload is still pending.
+Keep the standalone app independent of the legacy SD plugin.
+
+- Audit existing firmware stats collection, progress storage, normal session upload, server device-token scopes and endpoint payloads; reuse compatible contracts.
+- Define explicit upload and acknowledgment semantics for device-local totals and reading progress, stable book/device identity, deduplication and retry after interrupted Wi-Fi.
+- Preserve offline local history and account isolation. Keep uploads bounded and reuse the native unload/reboot network handoff on X3 rather than running TLS alongside the guest.
+- Decide manual and automatic/sleep triggers, avoiding duplicate uploads from normal firmware/KOSync or the original SD plugin if present.
+- Verify both X3 and Picco against an isolated server account, including first upload, repeat/retry, offline operation, revoked token, progress updates and server totals without double counting.
+- Record each required firmware, engine/ABI or server change here with tests and upstream compatibility evidence.

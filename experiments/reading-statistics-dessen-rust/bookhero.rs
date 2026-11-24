@@ -10,16 +10,16 @@ impl Ui {
     // The X3/X4 four-button legend belongs outside the content cards.
     // Physical side buttons always page; front Left/Right control books only
     // on Overall Statistics when more than one book can be selected.
-    fn draw_footer(&self, page: i32, books: usize) {
+    fn draw_footer(&self, page: i32, books: usize, sync_controls: bool) {
         if self.footer_height() == 0 { return; }
         let y = self.h - 34;
         let book_controls = page == 0 && books > 1;
         let can_open = (page == 0 && books > 0) || page == 2 || page == 6;
-        let labels: [&[u8]; 4] = [
-            b"Back", if can_open { b"Open" } else { b"" },
-            if book_controls { b"Prev Book" } else { b"Prev Page" },
-            if book_controls { b"Next Book" } else { b"Next Page" },
-        ];
+        let labels: [&[u8]; 4] = if sync_controls { [b"Back", b"Select", b"Up", b"Down"] } else { [
+            b"Back", if page == 7 { b"Select" } else if can_open { b"Open" } else { b"" },
+            if page == 7 { b"Up" } else if book_controls { b"Prev Book" } else { b"Prev Page" },
+            if page == 7 { b"Down" } else if book_controls { b"Next Book" } else { b"Next Page" },
+        ] };
         // Start from measured label widths, then distribute the spare space.
         // Equal quarter-width cells truncated "Prev Book"/"Next Book" on X3.
         let mut widths = [0i32; 4];
