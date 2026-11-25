@@ -1,4 +1,5 @@
 #include "BaseTheme.h"
+#include "HintLayout.h"
 
 #include <BoardConfig.h>
 #include <FreeInkUIGfxRenderer.h>
@@ -182,41 +183,38 @@ void BaseTheme::drawProgressBar(const GfxRenderer& renderer, Rect rect, const si
   renderer.drawCenteredText(UI_10_FONT_ID, rect.y + rect.height + 15, percentText.c_str());
 }
 
-// Centre hint labels by text height, wrapping to at most two lines.
+// Centre a single-line hint. Only fall back when adaptive layout cannot fit it.
 void BaseTheme::drawHintLabel(const GfxRenderer& renderer, const int fontId, const char* label, const int x,
                               const int boxWidth, const int boxTop, const int boxHeight) {
   constexpr int textPadding = 4;  // keeps a wrapped label off the button's border
   const int maxTextWidth = boxWidth - (textPadding * 2);
+  if (!label || !*label || maxTextWidth <= 0) return;
 
   // Keep the theme font when it fits. Wide SD theme lettering can overflow
   // labels such as "Previous"; use a narrower built-in font before wrapping.
   // This fallback affects only oversized labels, leaving other theme hints alone.
   int textFont = fontId;
-  if (renderer.getTextWidth(fontId, label) > maxTextWidth &&
-      renderer.getTextWidth(NOTOSANS_12_FONT_ID, label) <= maxTextWidth &&
-      renderer.getTextHeight(NOTOSANS_12_FONT_ID) <= boxHeight - 4)
+  if ((renderer.getTextWidth(fontId, label) > maxTextWidth ||
+       renderer.getTextHeight(fontId) > boxHeight - 4) &&
+      renderer.getTextHeight(NOTOSANS_12_FONT_ID) <= boxHeight - 4 &&
+      renderer.getTextWidth(NOTOSANS_12_FONT_ID, label) < renderer.getTextWidth(fontId, label))
     textFont = NOTOSANS_12_FONT_ID;
   const int textHeight = renderer.getTextHeight(textFont);
+  if (textHeight > boxHeight - 2) return;
   const int textWidth = renderer.getTextWidth(textFont, label);
+  const int textY = boxTop + std::max(1, (boxHeight - textHeight) / 2);
   if (textWidth <= maxTextWidth) {
-    const int textY = boxTop + std::max(1, (boxHeight - textHeight) / 2);
-    renderer.drawText(textFont, x + (boxWidth - 1 - textWidth) / 2, textY, label);
+    renderer.drawText(textFont, x + (boxWidth - textWidth) / 2, textY, label);
     return;
   }
 
   // Spaced by the glyph height, not getLineHeight() — that returns the font's
   // full advanceY (leading included), which stacks two lines taller than the
   // button and clips the second one.
-  constexpr int lineGap = 2;
-  const int step = textHeight + lineGap;
-  const auto lines = renderer.wrappedText(textFont, label, maxTextWidth, 2);
-  const int block = static_cast<int>(lines.size()) * step - lineGap;
-  int lineY = boxTop + std::max(1, (boxHeight - block) / 2);
-  for (const auto& line : lines) {
-    const int lineWidth = renderer.getTextWidth(textFont, line.c_str());
-    renderer.drawText(textFont, x + (boxWidth - 1 - lineWidth) / 2, lineY, line.c_str());
-    lineY += step;
-  }
+  const auto shortened = renderer.truncatedText(textFont, label, maxTextWidth);
+  const int shortenedWidth = renderer.getTextWidth(textFont, shortened.c_str());
+  if (shortenedWidth <= maxTextWidth)
+    renderer.drawText(textFont, x + (boxWidth - shortenedWidth) / 2, textY, shortened.c_str());
 }
 
 void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
@@ -238,17 +236,19 @@ void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
   // Four 120px hint boxes fit with 8px gaps and 12px side margins at 528px;
   // keep the existing compact placement on 480px boards.
   const bool wide = renderer.getScreenWidth() >= 528;
-  const int buttonWidth = wide ? 120 : 106;
-  constexpr int narrowButtonPositions[] = {25, 130, 245, 350};
-  constexpr int wideButtonPositions[] = {12, 140, 268, 396};
-  const int* buttonPositions = wide ? wideButtonPositions : narrowButtonPositions;
   const char* labels[] = {btn1, btn2, btn3, btn4};
+  std::array<int, 4> needed{};
+  for (int i = 0; i < 4; ++i)
+    if (labels[i] && *labels[i]) needed[i] = renderer.getTextWidth(UI_10_FONT_ID, labels[i]) + 8;
+  const auto boxes = hint_layout::allocate(renderer.getScreenWidth(), 8, 8, needed, wide ? 120 : 106);
   const bool grayscale = renderer.getRenderMode() != GfxRenderer::BW && !renderer.grayPlanesAreAbsolute();
 
   for (int i = 0; i < 4; i++) {
     // Only draw if the label is non-empty
     if (labels[i] != nullptr && labels[i][0] != '\0') {
-      const int x = buttonPositions[i];
+      const int x = boxes[i].x;
+      const int buttonWidth = boxes[i].width;
+      if (buttonWidth <= 0) continue;
       // Zero gray-plane bits leave the monochrome hint from the base pass intact.
       renderer.fillRect(x, pageHeight - buttonY, buttonWidth, buttonHeight, grayscale);
       if (grayscale) continue;

@@ -8,6 +8,7 @@
 #include <ResumableFetch.h>
 #include <SecureHttpClient.h>
 #include <WiFi.h>
+#include <strings.h>
 
 #include <algorithm>
 #include <cctype>
@@ -30,16 +31,13 @@ constexpr char kUnifiedStatsToken[] = "/.crosspoint/reading-statistics-token.jso
 void invalidateStatsOverviewCache() {
   // A new reader token may belong to a different account. Never display
   // cached totals or web login codes from a previous account.
-  constexpr const char* names[] = {"reading-statistics", "reading-stats-dessen", "reading-statistics-dessen-rust"};
   for (const char* root : PluginLocations::ROOTS) {
-    for (const char* name : names) {
-      const std::string directory = std::string(root) + "/" + name;
-      for (const char* file : {"/server-overview.json", "/web-login.json"}) {
-        const std::string cache = directory + file;
-        Storage.remove(cache.c_str());
-        Storage.remove((cache + ".bak").c_str());
-        Storage.remove((cache + ".part").c_str());
-      }
+    const std::string directory = std::string(root) + "/reading-statistics";
+    for (const char* file : {"/server-overview.json", "/web-login.json"}) {
+      const std::string cache = directory + file;
+      Storage.remove(cache.c_str());
+      Storage.remove((cache + ".bak").c_str());
+      Storage.remove((cache + ".part").c_str());
     }
   }
 }
@@ -232,6 +230,10 @@ static bool allowedFile(const std::string& file) {
   if (protectedpaths::isPluginPath(file)) return true;
   LOG_ERR("PHTP", "Manifest file not allowed: %s", file.c_str());
   return false;
+}
+
+void notifyFileChanged(const std::string& file) {
+  if (strcasecmp(file.c_str(), kUnifiedStatsToken) == 0) invalidateStatsOverviewCache();
 }
 
 bool loadTokenFromFile(const std::string& file, const std::string& path, std::string& out) {

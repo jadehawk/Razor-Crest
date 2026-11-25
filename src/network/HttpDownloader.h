@@ -1,6 +1,7 @@
 #pragma once
 #include <HalStorage.h>
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -88,9 +89,12 @@ class HttpDownloader {
   static bool fetchUrl(const std::string& url, const DataCallback& onData, const FetchOptions& options);
 
 #if CROSSPOINT_DESSEN_APPS
-  // Send one request and stream the response body. Returns 0 on transport failure.
+  static DownloadError downloadRestricted(const std::string& url, const std::string& destination, size_t* bytesOut,
+                                          size_t maxBytes, const std::atomic<bool>* cancelFlag = nullptr);
+  // Send one request without redirects. Returns 0 on transport failure.
   static int request(const char* method, const std::string& url, const std::vector<Header>& headers,
-                     const uint8_t* body, size_t bodySize, const DataCallback& onData);
+                     const uint8_t* body, size_t bodySize, const DataCallback& onData,
+                     const std::atomic<bool>* cancelFlag = nullptr);
 #endif
 
   /**

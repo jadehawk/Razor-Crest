@@ -39,10 +39,13 @@
 #include <ctime>
 #include <string_view>
 
+#include "MappedInputManager.h"
 #include "RecentBooksStore.h"
+#include "components/UITheme.h"
 #include "components/icons/cover.h"  // CoverIcon, the fallback-cover glyph
 #include "network/HttpDownloader.h"
 #include "util/BookProgress.h"
+#include "util/PluginHttp.h"
 
 using freeink::content::Crypto;
 using freeink::content::RsaKeyPairDer;
@@ -83,6 +86,7 @@ class BoundedOutput {
     return static_cast<int>(used);
   }
 
+  size_t size() const { return used; }
   int error = 0;
 
  private:
@@ -198,8 +202,28 @@ struct CrosspointServices::ShelfOverlap {
 };
 
 CrosspointServices::CrosspointServices(std::string appName, std::string appDir)
-    : appName_(std::move(appName)), appDir_(std::move(appDir)), crypto_(new WolfsslCrypto()) {}
-CrosspointServices::~CrosspointServices() = default;
+    : appName_(std::move(appName)), appDir_(std::move(appDir)), crypto_(makeUniqueNoThrow<WolfsslCrypto>()) {}
+CrosspointServices::~CrosspointServices() {
+  if (pending_ == Op::Fetch && !done_) {
+    result_ = DSN_ERR_IO;
+    cleanupDownload();
+  }
+}
+
+bool CrosspointServices::loadPermissions() {
+  if (!crypto_) {
+    LOG_ERR("DSN", "Could not allocate cryptography services");
+    return false;
+  }
+  std::string manifest;
+  if (!Storage.readFileToString("DSN", appDir_ + "/manifest.json", DessenPermissions::MAX_MANIFEST, manifest) ||
+      !permissions_.parse(manifest, appDir_)) {
+    LOG_ERR("DSN", "Invalid app permissions");
+    return false;
+  }
+  crypto_->sha256(reinterpret_cast<const uint8_t*>(manifest.data()), manifest.size(), permissionDigest_);
+  return true;
+}
 
 // ---- core ----
 uint32_t CrosspointServices::timeNow() {
@@ -229,7 +253,7 @@ bool CrosspointServices::randomBytes(uint8_t* out, uint32_t n) {
   return true;
 }
 
-// Per-app device id = hex(sha256(deviceSecret || appName)) — matches the web
+// Per-app device id = hex(sha256(deviceSecret || appName)) Ã¢â‚¬” matches the web
 // status route, and is unlinkable across apps.
 int CrosspointServices::deviceId(char* out, uint32_t cap) {
   uint8_t secret[32];
@@ -262,15 +286,27 @@ int CrosspointServices::locale(char* out, uint32_t cap) {
 }
 
 // ---- storage ----
-// The binding already enforced the path rules. App paths are SD paths as-is:
-// apps are user-installed from the owner's own card (whole-card policy).
+// Validate the spelling separately from the requested operation's authorization.
 int CrosspointServices::resolve(const char* path, uint32_t maxLen) {
   if (!path || path[0] != '/' || strlen(path) > maxLen) return DSN_ERR_INVALID;
+  // Reject ambiguous FAT spellings before any capability comparison.
+  for (const char* first = path + 1; *first;) {
+    const char* end = strchr(first, '/');
+    if (!end) end = first + strlen(first);
+    if (end == first || *first == ' ' || end[-1] == ' ' || end[-1] == '.') return DSN_ERR_INVALID;
+    for (const char* c = first; c < end; ++c) {
+      const unsigned char ch = static_cast<unsigned char>(*c);
+      if (ch < 32 || ch == 127 || ch == '\\' || ch == ':' || ch == '~') return DSN_ERR_INVALID;
+    }
+    if (*end && !end[1]) return DSN_ERR_INVALID;
+    first = *end ? end + 1 : end;
+  }
   return 0;
 }
 
 int CrosspointServices::fsRead(const char* path, uint8_t* out, uint32_t cap) {
   if (int e = resolve(path)) return e;
+  if (!permissions_.allows(path, DessenPermissions::Access::Read)) return DSN_ERR_UNAVAILABLE;
   HalFile f;
   if (!Storage.openFileForRead("DSN", path, f)) return DSN_ERR_IO;
   const size_t size = f.fileSize();
@@ -281,6 +317,7 @@ int CrosspointServices::fsRead(const char* path, uint8_t* out, uint32_t cap) {
 
 int CrosspointServices::fsReadAt(const char* path, uint32_t offset, uint8_t* out, uint32_t cap) {
   if (int e = resolve(path)) return e;
+  if (!permissions_.allows(path, DessenPermissions::Access::Read)) return DSN_ERR_UNAVAILABLE;
   HalFile f;
   if (!Storage.openFileForRead("DSN", path, f)) return DSN_ERR_IO;
   if (offset >= f.fileSize()) return 0;
@@ -291,15 +328,25 @@ int CrosspointServices::fsReadAt(const char* path, uint32_t offset, uint8_t* out
 
 int CrosspointServices::fsWrite(const char* path, const uint8_t* data, uint32_t n) {
   if (int e = resolve(path)) return e;
-  HalFile f;
-  if (!Storage.openFileForWrite("DSN", path, f)) return DSN_ERR_IO;
-  const size_t wrote = f.write(data, n);
-  const bool closed = f.close();  // close flushes buffered data; its failure means a short write
-  return (wrote == n && closed) ? 0 : DSN_ERR_IO;
+  if (!permissions_.allows(path, DessenPermissions::Access::Write)) return DSN_ERR_DENIED;
+  const bool credential = permissions_.isSharedCredential(path);
+  if (credential && n > MAX_SHARED_CREDENTIAL_SIZE) return DSN_ERR_TOO_BIG;
+  constexpr const char* temporary = "/.crosspoint/dsn-write.tmp";
+  HalFile file;
+  if (!Storage.openFileForWrite("DSN", temporary, file)) return DSN_ERR_IO;
+  const size_t wrote = file.write(data, n);
+  const bool closed = file.close();
+  if (wrote != n || !closed || !Storage.replaceFile(temporary, path)) {
+    Storage.remove(temporary);
+    return DSN_ERR_IO;
+  }
+  pluginhttp::notifyFileChanged(path);
+  return 0;
 }
 
 int CrosspointServices::fsList(const char* path, char* out, uint32_t cap) {
   if (int e = resolve(path)) return e;
+  if (!permissions_.allows(path, DessenPermissions::Access::List)) return DSN_ERR_UNAVAILABLE;
   HalFile dir;
   if (!Storage.openFileForRead("DSN", path, dir) || !dir.isDirectory()) return DSN_ERR_IO;
   BoundedOutput entries(cap);
@@ -316,7 +363,10 @@ int CrosspointServices::fsList(const char* path, char* out, uint32_t cap) {
 
 int CrosspointServices::fsDelete(const char* path) {
   if (int e = resolve(path)) return e;
-  return Storage.remove(path) ? 0 : DSN_ERR_IO;
+  if (!permissions_.allows(path, DessenPermissions::Access::Delete)) return DSN_ERR_UNAVAILABLE;
+  if (!Storage.remove(path)) return DSN_ERR_IO;
+  pluginhttp::notifyFileChanged(path);
+  return 0;
 }
 
 int CrosspointServices::fsAppDir(char* out, uint32_t cap) {
@@ -327,12 +377,14 @@ int CrosspointServices::fsAppDir(char* out, uint32_t cap) {
 
 int CrosspointServices::keystore(const char* path, const uint8_t* key, uint32_t n, uint32_t expires) {
   if (int e = resolve(path)) return e;
+  if (!permissions_.allows(path, DessenPermissions::Access::BookKey)) return DSN_ERR_UNAVAILABLE;
   if (n > bookkey::MAX_KEY_LEN) return DSN_ERR_INVALID;
   return bookkey::write(path, key, n, expires ? static_cast<int64_t>(expires) : 0) ? 0 : DSN_ERR_IO;
 }
 
 // ---- launcher / home ----
 int CrosspointServices::recents(char* out, uint32_t cap) {
+  if (!permissions_.allowsLibrary()) return DSN_ERR_DENIED;
   std::string acc;
   for (const RecentBook& b : RECENT_BOOKS.getBooks()) {
     char pct[8];
@@ -354,6 +406,7 @@ int CrosspointServices::recents(char* out, uint32_t cap) {
 }
 
 int CrosspointServices::recentShelf(uint32_t first, uint32_t count, char* out, uint32_t cap) {
+  if (!permissions_.allowsLibrary()) return DSN_ERR_DENIED;
   if (count > DSN_SHELF_PAGE_MAX) return DSN_ERR_INVALID;
   if (!count) return 0;
 
@@ -443,7 +496,7 @@ int CrosspointServices::recentShelf(uint32_t first, uint32_t count, char* out, u
 }
 
 int CrosspointServices::bookProgress(const char* path) {
-  if (resolve(path, DSN_BOOK_PATH_MAX)) return -1;
+  if (resolve(path, DSN_BOOK_PATH_MAX) || !permissions_.allowsBook(path)) return -1;
   return loadBookProgress(path);
 }
 
@@ -514,10 +567,11 @@ static std::string cachedBookThumbnail(const std::string& path, uint32_t height)
     // Stock CrossPoint caches EPUB thumbs as thumb_<height>.bmp.
     // Razor-Crest also caches fill/crop thumbs under its own prefix.
     constexpr std::string_view upstreamPrefix = "thumb_";
-    const size_t prefixLength = candidate.substr(0, prefix.size()) == prefix ? prefix.size()
-                              : candidate.substr(0, upstreamPrefix.size()) == upstreamPrefix ? upstreamPrefix.size() : 0;
-    if (!prefixLength || len <= prefixLength + suffix.size() ||
-        candidate.substr(len - suffix.size()) != suffix) continue;
+    const size_t prefixLength = candidate.substr(0, prefix.size()) == prefix                   ? prefix.size()
+                                : candidate.substr(0, upstreamPrefix.size()) == upstreamPrefix ? upstreamPrefix.size()
+                                                                                               : 0;
+    if (!prefixLength || len <= prefixLength + suffix.size() || candidate.substr(len - suffix.size()) != suffix)
+      continue;
     const auto digits = candidate.substr(prefixLength, len - prefixLength - suffix.size());
     if (digits.size() > 4) continue;
     uint32_t cachedHeight = 0;
@@ -551,8 +605,9 @@ static int packCachedBookCover(const std::string& thumb, uint32_t height, uint8_
   if (bmp->parseHeaders() != BmpReaderError::Ok) return DSN_ERR_IO;
   const int sourceWidth = bmp->getWidth(), sourceHeight = bmp->getHeight();
   const int rowBytes = bmp->getRowBytes();
-  if (sourceWidth <= 0 || sourceWidth > 1024 || sourceHeight <= 0 || sourceHeight > 1024 ||
-      rowBytes <= 0 || rowBytes > 4096) return DSN_ERR_TOO_BIG;
+  if (sourceWidth <= 0 || sourceWidth > 1024 || sourceHeight <= 0 || sourceHeight > 1024 || rowBytes <= 0 ||
+      rowBytes > 4096)
+    return DSN_ERR_TOO_BIG;
   const size_t scratchBytes = static_cast<size_t>(sourceWidth) + rowBytes;
   auto scratch = makeUniqueNoThrow<uint8_t[]>(scratchBytes);
   if (!scratch) {
@@ -592,15 +647,17 @@ static int packCachedBookCover(const std::string& thumb, uint32_t height, uint8_
 
 // A book's cover as a dithered 1-bit bitmap scaled to `height`: writes
 // {u16 w, u16 h} then the packed MSB-first rows (the dsn_bitmap BW format).
-// Generates and caches the thumbnail on first use (the slow part — decoding the
+// Generates and caches the thumbnail on first use (the slow part Ã¢â‚¬” decoding the
 // cover image), so apps request one per redraw. A book with no usable cover
 // gets the firmware's placeholder on PSRAM devices. C3 only reads existing cached thumbnails.
 int CrosspointServices::bookCover(const char* path, uint32_t height, uint8_t* out, uint32_t cap) {
 #ifndef BOARD_HAS_PSRAM
   if (resolve(path, DSN_BOOK_PATH_MAX) || height < 16 || height > 512) return DSN_ERR_INVALID;
+  if (!permissions_.allowsBook(path)) return DSN_ERR_UNAVAILABLE;
   return packCachedBookCover(cachedBookThumbnail(path, height), height, out, cap);
 #else
   if (resolve(path, DSN_BOOK_PATH_MAX)) return DSN_ERR_INVALID;
+  if (!permissions_.allowsBook(path)) return DSN_ERR_UNAVAILABLE;
   const std::string full(path);
   if (height < 16 || height > 512) return DSN_ERR_INVALID;
   const int ph = static_cast<int>(height), pw = ph * 2 / 3;  // placeholder size (book aspect)
@@ -715,7 +772,7 @@ int CrosspointServices::rsaDecrypt(int flags, const uint8_t* priv, uint32_t pn, 
 int CrosspointServices::rsaSign(int algo, const uint8_t* priv, uint32_t pn, const uint8_t* digest, uint32_t dn,
                                 uint8_t* out, uint32_t cap) {
   // The firmware primitive signs a 20-byte (SHA-1) digest, PKCS#1 v1.5, no
-  // DigestInfo, into a 128-byte (1024-bit) signature — exactly the one case the
+  // DigestInfo, into a 128-byte (1024-bit) signature Ã¢â‚¬” exactly the one case the
   // first consumer needs. Other hash/DigestInfo combinations are not provided.
   if ((algo & 0x7f) != DSN_HASH_SHA1 || !(algo & DSN_SIGN_NODIGESTINFO)) return DSN_ERR_INVALID;
   if (dn != 20 || cap < 128) return DSN_ERR_TOO_BIG;
@@ -755,7 +812,7 @@ int CrosspointServices::battery() {
   // Second byte: power state, from the same external-power signal the status bar
   // uses (board-aware: USB-detect pin, charger IC, or charging state). Some
   // boards read "not connected" at charge termination, so a full battery there
-  // reports BATTERY — matching the status bar, which drops its bolt the same way.
+  // reports BATTERY Ã¢â‚¬” matching the status bar, which drops its bolt the same way.
   uint8_t state;
   if (!gpio.isUsbConnected())
     state = DSN_PWR_BATTERY;
@@ -819,12 +876,27 @@ int CrosspointServices::qrBitmap(const char* link, uint32_t length, uint8_t* out
 
 // ---- async: queue on the render task, execute on the loop task ----
 int CrosspointServices::wifiConnectStart() {
+  if (!permissions_.allowsNetwork()) return DSN_ERR_UNAVAILABLE;
+#ifndef BOARD_HAS_PSRAM
+  // Connection is deferred until the guest is unloaded by the request.
+  if (!permissions_.allowsHandoff()) return DSN_ERR_UNAVAILABLE;
+  return 0;
+#endif
+  networkCancelled_.store(false, std::memory_order_relaxed);
   pending_ = Op::WifiStart;
   done_ = false;
   return dessen::kPending;
 }
 
 int CrosspointServices::netStart(const char* head, const uint8_t* body, uint32_t bn, uint8_t* resp, uint32_t cap) {
+  const std::string_view request(head ? head : "");
+  const size_t space = request.find(' ');
+  const size_t end = request.find_first_of("\r\n");
+  if (space == request.npos ||
+      !permissions_.allowsUrl(request.substr(space + 1, end == request.npos ? end : end - space - 1)))
+    return DSN_ERR_UNAVAILABLE;
+  if (bn > 8192 || cap > 32768) return DSN_ERR_TOO_BIG;
+  networkCancelled_.store(false, std::memory_order_relaxed);
   pending_ = Op::Net;
   done_ = false;
   head_ = head;
@@ -836,6 +908,21 @@ int CrosspointServices::netStart(const char* head, const uint8_t* body, uint32_t
 }
 
 int CrosspointServices::fetchStart(const char* url, const char* dest) {
+  if (!url || !dest || !permissions_.allowsUrl(url) || !permissions_.allows(dest, DessenPermissions::Access::Write) ||
+      !permissions_.allows(dest, DessenPermissions::Access::Delete) ||
+      !permissions_.allows(std::string(dest) + ".part", DessenPermissions::Access::Write) ||
+      !permissions_.allows(std::string(dest) + ".part", DessenPermissions::Access::Delete))
+    return DSN_ERR_UNAVAILABLE;
+  const std::string temporary = std::string(dest) + ".part";
+  HalFile marker;
+  const bool saved = Storage.openFileForWrite("DSN", "/.crosspoint/dsn-download.tmp", marker) &&
+                     marker.write(temporary.data(), temporary.size()) == temporary.size();
+  const bool closed = marker && marker.close();
+  if (!saved || !closed) {
+    Storage.remove("/.crosspoint/dsn-download.tmp");
+    return DSN_ERR_IO;
+  }
+  networkCancelled_.store(false, std::memory_order_relaxed);
   pending_ = Op::Fetch;
   done_ = false;
   url_ = url;
@@ -863,7 +950,169 @@ int CrosspointServices::textInputStart(const char* prompt, char* out, uint32_t c
   return dessen::kPending;
 }
 
+void CrosspointServices::cleanupDownload() {
+  if (pending_ != Op::Fetch) return;
+  if (result_ < 0)
+    Storage.remove((dest_ + ".part").c_str());
+  else
+    pluginhttp::notifyFileChanged(dest_);
+  Storage.remove("/.crosspoint/dsn-download.tmp");
+}
+
+void CrosspointServices::failNetwork() {
+  result_ = DSN_ERR_IO;
+  done_ = true;
+  cleanupDownload();
+}
+
+#ifndef BOARD_HAS_PSRAM
+bool CrosspointServices::detachNetworkBuffers(const uint8_t* base, uint32_t size) {
+  if (!permissions_.allowsHandoff() || !needsNetworkHeap() || networkDetached_ || !base) return false;
+  if (pending_ == Op::Net) {
+    // All guest ranges were validated by the dispatch. Check again before rebasing.
+    auto valid = [base, size](const uint8_t* ptr, uint32_t len) {
+      const uintptr_t start = reinterpret_cast<uintptr_t>(base);
+      const uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
+      return addr >= start && addr - start <= size && len <= size - (addr - start);
+    };
+    if (!valid(out_, outCap_) || (bodySize_ && !valid(body_, bodySize_))) return false;
+    if (bodySize_) {
+      detachedBody_ = makeUniqueNoThrow<uint8_t[]>(bodySize_);
+      if (!detachedBody_) return false;
+      memcpy(detachedBody_.get(), body_, bodySize_);
+    }
+    outOffset_ = static_cast<uint32_t>(out_ - base);
+    body_ = detachedBody_.get();
+    out_ = nullptr;
+  }
+  networkDetached_ = true;
+  return true;
+}
+
+void CrosspointServices::restoreNetworkBuffers(uint8_t* base) {
+  if (!networkDetached_) return;
+  if (pending_ == Op::Net) {
+    out_ = base + outOffset_;
+    if (detachedResponseSize_) memcpy(out_, detachedResponse_.get(), detachedResponseSize_);
+    body_ = nullptr;
+  }
+  detachedBody_.reset();
+  detachedResponse_.reset();
+  detachedResponseSize_ = 0;
+  networkDetached_ = false;
+}
+
+// Pointer-free, bounded request record. It is encrypted by the activity before storage.
+bool CrosspointServices::exportNetworkRequest(std::unique_ptr<uint8_t[]>& data, uint32_t& size) const {
+  if (!networkDetached_ || !permissions_.allowsHandoff()) return false;
+  const bool net = pending_ == Op::Net;
+  if (!net && pending_ != Op::Fetch) return false;
+  const auto& first = net ? head_ : url_;
+  const uint32_t a = first.size(), b = net ? bodySize_ : dest_.size();
+  if (!a || a > 1024 || b > (net ? 8192u : 255u)) return false;
+  const uint32_t fields[] = {net ? 1u : 2u, a, b, net ? outOffset_ : 0u, net ? outCap_ : 0u};
+  size = sizeof(fields) + a + b;
+  data = makeUniqueNoThrow<uint8_t[]>(size);
+  if (!data) return false;
+  memcpy(data.get(), fields, sizeof(fields));
+  memcpy(data.get() + sizeof(fields), first.data(), a);
+  if (b) memcpy(data.get() + sizeof(fields) + a, net ? body_ : reinterpret_cast<const uint8_t*>(dest_.data()), b);
+  return true;
+}
+
+bool CrosspointServices::importNetworkRequest(const uint8_t* data, uint32_t size, uint32_t guestSize) {
+  uint32_t fields[5];
+  if (!data || size < sizeof(fields) || size > MAX_NETWORK_REQUEST || !permissions_.allowsHandoff()) return false;
+  memcpy(fields, data, sizeof(fields));
+  const uint32_t kind = fields[0], a = fields[1], b = fields[2], offset = fields[3], cap = fields[4];
+  if ((kind != 1 && kind != 2) || !a || a > 1024 || b > (kind == 1 ? 8192u : 255u) ||
+      size != sizeof(fields) + a + b || memchr(data + sizeof(fields), 0, a)) return false;
+  const std::string first(reinterpret_cast<const char*>(data + sizeof(fields)), a);
+  const uint8_t* second = data + sizeof(fields) + a;
+  if (kind == 1) {
+    if (cap < 4 || cap > 32768 || offset > guestSize || cap > guestSize - offset) return false;
+    if (b) {
+      detachedBody_ = makeUniqueNoThrow<uint8_t[]>(b);
+      if (!detachedBody_) return false;
+      memcpy(detachedBody_.get(), second, b);
+    }
+    if (netStart(first.c_str(), detachedBody_.get(), b, nullptr, cap) != dessen::kPending) return false;
+    outOffset_ = offset;
+  } else {
+    if (!b || offset || cap || memchr(second, 0, b)) return false;
+    const std::string dest(reinterpret_cast<const char*>(second), b);
+    if (fetchStart(first.c_str(), dest.c_str()) != dessen::kPending) return false;
+  }
+  networkDetached_ = true;
+  return true;
+}
+
+bool CrosspointServices::startSuspendedWifi() {
+  WIFI_STORE.loadFromFile();
+  const auto last = WIFI_STORE.getLastConnectedSsid();
+  auto cred = last.empty() ? std::nullopt : WIFI_STORE.findCredential(last);
+  if (!cred) cred = WIFI_STORE.getCredentialAt(0);
+  if (!cred) {
+    result_ = DSN_ERR_UNAVAILABLE;
+    return false;
+  }
+  WiFi.persistent(false);
+  radioOwned_ = true;
+  LOG_INF("DSN", "Suspended Wi-Fi start: free=%u max_block=%u", static_cast<unsigned>(ESP.getFreeHeap()),
+          static_cast<unsigned>(ESP.getMaxAllocHeap()));
+  wifiStart_ = millis();
+  LOG_INF("DSN", "Suspended Wi-Fi: entering station mode");
+  if (!WiFi.mode(WIFI_STA)) {
+    LOG_ERR("DSN", "Suspended Wi-Fi: station mode failed");
+    result_ = DSN_ERR_IO;
+    return false;
+  }
+  LOG_INF("DSN", "Suspended Wi-Fi: station mode ready; beginning connection");
+  const auto status = WiFi.begin(cred->ssid.c_str(), cred->password.c_str());
+  LOG_INF("DSN", "Suspended Wi-Fi: begin returned %d", static_cast<int>(status));
+  reconnecting_ = true;
+  return true;
+}
+
+void CrosspointServices::releaseNetworkRadio() {
+  if (!radioOwned_) return;
+  WiFi.disconnect();
+  if (!WiFi.mode(WIFI_OFF)) {
+    LOG_ERR("DSN", "Wi-Fi shutdown failed");
+    return;
+  }
+  radioOwned_ = false;
+  reconnecting_ = false;
+  LOG_INF("DSN", "Wi-Fi released: free=%u max_block=%u", static_cast<unsigned>(ESP.getFreeHeap()),
+          static_cast<unsigned>(ESP.getMaxAllocHeap()));
+  // Give idle/event tasks a bounded opportunity to finish deferred cleanup.
+  delay(50);
+  LOG_INF("DSN", "Wi-Fi cleanup +50ms: free=%u max_block=%u", static_cast<unsigned>(ESP.getFreeHeap()),
+          static_cast<unsigned>(ESP.getMaxAllocHeap()));
+  delay(150);
+  LOG_INF("DSN", "Wi-Fi cleanup +200ms: free=%u max_block=%u", static_cast<unsigned>(ESP.getFreeHeap()),
+          static_cast<unsigned>(ESP.getMaxAllocHeap()));
+}
+
+void CrosspointServices::completeSuspendedNetwork() {
+  reconnecting_ = false;
+  detachedBody_.reset();
+  body_ = nullptr;
+  out_ = nullptr;
+  releaseNetworkRadio();
+  done_ = true;
+}
+
+void CrosspointServices::cancelSuspendedNetwork() {
+  reconnecting_ = false;
+  releaseNetworkRadio();
+}
+#endif
+
 int CrosspointServices::poll() {
+#ifndef BOARD_HAS_PSRAM
+  if (networkDetached_) return dessen::kPending;
+#endif
   if (!done_) return dessen::kPending;
   pending_ = Op::None;
   return result_;
@@ -871,61 +1120,41 @@ int CrosspointServices::poll() {
 
 bool CrosspointServices::serviceAsyncWork() {
   if (done_) return true;
+  if (networkCancelled_.load(std::memory_order_relaxed)) {
+    failNetwork();
+#ifndef BOARD_HAS_PSRAM
+    if (networkDetached_) completeSuspendedNetwork();
+#endif
+    return true;
+  }
+#ifndef BOARD_HAS_PSRAM
+  // The guest has already released RAM. Reconnect only for an explicitly
+  // authorized logical Wi-Fi session; preserve offline behavior otherwise.
+  if (networkDetached_ && (pending_ == Op::WifiStart || pending_ == Op::Net || pending_ == Op::Fetch)) {
+    if (WiFi.status() != WL_CONNECTED) {
+      if (!reconnecting_) {
+        if (startSuspendedWifi()) return false;
+        completeSuspendedNetwork();
+        return true;
+      }
+      if (millis() - wifiStart_ <= 10000) return false;
+      LOG_ERR("DSN", "Suspended Wi-Fi: connection timeout, status=%d", static_cast<int>(WiFi.status()));
+      result_ = DSN_ERR_IO;
+      completeSuspendedNetwork();
+      return true;
+    }
+    LOG_INF("DSN", "Suspended Wi-Fi connected: free=%u max_block=%u",
+            static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()));
+    reconnecting_ = false;
+    if (pending_ == Op::WifiStart) {
+      result_ = 0;
+      completeSuspendedNetwork();
+      return true;
+    }
+  }
+#endif
   switch (pending_) {
     case Op::Net: {
-      // Overview may be the first Wi-Fi user after boot. Try saved credentials
-      // quietly (never launch the picker), preserving the offline local fallback.
-      // All other network operations must explicitly connect first.
-      if (WiFi.status() != WL_CONNECTED) {
-#ifndef BOARD_HAS_PSRAM
-        // ESP32-C3 has no PSRAM. The guest must leave enough internal heap
-        // for Wi-Fi tasks, network events and TLS before Wi-Fi initialization.
-        // A failed initialization otherwise repeatedly consumes the remaining
-        // heap and can crash ActivityManager (X3 serial-log (3).txt).
-        if (ESP.getFreeHeap() < 80000 || ESP.getMaxAllocHeap() < HttpDownloader::MIN_TLS_MAX_ALLOC) {
-          LOG_ERR("DSN", "Overview Wi-Fi skipped: insufficient heap free=%u max=%u",
-                  static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()));
-          result_ = DSN_ERR_UNAVAILABLE;
-          break;
-        }
-#endif
-        constexpr std::string_view overviewRequest = "GET https://sync.techy-notes.com/api/device/overview\n";
-        if (!std::string_view(head_).starts_with(overviewRequest)) {
-          result_ = DSN_ERR_UNAVAILABLE;
-          break;
-        }
-        WIFI_STORE.loadFromFile();
-        const auto last = WIFI_STORE.getLastConnectedSsid();
-        auto cred = last.empty() ? std::nullopt : WIFI_STORE.findCredential(last);
-        if (!cred) cred = WIFI_STORE.getCredentialAt(0);
-        if (!cred) {
-          LOG_INF("DSN", "Overview offline: no saved Wi-Fi network");
-          result_ = DSN_ERR_UNAVAILABLE;
-          break;
-        }
-        const wl_status_t status = WiFi.status();
-        wifi_config_t stationConfig{};
-        const bool configured =
-            esp_wifi_get_config(WIFI_IF_STA, &stationConfig) == ESP_OK && stationConfig.sta.ssid[0] != '\0';
-        if (status != WL_IDLE_STATUS) {
-          if (configured) {
-            const esp_err_t err = esp_wifi_connect();
-            if (err != ESP_OK && err != ESP_ERR_WIFI_STATE) {
-              LOG_ERR("DSN", "Overview silent Wi-Fi join failed: err=0x%x", static_cast<unsigned>(err));
-              result_ = DSN_ERR_UNAVAILABLE;
-              break;
-            }
-          } else {
-            WiFi.persistent(false);
-            WiFi.mode(WIFI_STA);
-            WiFi.begin(cred->ssid.c_str(), cred->password.c_str());
-          }
-        }
-        overviewWifiStart_ = millis();
-        pending_ = Op::NetConnecting;
-        LOG_INF("DSN", "Overview quiet Wi-Fi join started");
-        return false;
-      }
       const std::string_view request = head_;
       const size_t newline = request.find('\n');
       const auto first = request.substr(0, newline);
@@ -937,7 +1166,7 @@ bool CrosspointServices::serviceAsyncWork() {
       const std::string method(first.substr(0, space));
       auto url = first.substr(space + 1);
       if (url.ends_with('\r')) url.remove_suffix(1);
-      if ((method != "GET" && method != "POST" && method != "PUT") || url.empty() ||
+      if ((method != "GET" && method != "POST" && method != "PUT" && method != "DELETE") || url.empty() ||
           std::any_of(url.begin(), url.end(), [](unsigned char c) { return c <= 32 || c == 127; })) {
         result_ = DSN_ERR_INVALID;
         break;
@@ -947,6 +1176,7 @@ bool CrosspointServices::serviceAsyncWork() {
         break;
       }
       std::vector<HttpDownloader::Header> headers;
+      headers.reserve(16);
       result_ = 0;
       for (size_t pos = newline; pos != std::string_view::npos && ++pos < request.size();) {
         const size_t end = request.find('\n', pos);
@@ -969,6 +1199,10 @@ bool CrosspointServices::serviceAsyncWork() {
           break;
         }
         value.remove_prefix(std::min(value.find_first_not_of(" \t"), value.size()));
+        if (headers.size() == 16) {
+          result_ = DSN_ERR_TOO_BIG;
+          break;
+        }
         headers.emplace_back(name, value);
         const char* headerName = headers.back().first.c_str();
         if (strcasecmp(headerName, "Host") == 0 || strcasecmp(headerName, "Connection") == 0 ||
@@ -977,56 +1211,54 @@ bool CrosspointServices::serviceAsyncWork() {
           break;
         }
       }
-      if (result_ < 0) {
-        LOG_ERR("DSN", "HTTP header validation failed: err=%d", result_);
-        break;
-      }
+      if (result_ < 0) break;
 
-      // Log only the HTTP method: URL paths, queries, bodies and headers may
-      // contain pairing codes, credentials or other private material.
-      LOG_INF("DSN", "HTTP request: method=%s", method.c_str());
       // TLS needs a healthy heap; refuse up front rather than OOM mid-handshake
       // (same thresholds as CatalogActivity / FontDownloadActivity).
-      const uint32_t tlsMinBlock = HalMemory::getPsramHeap().totalBytes > 0 ? HttpDownloader::MIN_TLS_MAX_ALLOC_PSRAM
-                                                                            : HttpDownloader::MIN_TLS_MAX_ALLOC;
       if (url.size() >= 6 && strncasecmp(url.data(), "https:", 6) == 0 &&
-          (ESP.getFreeHeap() < HttpDownloader::MIN_TLS_FREE_HEAP || ESP.getMaxAllocHeap() < tlsMinBlock)) {
-        LOG_ERR("DSN", "HTTP TLS heap guard: free=%u max=%u", static_cast<unsigned>(ESP.getFreeHeap()),
+          (ESP.getFreeHeap() < HttpDownloader::MIN_TLS_FREE_HEAP ||
+           ESP.getMaxAllocHeap() < HttpDownloader::MIN_TLS_MAX_ALLOC)) {
+        LOG_ERR("DSN", "HTTP TLS heap guard: free=%u max_block=%u", static_cast<unsigned>(ESP.getFreeHeap()),
                 static_cast<unsigned>(ESP.getMaxAllocHeap()));
         result_ = DSN_ERR_IO;
         break;
       }
 
-      BoundedOutput response(outCap_ - 4);
-      const int status =
-          HttpDownloader::request(method.c_str(), std::string(url), headers, body_, bodySize_,
-                                  [&](const uint8_t* bytes, size_t len) { return response.append(bytes, len); });
-      if (status == 0) {
-        result_ = response.error ? response.error : DSN_ERR_IO;
-        LOG_ERR("DSN", "HTTP transport failed: err=%d", result_);
+      // DNS and sockets require an initialized, connected network stack.
+      if (WiFi.status() != WL_CONNECTED) {
+        result_ = DSN_ERR_IO;
         break;
       }
+      LOG_INF("DSN", "HTTP start: free=%u max_block=%u", static_cast<unsigned>(ESP.getFreeHeap()),
+              static_cast<unsigned>(ESP.getMaxAllocHeap()));
+      BoundedOutput response(outCap_ - 4);
+      const int status = HttpDownloader::request(
+          method.c_str(), std::string(url), headers, body_, bodySize_,
+          [&](const uint8_t* bytes, size_t len) { return response.append(bytes, len); }, &networkCancelled_);
+      LOG_INF("DSN", "HTTP finished: status=%d output_error=%d", status, response.error);
+      if (status == 0) {
+        result_ = response.error ? response.error : DSN_ERR_IO;
+        break;
+      }
+#ifndef BOARD_HAS_PSRAM
+      if (networkDetached_) {
+        detachedResponseSize_ = response.size() + 4;
+        detachedResponse_ = makeUniqueNoThrow<uint8_t[]>(detachedResponseSize_);
+        if (!detachedResponse_) {
+          detachedResponseSize_ = 0;
+          result_ = DSN_ERR_IO;
+          break;
+        }
+        out_ = detachedResponse_.get();
+      }
+#endif
       out_[0] = (status >> 8) & 0xff;
       out_[1] = status & 0xff;
       out_[2] = 0;
       out_[3] = 0;
       result_ = response.copyTo(out_ + 4);
-      LOG_INF("DSN", "HTTP response: status=%d bytes=%d", status, result_);
       break;
     }
-    case Op::NetConnecting:
-      if (WiFi.status() == WL_CONNECTED) {
-        LOG_INF("DSN", "Overview quiet Wi-Fi connected in %lu ms",
-                static_cast<unsigned long>(millis() - overviewWifiStart_));
-        pending_ = Op::Net;
-        return false;
-      }
-      if (millis() - overviewWifiStart_ > 10000) {
-        LOG_INF("DSN", "Overview offline after quiet Wi-Fi timeout: status=%d", static_cast<int>(WiFi.status()));
-        result_ = DSN_ERR_UNAVAILABLE;
-        break;
-      }
-      return false;
     case Op::Fetch: {
       size_t bytes = 0;
       if (strncasecmp(url_.c_str(), "https:", 6) == 0 && (ESP.getFreeHeap() < HttpDownloader::MIN_TLS_FREE_HEAP ||
@@ -1034,8 +1266,14 @@ bool CrosspointServices::serviceAsyncWork() {
         result_ = DSN_ERR_IO;
         break;
       }
-      const auto error = HttpDownloader::downloadToFile(url_, dest_, nullptr, nullptr, "", "", {}, false, &bytes,
-                                                        dessen::kPending - 1);
+      // DNS and sockets require an initialized, connected network stack.
+      if (WiFi.status() != WL_CONNECTED) {
+        result_ = DSN_ERR_IO;
+        break;
+      }
+      const auto error = HttpDownloader::downloadRestricted(
+          url_, dest_, &bytes, permissions_.isSharedCredential(dest_) ? MAX_SHARED_CREDENTIAL_SIZE : 16u * 1024 * 1024,
+          &networkCancelled_);
       result_ = error == HttpDownloader::OK        ? static_cast<int>(bytes)
                 : error == HttpDownloader::TOO_BIG ? DSN_ERR_TOO_BIG
                                                    : DSN_ERR_IO;
@@ -1061,17 +1299,7 @@ bool CrosspointServices::serviceAsyncWork() {
       break;
     }
     case Op::WifiStart: {
-#ifndef BOARD_HAS_PSRAM
-      if (WiFi.status() != WL_CONNECTED &&
-          (ESP.getFreeHeap() < 80000 || ESP.getMaxAllocHeap() < HttpDownloader::MIN_TLS_MAX_ALLOC)) {
-        LOG_ERR("DSN", "Wi-Fi start refused: insufficient heap free=%u max=%u",
-                static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()));
-        result_ = DSN_ERR_UNAVAILABLE;
-        break;
-      }
-#endif
       if (WiFi.status() == WL_CONNECTED) {
-        LOG_INF("DSN", "Wi-Fi already connected");
         result_ = 0;
         break;
       }
@@ -1081,73 +1309,43 @@ bool CrosspointServices::serviceAsyncWork() {
       auto cred = last.empty() ? std::nullopt : WIFI_STORE.findCredential(last);
       if (!cred) cred = WIFI_STORE.getCredentialAt(0);
       if (!cred) {
-        LOG_INF("DSN", "Wi-Fi: no saved credentials, opening network picker");
-        pending_ = Op::WifiSelecting;
-        return false;
+        result_ = DSN_ERR_UNAVAILABLE;
+        break;
       }
-      // WL_IDLE_STATUS means associated but still waiting for an IP address.
-      // WL_DISCONNECTED does NOT mean a join is in progress. The station may
-      // retain its configuration while idle; explicitly ask ESP-IDF to join
-      // using that config rather than blindly waiting 20 seconds.
-      const wl_status_t status = WiFi.status();
-      wifi_config_t stationConfig{};
-      const bool configured =
-          esp_wifi_get_config(WIFI_IF_STA, &stationConfig) == ESP_OK && stationConfig.sta.ssid[0] != '\0';
-      LOG_INF("DSN", "Wi-Fi request: status=%d configured=%d", static_cast<int>(status), configured ? 1 : 0);
-      if (status != WL_IDLE_STATUS) {
-        if (configured) {
-          // esp_wifi_connect() does not rewrite configuration. ESP_ERR_WIFI_STATE
-          // is benign here: another task/auto-reconnect is already joining.
-          const esp_err_t err = esp_wifi_connect();
-          if (err != ESP_OK && err != ESP_ERR_WIFI_STATE) {
-            LOG_ERR("DSN", "Wi-Fi join request failed: err=0x%x, opening network picker", static_cast<unsigned>(err));
-            pending_ = Op::WifiSelecting;
-            return false;
-          }
-          LOG_INF("DSN", "Wi-Fi join: %s", err == ESP_OK ? "requested" : "already in progress");
-        } else {
-          WiFi.persistent(false);
-          WiFi.mode(WIFI_STA);
-          LOG_INF("DSN", "Wi-Fi begin: saved credentials");
-          WiFi.begin(cred->ssid.c_str(), cred->password.c_str());
-        }
-      } else {
-        LOG_INF("DSN", "Wi-Fi already associated; waiting for IP");
+      WiFi.persistent(false);
+      LOG_INF("DSN", "Wi-Fi start: free=%u max_block=%u", static_cast<unsigned>(ESP.getFreeHeap()),
+              static_cast<unsigned>(ESP.getMaxAllocHeap()));
+      if (!WiFi.mode(WIFI_STA)) {
+        result_ = DSN_ERR_IO;
+        break;
       }
+      WiFi.begin(cred->ssid.c_str(), cred->password.c_str());
       wifiStart_ = millis();
       pending_ = Op::WifiConnecting;
       return false;
     }
     case Op::WifiConnecting:
       if (WiFi.status() == WL_CONNECTED) {
-        LOG_INF("DSN", "Wi-Fi connected in %lu ms", static_cast<unsigned long>(millis() - wifiStart_));
         result_ = 0;
       } else if (millis() - wifiStart_ > 20000) {
-        LOG_ERR("DSN", "Wi-Fi timeout after %lu ms: status=%d", static_cast<unsigned long>(millis() - wifiStart_),
-                static_cast<int>(WiFi.status()));
-        pending_ = Op::WifiSelecting;
-        return false;
+        result_ = DSN_ERR_IO;
       } else {
         return false;
       }
       break;
-    case Op::WifiSelecting:
-      // Paused while native Wi-Fi selection screen handles scanning/credentials.
-      return false;
     case Op::None:
     case Op::TextInput:
       return false;
   }
+  cleanupDownload();
+#ifndef BOARD_HAS_PSRAM
+  if (networkDetached_) {
+    completeSuspendedNetwork();
+    return true;
+  }
+#endif
   done_ = true;
   return true;
-}
-
-void CrosspointServices::completeWifiSelection(bool connected) {
-  if (pending_ != Op::WifiSelecting) return;
-  LOG_INF("DSN", "Wi-Fi network picker: %s", connected && WiFi.status() == WL_CONNECTED ? "connected" : "cancelled");
-  result_ = connected && WiFi.status() == WL_CONNECTED ? 0 : DSN_ERR_IO;
-  wifiPickerOpen_ = false;
-  done_ = true;
 }
 
 void CrosspointServices::deliverText(const char* text) {
@@ -1164,6 +1362,24 @@ void CrosspointServices::deliverText(const char* text) {
 void CrosspointServices::cancelText() {
   result_ = -1;  // text_input returns -1 on cancel
   done_ = true;
+}
+
+// The theme draws its hints upright (Portrait) along the bottom, and none on a
+// touch board, so that is the only case with a band to report.
+int CrosspointServices::buttonHintsHeight() {
+  if (!hintRenderer_ || gpio.hasTouch() || hintRenderer_->getOrientation() != GfxRenderer::Orientation::Portrait) {
+    return 0;
+  }
+  return UITheme::getInstance().getMetrics().buttonHintsHeight;
+}
+
+void CrosspointServices::drawButtonHints(freeink::ui::DrawTarget&, const freeink::ui::Rect&,
+                                         const char* const labels[4]) {
+  if (!hintRenderer_ || !hintInput_) return;
+  // The same remapping every firmware screen uses: the app names actions,
+  // the user's settings say which key each is on.
+  const auto keys = hintInput_->mapLabels(labels[0], labels[1], labels[2], labels[3]);
+  GUI.drawButtonHints(*hintRenderer_, keys.btn1, keys.btn2, keys.btn3, keys.btn4);
 }
 
 #endif  // CROSSPOINT_DESSEN_APPS

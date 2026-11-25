@@ -1,4 +1,5 @@
 #include "RoundedRaffTheme.h"
+#include "components/themes/HintLayout.h"
 
 #include <GfxRenderer.h>
 #include <HalGPIO.h>
@@ -211,49 +212,35 @@ void RoundedRaffTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, 
   const int groupGap = 10;
   const int bottomMargin = 10;
   const int hintHeight = RoundedRaffMetrics::values.buttonHintsHeight - 10;  // 30px total guide height
-  const int groupWidth = (pageWidth - sidePadding * 2 - groupGap) / 2;
   const int hintY = pageHeight - hintHeight - bottomMargin;
-  const int textY = hintY + (hintHeight - renderer.getLineHeight(kGuideFontId)) / 2;
+  const char* labels[] = {btn1, btn2, btn3, btn4};
+  std::array<int, 2> needed{};
+  for (int i = 0; i < 4; ++i)
+    needed[i / 2] += labels[i] && *labels[i] ? renderer.getTextWidth(kGuideFontId, labels[i]) + 12 : 12;
+  const auto groups = hint_layout::allocate(pageWidth, sidePadding, groupGap, needed,
+                                            (pageWidth - 2 * sidePadding - groupGap) / 2);
 
   if (renderer.getRenderMode() != GfxRenderer::BW && !renderer.grayPlanesAreAbsolute()) {
-    renderer.fillRect(sidePadding, hintY, groupWidth, hintHeight, true);
-    renderer.fillRect(sidePadding + groupWidth + groupGap, hintY, groupWidth, hintHeight, true);
+    for (const auto& group : groups)
+      renderer.fillRect(group.x, hintY, group.width, hintHeight, true);
     renderer.setOrientation(origOrientation);
     return;
   }
 
-  const bool backDisabled = (btn1 == nullptr || btn1[0] == '\0');
-  const int leftGroupX = sidePadding;
-  const int rightGroupX = leftGroupX + groupWidth + groupGap;
-  const std::string backLabel = backDisabled ? "" : std::string(btn1);
-  // Callers should provide the button labels. If a label is not specified, it should render empty.
-  const std::string selectText = (btn2 && btn2[0] != '\0') ? std::string(btn2) : "";
-  const std::string upText = (btn3 && btn3[0] != '\0') ? std::string(btn3) : "";
-  const std::string downText = (btn4 && btn4[0] != '\0') ? std::string(btn4) : "";
-
-  // Ensure button hints always "win" visually even if other elements accidentally render into this area.
-  renderer.fillRect(leftGroupX, hintY, groupWidth, hintHeight, false);
-  renderer.fillRect(rightGroupX, hintY, groupWidth, hintHeight, false);
-
-  renderer.drawRoundedRect(leftGroupX, hintY, groupWidth, hintHeight, 2, kBottomRadius, true);
-  const int selectWidth = renderer.getTextWidth(kGuideFontId, selectText.c_str(), EpdFontFamily::REGULAR);
-  const int downWidth = renderer.getTextWidth(kGuideFontId, downText.c_str(), EpdFontFamily::REGULAR);
-  constexpr int innerEdgePadding = 16;
-
-  const int backX = leftGroupX + innerEdgePadding;
-  const int selectX = leftGroupX + groupWidth - innerEdgePadding - selectWidth;
-  const int upX = rightGroupX + innerEdgePadding;
-  const int downX = rightGroupX + groupWidth - innerEdgePadding - downWidth;
-
-  if (!backDisabled) {
-    renderer.drawText(kGuideFontId, backX, textY, backLabel.c_str(), true, EpdFontFamily::REGULAR);
+  for (int g = 0; g < 2; ++g) {
+    const auto& group = groups[g];
+    if (group.width <= 0) continue;
+    renderer.fillRect(group.x, hintY, group.width, hintHeight, false);
+    renderer.drawRoundedRect(group.x, hintY, group.width, hintHeight, 2, kBottomRadius, true);
+    std::array<int, 2> pairNeeded{};
+    for (int i = 0; i < 2; ++i) {
+      const char* label = labels[g * 2 + i];
+      if (label && *label) pairNeeded[i] = renderer.getTextWidth(kGuideFontId, label) + 8;
+    }
+    const auto slots = hint_layout::allocate(group.width, 4, 4, pairNeeded, (group.width - 12) / 2);
+    for (int i = 0; i < 2; ++i)
+      drawHintLabel(renderer, kGuideFontId, labels[g * 2 + i], group.x + slots[i].x,
+                    slots[i].width, hintY, hintHeight);
   }
-  renderer.drawText(kGuideFontId, selectX, textY, selectText.c_str(), true, EpdFontFamily::REGULAR);
-
-  renderer.drawRoundedRect(rightGroupX, hintY, groupWidth, hintHeight, 2, kBottomRadius, true);
-
-  renderer.drawText(kGuideFontId, upX, textY, upText.c_str(), true, EpdFontFamily::REGULAR);
-  renderer.drawText(kGuideFontId, downX, textY, downText.c_str(), true, EpdFontFamily::REGULAR);
-
   renderer.setOrientation(origOrientation);
 }

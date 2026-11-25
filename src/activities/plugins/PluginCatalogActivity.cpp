@@ -464,12 +464,8 @@ bool PluginCatalogActivity::loadManifest() {
   // Do not allow arbitrary plugin manifests to read/replace the unified
   // Reading Statistics credential through declarative auth or settings.
   constexpr const char* statsToken = "/.crosspoint/reading-statistics-token.json";
-  const bool trustedDessenStats =
-      ((pluginDir == PluginLocations::findPluginDir("reading-stats-dessen") && !pluginDir.empty()) ||
-       (pluginDir == PluginLocations::findPluginDir("reading-statistics-dessen-rust") && !pluginDir.empty())) &&
-      Storage.exists((pluginDir + "/app.bin").c_str());
   const bool trustedStatisticsPlugin =
-      pluginDir == PluginLocations::findPluginDir("reading-statistics") || trustedDessenStats;
+      !pluginDir.empty() && pluginDir == PluginLocations::findPluginDir("reading-statistics");
   if ((manifest.tokenFile == statsToken && !trustedStatisticsPlugin) || manifest.configFile == statsToken) return false;
 
   JsonVariantConst browse = doc["browse"];
@@ -4859,9 +4855,9 @@ void PluginCatalogActivity::activateIndex(const int index) {
         decltype(pluginTabNavs){}.swap(pluginTabNavs);
         decltype(browseHistory){}.swap(browseHistory);
         const auto after = HalMemory::getInternalHeap();
-        LOG_INF("PCAT", "Dessen picker release: free=%u->%u max_block=%u->%u",
-                static_cast<unsigned>(before.freeBytes), static_cast<unsigned>(after.freeBytes),
-                static_cast<unsigned>(before.largestBlockBytes), static_cast<unsigned>(after.largestBlockBytes));
+        LOG_INF("PCAT", "Dessen picker release: free=%u->%u max_block=%u->%u", static_cast<unsigned>(before.freeBytes),
+                static_cast<unsigned>(after.freeBytes), static_cast<unsigned>(before.largestBlockBytes),
+                static_cast<unsigned>(after.largestBlockBytes));
       }
       startActivityForResult(std::move(appActivity), [this](const ActivityResult&) {
         // Keep rendering suspended until all row sources have been rebuilt.
@@ -5206,7 +5202,7 @@ void PluginCatalogActivity::buildScreen(UiScreen& screen) {
     case State::NO_TOKEN:
       if (forceInitialCatalog && manifest.hasDeviceCode()) {
         catalogCenteredBlock(screen, {{tr(STR_PLUGIN_SIGN_IN_HINT)},
-                                     {mappedInput.hasTouch() ? "Tap to sign in" : "Press Open to sign in"}});
+                                      {mappedInput.hasTouch() ? "Tap to sign in" : "Press Open to sign in"}});
       } else {
         catalogCenteredBlock(screen,
                              {{manifest.hasDeviceCode() ? tr(STR_PLUGIN_SIGN_IN_HINT) : tr(STR_PLUGIN_NOT_SIGNED_IN)}});
@@ -5693,7 +5689,7 @@ void PluginCatalogActivity::rebuildRowItems() {
       // An on-device app is launchable whatever else the plugin ships, so it
       // is never labelled web-only.
       if (!plugin.appPath.empty()) {
-        addRow(plugin.title.c_str(), subtitle, ">");
+        addRow(plugin.title.c_str(), subtitle, version ? version : ">");
         return;
       }
 #endif

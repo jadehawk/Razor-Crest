@@ -20,6 +20,9 @@ class SecureHttpClient;
 // bounded transport live here.
 namespace pluginhttp {
 
+// Notify native consumers after an authorized application changes a stored file.
+void notifyFileChanged(const std::string& file);
+
 using Headers = std::vector<std::pair<std::string, std::string>>;
 
 // --- JSON / template helpers ---

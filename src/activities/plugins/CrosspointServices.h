@@ -3,6 +3,12 @@
 
 #include <freeink/DessenServices.h>
 
+#include "DessenPermissions.h"
+
+class GfxRenderer;
+class MappedInputManager;
+
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -23,13 +29,16 @@ class Crypto;
 // The blocking calls (network, RSA keygen, keyboard entry) must NOT run there
 // (TLS overflows the render stack; keygen trips the watchdog), so they are
 // *queued*: the service returns kPending, DessenAppActivity::serviceAsyncWork()
-// runs the work on the loop task, and poll() (cheap) reports completion back to
+// runs networking on its owned worker; the loop handles other operations. poll() reports completion to
 // the render task. At most one async op is outstanding, matching the VM.
 class CrosspointServices : public dessen::Services {
  public:
   // `appName` scopes device_id and the key store; `appDir` is the plugin folder.
   CrosspointServices(std::string appName, std::string appDir);
   ~CrosspointServices() override;
+  bool loadPermissions();
+  DessenPermissions& permissions() { return permissions_; }
+  const uint8_t* permissionDigest() const { return permissionDigest_; }
 
   // ---- core ----
   uint32_t timeNow() override;
@@ -50,9 +59,6 @@ class CrosspointServices : public dessen::Services {
   int recentShelf(uint32_t first, uint32_t count, char* out, uint32_t cap) override;
   int bookProgress(const char* path) override;
   int bookCover(const char* path, uint32_t height, uint8_t* out, uint32_t cap) override;
-  int qrBitmap(const char* link, uint32_t length, uint8_t* out, uint32_t cap) override;
-  // All boards use the same reboot-isolated firmware networking lifecycle.
-  int nativeStatsMode() override { return 1; }
   int wifiConnectStart() override;
 
   // ---- crypto (all wrap freeink::content::Crypto) ----
@@ -71,6 +77,7 @@ class CrosspointServices : public dessen::Services {
   int battery() override;
   int haptic(int ms, int intensity) override;
   int accel(uint8_t* out) override;
+  int qrBitmap(const char* link, uint32_t length, uint8_t* out, uint32_t cap) override;
   // ---- async: queued on the render task, run on the loop task ----
   int keygenStart(uint32_t bits, uint8_t* pub, uint32_t pubCap, uint8_t* priv, uint32_t privCap) override;
   int netStart(const char* head, const uint8_t* body, uint32_t bn, uint8_t* resp, uint32_t cap) override;
@@ -81,42 +88,61 @@ class CrosspointServices : public dessen::Services {
   // ---- loop-task side, driven by DessenAppActivity ----
   bool wantsKeyboard() const { return pending_ == Op::TextInput && !done_; }
   bool needsNetworkHeap() const {
-    return !done_ && (pending_ == Op::Net || pending_ == Op::NetConnecting || pending_ == Op::Fetch ||
-                      pending_ == Op::WifiStart || pending_ == Op::WifiConnecting || pending_ == Op::WifiSelecting);
+    return !done_ && (pending_ == Op::Net || pending_ == Op::Fetch || pending_ == Op::WifiStart ||
+                      pending_ == Op::WifiConnecting);
   }
-  bool wantsWifiSelection() const { return pending_ == Op::WifiSelecting && !done_ && !wifiPickerOpen_; }
-  void wifiSelectionOpened() { wifiPickerOpen_ = true; }
-  void completeWifiSelection(bool connected);
-  // Run work on the loop task. True when render can resume the VM.
+  // Called by the operation's sole owner. True when the parked call has completed.
   bool serviceAsyncWork();
+  void cancelNetwork() { networkCancelled_.store(true, std::memory_order_relaxed); }
+  void failNetwork();
+#ifndef BOARD_HAS_PSRAM
+  bool detachNetworkBuffers(const uint8_t* base, uint32_t size);
+  void restoreNetworkBuffers(uint8_t* base);
+  bool exportNetworkRequest(std::unique_ptr<uint8_t[]>& data, uint32_t& size) const;
+  bool importNetworkRequest(const uint8_t* data, uint32_t size, uint32_t guestSize);
+  static constexpr uint32_t MAX_NETWORK_REQUEST = 1024 + 8192 + 256 + 24;
+  uint32_t networkResponseOffset() const { return outOffset_; }
+  uint32_t networkResponseSize() const { return detachedResponseSize_; }
+  uint8_t* networkResponse() const { return detachedResponse_.get(); }
+  int networkResult() const { return result_; }
+  void cancelSuspendedNetwork();
+  void releaseNetworkRadio();
+#endif
   // The keyboard prompt the app asked for.
   const std::string& keyboardPrompt() const { return prompt_; }
   // DessenAppActivity delivers the keyboard result (or cancellation) here.
   void deliverText(const char* text);
   void cancelText();
 
+  // ---- button hints ----  the active theme's own, over the keys as the user
+  // mapped them. Without a renderer (or on a touch board, or turned) none.
+  void setHintContext(GfxRenderer* renderer, const MappedInputManager* input) {
+    hintRenderer_ = renderer;
+    hintInput_ = input;
+  }
+  int buttonHintsHeight() override;
+  void drawButtonHints(freeink::ui::DrawTarget& target, const freeink::ui::Rect& band,
+                       const char* const labels[4]) override;
+
  private:
-  enum class Op : uint8_t {
-    None,
-    Net,
-    NetConnecting,
-    Fetch,
-    Keygen,
-    TextInput,
-    WifiStart,
-    WifiConnecting,
-    WifiSelecting
-  };
+  static constexpr size_t MAX_SHARED_CREDENTIAL_SIZE = 4096;
+  void cleanupDownload();
+  enum class Op : uint8_t { None, Net, Fetch, Keygen, TextInput, WifiStart, WifiConnecting };
 
   static int resolve(const char* path, uint32_t maxLen = 255);  // validates an app path (already the SD path)
 
+  DessenPermissions permissions_;
+  uint8_t permissionDigest_[32]{};
   std::string appName_, appDir_;
+  GfxRenderer* hintRenderer_ = nullptr;
+  const MappedInputManager* hintInput_ = nullptr;
   std::unique_ptr<freeink::content::Crypto> crypto_;
   struct ShelfOverlap;
   std::unique_ptr<ShelfOverlap> shelfOverlap_;
 
   // Single outstanding async op. Buffers point into guest memory (valid while
   // the VM is parked). Request strings from the syscall stack are copied.
+  std::atomic<bool> networkCancelled_{false};
   Op pending_ = Op::None;
   bool done_ = false;
   int result_ = 0;
@@ -129,8 +155,16 @@ class CrosspointServices : public dessen::Services {
   uint32_t privCap_ = 0;
   uint32_t bits_ = 0;
   unsigned long wifiStart_ = 0;
-  unsigned long overviewWifiStart_ = 0;
-  bool wifiPickerOpen_ = false;
+#ifndef BOARD_HAS_PSRAM
+  bool networkDetached_ = false;
+  bool radioOwned_ = false;
+  bool reconnecting_ = false;
+  bool startSuspendedWifi();
+  void completeSuspendedNetwork();
+  uint32_t outOffset_ = 0;
+  std::unique_ptr<uint8_t[]> detachedBody_, detachedResponse_;
+  uint32_t detachedResponseSize_ = 0;
+#endif
 };
 
 #endif  // CROSSPOINT_DESSEN_APPS

@@ -183,8 +183,43 @@ bool HttpDownloader::fetchUrl(const std::string& url, const DataCallback& onData
 }
 
 #if CROSSPOINT_DESSEN_APPS
+HttpDownloader::DownloadError HttpDownloader::downloadRestricted(const std::string& url, const std::string& destination,
+                                                                 size_t* bytesOut, size_t maxBytes,
+                                                                 const std::atomic<bool>* cancelFlag) {
+  if (bytesOut) *bytesOut = 0;
+  const std::string temporary = destination + ".part";
+  HalFile file;
+  if (!Storage.openFileForWrite("DSN", temporary, file)) return FILE_ERROR;
+  size_t written = 0;
+  bool tooBig = false, writeFailed = false;
+  const int status = request(
+      "GET", url, {}, nullptr, 0,
+      [&](const uint8_t* data, size_t size) {
+        if (size > maxBytes - written) {
+          tooBig = true;
+          return false;
+        }
+        if (file.write(data, size) != size) {
+          writeFailed = true;
+          return false;
+        }
+        written += size;
+        return true;
+      },
+      cancelFlag);
+  const bool closed = file.close();
+  if (status < 200 || status >= 300 || tooBig || writeFailed || !closed ||
+      !Storage.replaceFile(temporary.c_str(), destination.c_str())) {
+    Storage.remove(temporary.c_str());
+    return tooBig ? TOO_BIG : writeFailed || !closed ? FILE_ERROR : HTTP_ERROR;
+  }
+  if (bytesOut) *bytesOut = written;
+  return OK;
+}
+
 int HttpDownloader::request(const char* method, const std::string& url, const std::vector<Header>& headers,
-                            const uint8_t* body, size_t bodySize, const DataCallback& onData) {
+                            const uint8_t* body, size_t bodySize, const DataCallback& onData,
+                            const std::atomic<bool>* cancelFlag) {
   WifiPowerSaveGuard psGuard;
   freeink::SecureHttpClient http;
   if (!http.begin(url)) return 0;
@@ -201,7 +236,11 @@ int HttpDownloader::request(const char* method, const std::string& url, const st
   if (std::string_view(method) == "POST" && !hasContentType) {
     http.addHeader("Content-Type", "application/x-www-form-urlencoded");
   }
-  const int status = http.sendRequest(method, body, bodySize, onData);
+  http.setFollowRedirects(0);  // destination grants never authorize a redirect
+  const auto started = millis();
+  const int status = http.sendRequest(method, body, bodySize, onData, [cancelFlag, started] {
+    return (cancelFlag && cancelFlag->load(std::memory_order_relaxed)) || millis() - started >= 60000;
+  });
   return status > 0 && http.responseComplete() ? status : 0;
 }
 #endif

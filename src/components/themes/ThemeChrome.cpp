@@ -5,6 +5,7 @@
 #include <string>
 
 #include "ThemeScene.h"
+#include "HintLayout.h"
 #include "components/UITheme.h"
 #include "components/icons/blocks.h"
 #include "components/icons/book.h"
@@ -158,26 +159,39 @@ bool ThemeScene::drawHints(GfxRenderer& renderer, const char* first, const char*
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
   const int width = renderer.getScreenWidth();
   const int height = renderer.getScreenHeight();
-  constexpr int BUTTON_WIDTH = 104;
   constexpr int BUTTON_HEIGHT = 32;
-  const int narrow[4] = {25, 130, 245, 350};
-  const int wide[4] = {38, 154, 268, 384};
-  const int* positions = width >= 528 ? wide : narrow;
   const char* captions[4] = {first, second, third, fourth};
+  std::array<std::string, 4> labels{};
+  std::array<int, 4> needed{};
+  for (int i = 0; i < 4; ++i) {
+    if (!captions[i] || !*captions[i]) continue;
+    labels[i] = uppercase(captions[i]);
+    needed[i] = renderer.getTextWidth(SMALL_FONT_ID, labels[i].c_str()) + 14;
+  }
+  const auto boxes = hint_layout::allocate(width, 8, 8, needed, 104);
   const bool grayscale = renderer.getRenderMode() != GfxRenderer::BW && !renderer.grayPlanesAreAbsolute();
   for (int i = 0; i < 4; ++i) {
     if (!captions[i] || !*captions[i]) continue;
-    const int x = positions[i];
+    const int x = boxes[i].x;
+    const int buttonWidth = boxes[i].width;
+    if (buttonWidth <= 14) continue;
     const int y = height - BUTTON_HEIGHT - 5;
     if (grayscale) {
-      renderer.fillRect(x, y, BUTTON_WIDTH, BUTTON_HEIGHT, true);
+      renderer.fillRect(x, y, buttonWidth, BUTTON_HEIGHT, true);
       continue;
     }
-    chamfer(renderer, x, y, BUTTON_WIDTH, BUTTON_HEIGHT, hintCut, true);
-    const auto text = uppercase(renderer.truncatedText(SMALL_FONT_ID, captions[i], BUTTON_WIDTH - 14));
-    const int tw = renderer.getTextWidth(SMALL_FONT_ID, text.c_str());
-    renderer.drawText(SMALL_FONT_ID, x + (BUTTON_WIDTH - tw) / 2,
-                      y + (BUTTON_HEIGHT - renderer.getLineHeight(SMALL_FONT_ID)) / 2, text.c_str(), false);
+    chamfer(renderer, x, y, buttonWidth, BUTTON_HEIGHT, hintCut, true);
+    int font = SMALL_FONT_ID;
+    if ((renderer.getTextWidth(font, labels[i].c_str()) > buttonWidth - 14 ||
+         renderer.getTextHeight(font) > BUTTON_HEIGHT - 4) &&
+        renderer.getTextHeight(NOTOSANS_12_FONT_ID) <= BUTTON_HEIGHT - 4)
+      font = NOTOSANS_12_FONT_ID;
+    if (renderer.getTextHeight(font) > BUTTON_HEIGHT - 2) continue;
+    const auto text = renderer.truncatedText(font, labels[i].c_str(), buttonWidth - 14);
+    const int tw = renderer.getTextWidth(font, text.c_str());
+    if (tw <= buttonWidth - 14)
+      renderer.drawText(font, x + (buttonWidth - tw) / 2,
+                        y + (BUTTON_HEIGHT - renderer.getTextHeight(font)) / 2, text.c_str(), false);
   }
   renderer.setOrientation(originalOrientation);
   return true;

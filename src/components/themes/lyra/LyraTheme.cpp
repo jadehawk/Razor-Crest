@@ -1,4 +1,5 @@
 #include "LyraTheme.h"
+#include "components/themes/HintLayout.h"
 
 #include <GfxRenderer.h>
 #include <HalGPIO.h>
@@ -116,20 +117,22 @@ void LyraTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
 
   const int pageHeight = renderer.getScreenHeight();
-  constexpr int buttonWidth = 80;
   constexpr int smallButtonHeight = 15;
   constexpr int buttonHeight = LyraMetrics::values.buttonHintsHeight;
   constexpr int buttonY = LyraMetrics::values.buttonHintsHeight;  // Distance from bottom
   // Keyed to the portrait panel width: the 528-wide X3 gets more spacing than
   // the 480-wide boards (X4, X4 Pro, and the other 800x480 panels).
-  constexpr int narrowButtonPositions[] = {58, 146, 254, 342};
-  constexpr int wideButtonPositions[] = {65, 157, 291, 383};
-  const int* buttonPositions = renderer.getScreenWidth() >= 528 ? wideButtonPositions : narrowButtonPositions;
   const char* labels[] = {btn1, btn2, btn3, btn4};
+  std::array<int, 4> needed{};
+  for (int i = 0; i < 4; ++i)
+    if (labels[i] && *labels[i]) needed[i] = renderer.getTextWidth(SMALL_FONT_ID, labels[i]) + 8;
+  const auto boxes = hint_layout::allocate(renderer.getScreenWidth(), 8, 8, needed, 80);
   const bool grayscale = renderer.getRenderMode() != GfxRenderer::BW && !renderer.grayPlanesAreAbsolute();
 
   for (int i = 0; i < 4; i++) {
-    const int x = buttonPositions[i];
+    const int x = boxes[i].x;
+    const int buttonWidth = boxes[i].width;
+    if (buttonWidth <= 0) continue;
     if (labels[i] != nullptr && labels[i][0] != '\0') {
       // Draw the filled background and border for a FULL-sized button
       renderer.fillRoundedRect(x, pageHeight - buttonY, buttonWidth, buttonHeight, cornerRadius,

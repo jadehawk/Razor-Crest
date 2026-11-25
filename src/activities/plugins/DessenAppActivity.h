@@ -3,7 +3,10 @@
 
 #include <FreeInkUIGfxRenderer.h>
 #include <freeink/DessenFreeInk.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
+#include <atomic>
 #include <memory>
 #include <string>
 
@@ -17,12 +20,16 @@
 class DessenAppActivity final : public Activity {
  public:
   DessenAppActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string appPath,
-                    bool homeLauncher = false, int nativeOperation = 0, bool resumeAfterNetwork = false);
+                    bool homeLauncher = false);
 
   void onEnter() override;
+  void onExit() override;
+  ~DessenAppActivity() override;
   void loop() override;
   void render(RenderLock&&) override;
   bool handleHomeGesture() override;
+  static bool takeResumePath(std::string& path, bool& homeLauncher);
+  static void abandonResume();
 
  private:
   // Every app gets one fixed block; nothing else is allocated while it runs.
@@ -36,15 +43,17 @@ class DessenAppActivity final : public Activity {
 #endif
 
   bool loadApp();
+  void startAuthorizedApp();
+  bool startNetworkWork();
+  void stopNetworkWork();
+  static void runNetworkWork(void* context);
   void leaveApp();
-  void openKeyboard();  // service asked for text input
-  void unloadGuestForNativeStats();
+  void openKeyboard();       // service asked for text input
+  bool storeOverlayFrame();  // best effort, under RenderLock
 
   std::string appPath;
   const bool homeLauncher;
   freeink::ui::GfxRendererTarget uiTarget;
-  const int nativeOperation;
-  const bool resumeAfterNetwork;
   std::unique_ptr<uint8_t[]> memory;
   // host, pendingInput: written by the render task and by loop() under RenderLock.
   dessen::FreeInkHost host;
@@ -56,8 +65,20 @@ class DessenAppActivity final : public Activity {
   // wait_event and cannot repaint itself, so the overlay would otherwise linger
   // until the app next draws.
   bool frameStored = false;
-  unsigned long lastPairingWakeMs = 0;
+  TaskHandle_t networkTask = nullptr;
+  std::atomic<bool> networkRunning{false}, networkDone{false};
+  bool leaveAfterNetwork = false;
+  unsigned long lastWakeMs = 0;
   bool suppressTimerFrameRestore = false;
+#ifndef BOARD_HAS_PSRAM
+  bool suspendNetwork();
+  bool resumeNetwork();
+  bool restoreContinuation();
+  void discardSnapshot();
+  std::string snapshotPath;
+  uint8_t snapshotKey[32]{};
+  bool suspended = false;
+#endif
 };
 
 #endif  // CROSSPOINT_DESSEN_APPS
