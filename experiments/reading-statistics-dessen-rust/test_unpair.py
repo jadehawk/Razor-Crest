@@ -1,43 +1,56 @@
 #!/usr/bin/env python3
-"""Standalone Dessen unpair UI regression: no credentials altered in the guest."""
+"""Confirm, cancel, revoke and delete pairing through generic Dessen services."""
 import json
 from pathlib import Path
 import tempfile
 import sys
-from test_sync import run, TOKEN
+from test_sync import run, fixture, TOKEN
 
 def main(host, app):
+    for touch, portrait in ((False, False), (True, False), (True, True)):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            secret = root / ".crosspoint" / "reading-statistics-token.json"
+            secret.parent.mkdir()
+            secret.write_text(json.dumps({"token": TOKEN}))
+            app_dir = root / "app"
+            app_dir.mkdir()
+            caches = [app_dir / name for name in ("server-overview.json", "web-login.json",
+                      "server-overview.json.bak", "web-login.json.part")]
+            for cache in caches:
+                cache.write_text("{}")
+            local = secret.parent / "reading-stats"
+            local.mkdir()
+            stats = local / "global_v2.bin"
+            stats.write_bytes(b"local reading statistics")
+            network = root / "network"
+            fixture(network, "login-code", {})
+            prefix = b"uT" if touch else b"upc"
+            prompt = run(host, app, root, network, keys=prefix, touch=touch, portrait=portrait)
+            assert "Disconnect this reader?" in prompt
+            assert secret.exists() and all(c.exists() for c in caches)
+            run(host, app, root, network, keys=prefix + (b"N" if touch else b"b"), touch=touch, portrait=portrait)
+            assert secret.exists() and all(c.exists() for c in caches)
+            failed = run(host, app, root, keys=prefix + (b"Y" if touch else b"c"), touch=touch, portrait=portrait)
+            assert "Could not disconnect" in failed and secret.exists(), (touch, portrait, failed[-2500:])
+            confirmed = run(host, app, root, network, keys=prefix + (b"Y" if touch else b"c"), touch=touch, portrait=portrait)
+            assert "Disconnecting reader..." in confirmed and "Please wait." in confirmed
+            assert confirmed.index("Disconnecting reader...") < confirmed.index("NOT PAIRED")
+            assert not secret.exists() and not any(c.exists() for c in caches)
+            assert stats.read_bytes() == b"local reading statistics"
+            restarted = run(host, app, root, keys=b"u", touch=touch, portrait=portrait)
+            assert "READER PAIRED" not in restarted
+    # An already-invalid token must still be removable.
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         secret = root / ".crosspoint" / "reading-statistics-token.json"
-        secret.parent.mkdir(parents=True)
+        secret.parent.mkdir()
         secret.write_text(json.dumps({"token": TOKEN}))
-        cache = root / ".crosspoint" / "plugins" / "reading-statistics-dessen-rust" / "server-overview.json"
-        cache.parent.mkdir(parents=True)
-        cache.write_text(json.dumps({"source":"server","total_seconds":7200,"month_seconds":7200,"month_active_days":8,"current_streak":5,"books":13,"sessions":19,"page_turns":327,"best_day_seconds":1800,"daily_average_seconds":900}))
-        secret_before, cache_before = secret.read_bytes(), cache.read_bytes()
-        prompt = run(host, app, root, keys=b"upc", native=True)
-        assert "Disconnect this reader?" in prompt, "Previous should show confirmation: " + prompt[-3500:]
-        assert "[launch stats-unpair" not in prompt, "Opening dialog must not unpair"
-        cancelled = run(host, app, root, keys=b"upcb", native=True)
-        assert "Disconnect this reader?" in cancelled
-        assert "[launch stats-unpair" not in cancelled, "Cancelled unpair must never launch"
-        confirmed = run(host, app, root, keys=b"upcc", native=True)
-        assert "[launch stats-unpair" in confirmed, "Approved unpair must request native firmware action"
-        resume = cache.parent / "resume-page"
-        assert resume.read_bytes() == bytes([0]), "Unpair should return to Overall"
-        assert secret.read_bytes() == secret_before, "Guest must not delete protected token"
-        assert cache.read_bytes() == cache_before, "Guest must not delete cache"
-        # Touch devices expose a separate Disconnect Reader action.
-        for portrait in (False, True):
-            prompt_touch = run(host, app, root, keys=b"uT", native=True, touch=True, portrait=portrait)
-            assert "Disconnect this reader?" in prompt_touch, "Touch disconnect button not reachable: " + prompt_touch[-3700:]
-            cancel_touch = run(host, app, root, keys=b"uTN", native=True, touch=True, portrait=portrait)
-            assert "[launch stats-unpair" not in cancel_touch, "Touch Cancel unexpectedly reset pairing"
-            confirm_touch = run(host, app, root, keys=b"uTY", native=True, touch=True, portrait=portrait)
-            assert "[launch stats-unpair" in confirm_touch, "Touch confirmation did not invoke firmware-owned unpair"
-            assert secret.read_bytes() == secret_before and cache.read_bytes() == cache_before
-    print("Dessen firmware-owned unpair confirmation: PASS")
+        network = root / "network"
+        fixture(network, "login-code", {}, status=401)
+        run(host, app, root, network, keys=b"upcc")
+        assert not secret.exists()
+    print("Generic unpair confirmation, cancellation, failure, revocation and local cleanup: PASS")
 
 if __name__ == "__main__":
     main(*sys.argv[1:3])

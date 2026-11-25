@@ -35,6 +35,7 @@ def period_data():
 def run(host,app,root,keys, touch=True, one_book=False, series=False, portrait=False):
     env=os.environ.copy()
     if touch: env['DESSEN_TEST_TOUCH']='1'
+    else: env['DESSEN_TEST_HINTS']='1'
     if one_book: env['DESSEN_TEST_ONE_BOOK']='1'
     if series: env['DESSEN_TEST_SERIES']='1'
     if portrait: env['DESSEN_TEST_PORTRAIT']='1'
@@ -62,7 +63,7 @@ def main(host,app):
         assert "Server Statistics" in empty and "THIS MONTH" in empty and "Continue Reading" in empty,empty[-2000:]
         assert "Best Day" in empty and "Daily Avg." in empty
         assert not re.search(r"(?m)^text \d+,\d+ Total Time$", empty), "Repeated total time widget"
-        assert not re.search(r"(?m)^text \d+,\d+ Books$", empty.split("Continue Reading")[0].split("Page Turns")[-1]), "Repeated books widget"
+        assert not re.search(r"(?m)^text \d+,\d+ Books$", empty.split("Continue Reading")[0].split("Avg. Session")[-1]), "Repeated books widget"
         # The desktop shelf service provides real fixture books. Their names
         # and progress must come from that service, not hardcoded UI samples.
         for value in ("Dune", "37%", "Frank Herbert", "1/2"):
@@ -108,14 +109,14 @@ def main(host,app):
         assert "Books Tracked" not in empty, "Monthly card should say Books"
         assert "< Prev" not in empty and "Next >" not in empty, "Touch carousel must have no pill controls"
         button_preview = run(host, app, root, b"b", touch=False)
-        for label in ("Back", "Open", "Prev Book", "Next Book"):
-            assert re.search(r"(?m)^text \d+,\d+ " + label + r"$", button_preview), f"Missing physical footer {label}"
+        for label in ("Exit", "Open", "Prev Book", "Next Book"):
+            assert re.search(r"(?m)^text \d+,\d+ " + label + r"$", button_preview), f"Missing physical footer {label}: {button_preview[-2500:]}"
         # X3-style narrow four-key footer measures labels instead of four
         # equal cells; confirm each label fits in its actual stroke rectangle.
         narrow_buttons = run(host, app, root, b"b", touch=False, portrait=True)
-        footer_strokes = re.findall(r"(?m)^stroke (\d+),766 (\d+)x32 w1$", narrow_buttons.split("refresh", 1)[0])
-        assert len(footer_strokes) == 4, "Four hardware-footer cells missing"
-        for (_, width), label in zip(footer_strokes, ("Back","Open","Prev Book","Next Book")):
+        footer_strokes = re.findall(r"(?m)^stroke (\d+),764 (\d+)x36 w1$", narrow_buttons.split("refresh", 1)[0])
+        assert len(footer_strokes) == 4, "Four native theme hint cells missing"
+        for (_, width), label in zip(footer_strokes, ("Exit","Open","Prev Book","Next Book")):
             assert int(width) - 8 >= len(label) * 8, f"Footer label {label} clipped"
         # The arrow belongs only on touch screens.
         assert re.search(r"(?m)^line 25,\d+ - 47,\d+$", empty)
@@ -163,19 +164,31 @@ def main(host,app):
         (folder/"time_0000000000000001_v1.bin").write_bytes(period_data())
         (folder/"book_0000000000000001_v2.bin").write_bytes(snapshot(3600,3,33))
         hashes={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in folder.iterdir()}
+        os.environ["DESSEN_NATIVE_STATS"]="1"
         output=run(host,app,root,b"dddddddddddddb")
         device=run(host,app,root,b"db")
         assert "Device Statistics" in device and "Time of Day" in device
+        os.environ["DESSEN_TEST_NARROW"]="1"
+        try:
+            for wrap in (False, True):
+                if wrap: os.environ["DESSEN_TEST_WRAP"]="1"
+                narrow=run(host,app,root,b"ddb",portrait=True)
+                assert "metric-fit FAIL" not in narrow, narrow[-6000:]
+                assert narrow.count("metric-fit ok Avg. Session") >= 2, narrow[-6000:]
+                assert "metric-fit ok Reading Time" in narrow, narrow[-6000:]
+        finally:
+            os.environ.pop("DESSEN_TEST_NARROW",None)
+            os.environ.pop("DESSEN_TEST_WRAP",None)
         offline_pages=run(host,app,root,b"dddddbb")
         for value in ("Your Week", "Reading Calendar", "All Books", "Last Read Day",
                       "Best Day", "Daily Average", "Reading Consistency",
-                      "None", "<15m", "15-44m", "45m+", "Books with statistics: 1", "Dune", "Next >"):
+                      "None", "<15m", "15-44m", "45m+", "Books tracked: 1", "Dune", "Next >"):
             assert value in offline_pages, f"Missing offline page content {value}:\\n{offline_pages[-5000:]}"
-        for value in ["Device Statistics","Current Book","THIS MONTH","12","234","Time of Day",
+        for value in ["Device Statistics","Current Book","THIS MONTH","12","12m","Time of Day",
                       "Morning","Afternoon","Evening","Night","Latest 7 Days",
-                      "Dune","Page Turns","Active Days","Avg. / Turn","33","3"]:
+                      "Dune","Reading Time","Active Days","Avg. Session","1h 0m","3"]:
             assert value in output,f"Missing {value}:\n{output[-5000:]}"
-        for value in ("3", "33", "109s"):
+        for value in ("3", "1h 0m", "20m", "12m"):
             assert re.search(r"(?m)^text \d+,\d+ " + re.escape(value) + r"$", output), f"Missing book metric {value}"
         # The shared Time of Day widget must render all four labels on
         # Device Statistics, Current Book, and Your Week.
@@ -191,8 +204,8 @@ def main(host,app):
         for i in range(2, 8):
             (folder/f"book_{i:016x}_v2.bin").write_bytes(snapshot(600 * i, i, 3 * i))
         all_books=run(host,app,root,b"dddddn bb".replace(b" ",b""))
-        for value in ("Books with statistics: 7", "Native Book 1",
-                      "Native Book 6", "Native Book 7", "Showing 6-7 of 7 books"):
+        for value in ("Books tracked: 7", "Native Book 1",
+                      "Native Book 6", "Native Book 7"):
             assert value in all_books, f"Missing paginated book item {value}:\\n{all_books[-5000:]}"
         (folder/"books_v1.bin").write_bytes(index_book(1,"Dune","/books/dune.epub"))
         for i in range(2, 8):
@@ -201,10 +214,11 @@ def main(host,app):
         (folder/"global_v2.bin").write_bytes(b"corrupt")
         (folder/"global_v2.bin.bak").write_bytes(snapshot())
         backup = run(host,app,root,b"b")
-        assert re.search(r"(?m)^text \d+,\d+ 234$", backup), backup[-2000:]
+        assert re.search(r"(?m)^text \d+,\d+ 12m$", backup), backup[-2000:]
         (folder/"global_v2.bin.bak").write_bytes(b"corrupt")
         assert "0m" in run(host,app,root,b"b")
-        print("PASS: six offline pages plus Server Sync; paired availability; native totals; book data; period bars; calendar; page turns; read-only; backup; corruption")
+        os.environ.pop("DESSEN_NATIVE_STATS",None)
+        print("PASS: six offline pages plus Server Sync; paired availability; native totals; book data; period bars; calendar; reading time and average session; read-only; backup; corruption")
 
 if __name__=="__main__":
     main(*sys.argv[1:3])

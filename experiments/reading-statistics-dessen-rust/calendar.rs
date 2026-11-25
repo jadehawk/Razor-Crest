@@ -9,7 +9,7 @@ impl Ui {
         if year < 1970 || !(1..=12).contains(&month) {
             self.panel(x, y, w, available);
             text(x + 10, y + self.lb, w - 20, self.lb * 2,
-                b"Set the device date to view your calendar.", BODY, CENTER, 0);
+                b"No dated reading sessions or device time.", BODY, CENTER, 0);
             return;
         }
         let gap = 9;

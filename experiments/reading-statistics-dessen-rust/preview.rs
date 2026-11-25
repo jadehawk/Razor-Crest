@@ -38,7 +38,7 @@ impl BookCarousel {
     #[inline(never)]
     fn load(&mut self) {
         // One bounded scan during startup. Never reopen the index on redraw.
-        let mut shelf = [0u8; 2400];
+        let mut shelf = [0u8; 1100];
         let mut index = 0u32;
         while index < 40 && self.count < self.books.len() {
             let bytes = dsn_recent_shelf(index, 8, &mut shelf);
@@ -144,32 +144,46 @@ impl Ui {
              b"Sync with server?", TITLE, CENTER, BOLD);
         text(x + 10, mid - self.ls - 8, w - 20, self.ls,
              b"Download updated reading totals", SMALL, CENTER, 0);
-        let (yes_x, no_x, by, bw, bh) = self.overall_sync_confirmation_buttons();
-        dsn_stroke(yes_x, by, bw, bh, BLACK, 2, 7, 15);
-        dsn_stroke(no_x, by, bw, bh, BLACK, 1, 7, 15);
-        text(yes_x + 4, by + (bh - self.lb) / 2, bw - 8, self.lb,
+        let (yes_x, no_x, by, yes_w, no_w, bh) = self.overall_sync_confirmation_buttons(b"Sync now");
+        dsn_stroke(yes_x, by, yes_w, bh, BLACK, 2, 7, 15);
+        dsn_stroke(no_x, by, no_w, bh, BLACK, 1, 7, 15);
+        text(yes_x + 4, by + (bh - self.lb) / 2, yes_w - 8, self.lb,
              b"Sync now", BODY, CENTER, BOLD);
-        text(no_x + 4, by + (bh - self.lb) / 2, bw - 8, self.lb,
+        text(no_x + 4, by + (bh - self.lb) / 2, no_w - 8, self.lb,
              b"Cancel", BODY, CENTER, 0);
     }
 
-    fn overall_sync_confirmation_buttons(&self) -> (i32, i32, i32, i32, i32) {
+    fn overall_sync_confirmation_buttons(&self, yes: &[u8]) -> (i32, i32, i32, i32, i32, i32) {
         let x = G;
         let w = self.w - 2 * G;
         let y = 13 + self.ls + self.lt;
         let h = (self.content_bottom() - y - 13).max(1);
         let gap = if self.touch { 28 } else { 12 };
-        let width = (w - 32 - gap) / 2;
+        let room = w - 20 - gap;
+        let yes_need = ((dsn_measure_text(yes, BODY, BOLD) >> 16) as i32 + 24).max(64);
+        let no_need = ((dsn_measure_text(b"Cancel", BODY, BOLD) >> 16) as i32 + 24).max(64);
+        let yes_w = yes_need.min(room - no_need.min(room / 2));
+        let no_w = no_need.min(room - yes_w);
+        // Keep independently measured buttons centered in their own half.
+        // When either needs more than half, use the shared available space.
+        let half = (room / 2).max(1);
+        let (left, right) = if yes_w <= half && no_w <= half {
+            (x + w / 4 - yes_w / 2, x + 3 * w / 4 - no_w / 2)
+        } else {
+            let left = x + (w - yes_w - no_w - gap) / 2;
+            (left, left + yes_w + gap)
+        };
         let bh = if self.touch { 62 } else { (self.lb + 19).max(36) };
         let button_y = (y + h / 2 + 12).min(y + h - bh - 10);
-        (x + 10, x + w - 10 - width, button_y, width, bh)
+        (left, right, button_y, yes_w, no_w, bh)
     }
 
     #[inline(never)]
     fn overall_preview(&self, carousel: &BookCarousel,
-                       server: &ServerOverall, paired: bool, syncing: bool) {
+                       server: &ServerOverall, paired: bool, syncing: bool, cover_scratch: &mut [u8; 4096]) {
         dsn_clear();
         self.header(0);
+        checkpoint(210);
         let x = G;
         let w = self.w - G * 2;
         let y = 13 + self.ls + self.lt;
@@ -209,6 +223,7 @@ impl Ui {
                 dsn_line(ax, ay, ex, ey, 2, BLACK);
             }
         }
+        checkpoint(211);
         let metric = |value: S| {
             if server.available { value } else { S::new().s(b"N/A") }
         };
@@ -226,6 +241,7 @@ impl Ui {
         dsn_line(x + half, y + 6, x + half, y + hero_h * 56 / 100 - 4, 1, DARK);
         let line_y = y + hero_h * 56 / 100;
         dsn_line(x + 8, line_y, x + w - 8, line_y, 1, DARK);
+        checkpoint(212);
         let values = [
             metric(S::new().n(server.current_streak)),
             metric(S::new().n(server.month_active_days)),
@@ -243,12 +259,13 @@ impl Ui {
                 labels[i as usize], SMALL, CENTER, 0);
         }
 
+        checkpoint(213);
         let mw = (w - gap) / 2;
         let mh = (metrics_h - gap) / 2;
         self.metric(x, y + hero_h + gap, mw, mh, b"Sessions",
             metric(S::new().n(server.sessions)).get(), 0);
         self.metric(x + mw + gap, y + hero_h + gap, w - mw - gap, mh,
-            b"Page Turns", metric(S::new().n(server.page_turns)).get(), 1);
+            b"Avg. Session", metric(average_session(server.total_seconds, server.sessions)).get(), 3);
         let best_label = metric(dur(server.best_day_seconds));
         let avg_label = metric(dur(server.daily_average_seconds));
         self.metric(x, y + hero_h + gap + mh + gap, mw, mh,
@@ -256,6 +273,7 @@ impl Ui {
         self.metric(x + mw + gap, y + hero_h + gap + mh + gap, w - mw - gap, mh,
             b"Daily Avg.", avg_label.get(), 2);
 
+        checkpoint(214);
         self.panel(x, recent_y, w, recent_h);
         let counter_w = if carousel.count > 1 { 56 } else { 0 };
         text(x + 9, recent_y + 7, w - 18, self.lb, b"Continue Reading", BODY, CENTER, BOLD);
@@ -268,14 +286,20 @@ impl Ui {
         dsn_line(x + 9, recent_y + self.lb + 11, x + w - 9, recent_y + self.lb + 11, 1, DARK);
         let cards_y = recent_y + self.lb + 16;
         let cards_h = (recent_h - self.lb - 23).max(1);
+        checkpoint(215);
         if let Some(book) = carousel.current() {
             // The counter is in the header, leaving the full card height for
             // the portrait cover and two-line book metadata.
             let content_h = cards_h;
             let cover_limit = (content_h - 20).min(200).min((w / 3 - 15) * 4 / 3).max(16);
-            let mut cover = [0u8; 4096];
-            let bytes = dsn_book_cover(book.path(), cover_limit, &mut cover);
+            // The VM has a fixed 80 KiB budget; use the existing current-book
+            // scratch buffer instead of another 4 KiB stack allocation.
+            let cover = cover_scratch;
+            checkpoint(216);
+            let bytes = dsn_book_cover(book.path(), cover_limit, cover);
+            checkpoint(217);
             let cover_len = if bytes > 4 { (bytes as usize).min(cover.len()) } else { 0 };
+            checkpoint(218);
             self.book_hero(x, cards_y, w, content_h, &cover[..cover_len],
                 book.title(), book.author(), book.series(), book.percent);
         } else {

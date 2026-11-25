@@ -2,7 +2,7 @@
 // its own typography or progress-bar spacing.
 impl Ui {
     fn footer_height(&self) -> i32 {
-        if !self.touch && self.buttons { 36 } else { 0 }
+        if self.touch || !self.buttons { 0 } else { self.native_hint_height }
     }
 
     fn content_bottom(&self) -> i32 { self.h - self.footer_height() }
@@ -10,35 +10,25 @@ impl Ui {
     // The X3/X4 four-button legend belongs outside the content cards.
     // Physical side buttons always page; front Left/Right control books only
     // on Overall Statistics when more than one book can be selected.
-    fn draw_footer(&self, page: i32, books: usize, sync_controls: bool) {
+    #[inline(never)]
+    fn draw_footer(&self, page: i32, books: usize, sync_controls: bool, modal: bool) {
         if self.footer_height() == 0 { return; }
-        let y = self.h - 34;
         let book_controls = page == 0 && books > 1;
         let can_open = (page == 0 && books > 0) || page == 2 || page == 6;
-        let labels: [&[u8]; 4] = if sync_controls { [b"Back", b"Select", b"Up", b"Down"] } else { [
-            b"Back", if page == 7 { b"Select" } else if can_open { b"Open" } else { b"" },
+        let labels: [&[u8]; 4] = if modal { [b"Cancel", b"Confirm", b"", b""] } else if sync_controls { [b"Exit", b"Select", b"Up", b"Down"] } else { [
+            b"Exit", if page == 7 { b"Select" } else if can_open { b"Open" } else { b"" },
             if page == 7 { b"Up" } else if book_controls { b"Prev Book" } else { b"Prev Page" },
             if page == 7 { b"Down" } else if book_controls { b"Next Book" } else { b"Next Page" },
         ] };
-        // Start from measured label widths, then distribute the spare space.
-        // Equal quarter-width cells truncated "Prev Book"/"Next Book" on X3.
-        let mut widths = [0i32; 4];
-        let mut needed = 0i32;
-        for i in 0..4 {
-            widths[i] = ((dsn_measure_text(labels[i], SMALL, BOLD) >> 16) as i32 + 15)
-                .max(24);
-            needed += widths[i];
+        let mut encoded = [0u8; 131];
+        let mut n = 0;
+        for (i, label) in labels.iter().enumerate() {
+            if i != 0 { encoded[n] = b'\n'; n += 1; }
+            let len = label.len().min(32);
+            encoded[n..n + len].copy_from_slice(&label[..len]);
+            n += len;
         }
-        let spare = (self.w - needed).max(0);
-        let mut x = 0;
-        for i in 0..4 {
-            let width = if i == 3 { self.w - x }
-                else { widths[i] + spare / 4 };
-            dsn_stroke(x + 1, y, (width - 2).max(1), 32, DARK, 1, 0, 0);
-            text(x + 5, y + (32 - self.ls) / 2, (width - 10).max(1),
-                self.ls, labels[i], SMALL, CENTER, BOLD);
-            x += width;
-        }
+        let _ = dsn_button_hints(&encoded[..n]);
     }
 
     // Minimum height for two title lines, one author line, two series

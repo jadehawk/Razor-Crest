@@ -51,8 +51,8 @@ impl ServerOverall {
             page_turns: 0, best_day_seconds: 0, daily_average_seconds: 0 }
     }
     fn stale(&self, now: u32) -> bool {
-        !self.available || self.last_synced == 0 ||
-            (now >= 946_684_800 && now.saturating_sub(self.last_synced) >= 86_400)
+        !self.available || (now >= 946_684_800 &&
+            (self.last_synced < 946_684_800 || now.saturating_sub(self.last_synced) >= 86_400))
     }
     #[inline(never)]
     fn load_cached(&mut self) {
@@ -93,13 +93,50 @@ impl ServerOverall {
     }
 
     #[inline(never)]
+    fn save_cache(&self) {
+        let mut output = [0u8; 640];
+        let prefix = b"{\"source\":\"server\"";
+        output[..prefix.len()].copy_from_slice(prefix);
+        let mut used = prefix.len();
+        let fields: [(&[u8], u32); 11] = [
+            (b"total_seconds",self.total_seconds),(b"month_seconds",self.month_seconds),
+            (b"month_active_days",self.month_active_days),(b"current_streak",self.current_streak),
+            (b"books",self.books),(b"sessions",self.sessions),(b"page_turns",self.page_turns),
+            (b"best_day_seconds",self.best_day_seconds),(b"daily_average_seconds",self.daily_average_seconds),
+            (b"synced_at",self.last_synced),(b"fetched_at",self.last_synced)];
+        for (name,value) in fields {
+            let digits = S::new().n(value);
+            let digits = digits.get();
+            if used + name.len() + digits.len() + 5 >= output.len() { return; }
+            output[used..used+2].copy_from_slice(b",\""); used += 2;
+            output[used..used+name.len()].copy_from_slice(name); used += name.len();
+            output[used..used+2].copy_from_slice(b"\":"); used += 2;
+            output[used..used+digits.len()].copy_from_slice(digits); used += digits.len();
+        }
+        output[used] = b'}'; used += 1;
+        let mut path = [0u8; 192];
+        let base = dsn_fs_app_dir(&mut path);
+        if base > 0 && base as usize + STATS_CACHE_FILE.len() <= path.len() {
+            let base = base as usize;
+            path[base..base+STATS_CACHE_FILE.len()].copy_from_slice(STATS_CACHE_FILE);
+            let _ = dsn_fs_write(&path[..base+STATS_CACHE_FILE.len()], &output[..used]);
+        }
+    }
+
+    #[inline(never)]
     fn fetch(&mut self, pairing: &Pairing) {
         self.attempted = true;
         self.attempts = self.attempts.saturating_add(1);
         if pairing.phase != PairPhase::Paired { return; }
         let mut response = [0u8; 640];
         if let Ok(n) = pairing.authorized(OVERVIEW_HEAD, &mut response, false) {
+            let previous = self.available;
+            self.available = false;
             self.parse_overview(&response[..n]);
+            if !self.available { self.available = previous; return; }
+            let now = dsn_time();
+            if now >= 946_684_800 { self.last_synced = now; }
+            self.save_cache();
         }
     }
 }

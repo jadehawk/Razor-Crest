@@ -1,42 +1,5 @@
 {
-  "title": "Reading Statistics (Dessen)",
-  "description": "Standalone Dessen reader statistics pairing service; the firmware supplies reusable device-code authentication and HTTPS transport.",
-  "token": {
-    "file": "/.crosspoint/reading-statistics-token.json",
-    "path": "token",
-    "persist": true
-  },
-  "auth": {
-    "type": "device_code",
-    "request": {
-      "url": "https://sync.techy-notes.com/api/device/code",
-      "method": "POST"
-    },
-    "poll": {
-      "url": "https://sync.techy-notes.com/api/device/token",
-      "method": "POST",
-      "headers": {
-        "Content-Type": "application/json"
-      },
-      "body": "{\"device_code\":\"{device_code}\"}"
-    },
-    "display_url": "sync.techy-notes.com/link",
-    "qr_hint": "Scan to pair Reading Statistics",
-    "manual_hint": "Enter the code shown on the reader"
-  },
-  "browse": {
-    "format": "json",
-    "url": "https://sync.techy-notes.com/api/device/catalog",
-    "headers": {
-      "Authorization": "Bearer {token}"
-    },
-    "items": "items",
-    "fields": {
-      "title": "title",
-      "author": "subtitle",
-      "description": "description",
-      "id": "id"
-    },
-    "page_size": 8
-  }
+  "title": "Reading Statistics",
+  "version": "0.6.31",
+  "description": "Dessen application; pairing and server workflows run in the application."
 }

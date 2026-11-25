@@ -68,6 +68,7 @@ fn load_current(home: &Home) -> Current {
 }
 
 impl Ui {
+    #[inline(never)]
     fn panel(&self, x: i32, y: i32, w: i32, h: i32) {
         dsn_stroke(x, y, w, h, BLACK, 1, 10, 15);
     }
@@ -76,10 +77,13 @@ impl Ui {
         text(x, y, w, h, s, BODY, CENTER, if bold { BOLD } else { 0 });
     }
 
+    #[inline(never)]
     fn metric(&self, x: i32, y: i32, w: i32, h: i32, label: &[u8], value: &[u8], icon: i32) {
         self.panel(x, y, w, h);
-        // Preserve space for Noto Sans 12 labels on narrow X3-sized cards.
-        let iconw = (w / 4).clamp(30, 54);
+        // Keep the normal icon column unless measured text needs more room.
+        let label_width = (dsn_measure_text(label, SMALL, BOLD) >> 16) as i32;
+        let normal_iconw = (w / 4).clamp(38, 54);
+        let iconw = normal_iconw.min((w - label_width - 8).max(38));
         let cy = y + h / 2;
         let ix = x + iconw / 2;
         // Small native vector icons: stacked pages, page turn, calendar, speed dial.
@@ -97,6 +101,11 @@ impl Ui {
                 dsn_stroke(ix - 12, cy - 12, 26, 26, BLACK, 1, 0, 0);
                 dsn_line(ix - 12, cy - 4, ix + 14, cy - 4, 1, BLACK);
             }
+            4 => {
+                dsn_stroke(ix - 13, cy - 12, 27, 26, BLACK, 1, 13, 15);
+                dsn_line(ix, cy, ix, cy - 8, 2, BLACK);
+                dsn_line(ix, cy, ix + 7, cy + 3, 2, BLACK);
+            }
             _ => {
                 dsn_stroke(ix - 13, cy - 12, 27, 26, BLACK, 1, 13, 15);
                 dsn_line(ix, cy + 2, ix + 10, cy - 7, 2, BLACK);
@@ -106,16 +115,32 @@ impl Ui {
         let tx = x + iconw + 4;
         let tw = w - iconw - 8;
         let preferred = metric_font(value, TITLE, BODY, tw);
-        // Short metric rows need smaller values to keep both text lines
-        // within the card, with a visible bottom margin.
-        let font = if h < self.ls + dsn_line_height(preferred) + 14 {
-            BODY
-        } else { preferred };
-        let value_h = dsn_line_height(font);
-        let gap = ((h - self.ls - value_h - 12) / 2).clamp(3, 8);
-        let label_y = y + ((h - self.ls - value_h - gap) / 2).max(3);
-        let value_y = (label_y + self.ls + gap).min(y + h - value_h - 5);
-        text(tx, label_y, tw, self.ls, label, SMALL, CENTER, BOLD);
+        let mut font = if h < self.ls + dsn_line_height(preferred) + 14 { BODY } else { preferred };
+        let mut value_h = dsn_line_height(font);
+        // The fixed small slot is already Noto Sans 12. Only use a firmware
+        // semantic font if its actual bold width is smaller and fits.
+        let mut label_font = SMALL;
+        let mut label_h = self.ls;
+        let mut lines = 1;
+        if label_width > tw {
+            let compact = (dsn_measure_text(label, 0, BOLD) >> 16) as i32;
+            let compact_h = dsn_line_height(0);
+            if compact <= tw && compact_h <= label_h {
+                label_font = 0;
+                label_h = compact_h;
+            } else {
+                lines = 2;
+                label_h = self.ls * 2;
+            }
+        }
+        if h < label_h + value_h + 7 {
+            font = BODY;
+            value_h = dsn_line_height(font);
+        }
+        let gap = ((h - label_h - value_h - 12) / 2).clamp(2, 8);
+        let label_y = y + ((h - label_h - value_h - gap) / 2).max(2);
+        let value_y = (label_y + label_h + gap).min(y + h - value_h - 3);
+        dsn_text_box(tx, label_y, tw, label_h, label, label_font, CENTER, lines, BOLD);
         text(tx, value_y, tw, value_h, value, font, CENTER, BOLD);
     }
 
@@ -125,9 +150,9 @@ impl Ui {
 
     // Shared, font-measured Time of Day widget for Overall, Current Book,
     // and Your Week. The bars never encroach on the label column.
-    fn periods(&self, x: i32, y: i32, w: i32, h: i32, values: &[u32; 4]) {
+    fn periods(&self, x: i32, y: i32, w: i32, h: i32, values: &[u32; 4], estimated: bool) {
         self.panel(x, y, w, h);
-        self.centered(x, y + 5, w, self.lb, b"Time of Day", true);
+        self.centered(x, y + 5, w, self.lb, if estimated { b"Session Start Periods" } else { b"Time of Day" }, true);
         dsn_line(x + 10, y + self.lb + 8, x + w - 10, y + self.lb + 8, 1, DARK);
         let names: [&[u8]; 4] = [b"Morning", b"Afternoon", b"Evening", b"Night"];
         let label_text_w = names.iter()
@@ -163,7 +188,8 @@ impl Ui {
 
     fn week_chart(&self, x: i32, y: i32, w: i32, h: i32, st: &Stats) {
         self.panel(x, y, w, h);
-        self.centered(x, y + 5, w, self.lb, b"Latest 7 Days", false);
+        self.centered(x, y + 5, w, self.lb, if st.date_current { b"Latest 7 Days" } else { b"Last Recorded Week" }, false);
+        if !st.date_known { self.centered(x,y+self.lb+10,w,self.lb,b"Date unavailable",false); return; }
         let top = y + self.lb + 13;
         let base = y + h - self.ls - 7;
         let chart_h = (base - top).max(1);
@@ -181,6 +207,7 @@ impl Ui {
         dsn_line(x + 10, base, x + w - 10, base, 1, DARK);
     }
 
+    #[inline(never)]
     fn header(&self, page: i32) {
         let g = G;
         let mut c = [0u8; 8];
@@ -232,7 +259,7 @@ impl Ui {
                 .min((available - hero - metric_h - self.ls - 22).max(1));
             let week_h = available - hero - metric_h - periods_h;
             self.panel(x, top, w, hero);
-            self.centered(x, top + 5, w, self.lb, b"THIS MONTH", true);
+            self.centered(x, top + 5, w, self.lb, if st.date_current { b"THIS MONTH" } else if st.date_known { b"LAST RECORDED MONTH" } else { b"ALL TIME" }, true);
             let mut month_secs = 0u64;
             let mut active = 0u32;
             if clock_ok {
@@ -242,7 +269,7 @@ impl Ui {
                     if v > 0 { active += 1; }
                 }
             }
-            let value = if clock_ok { dur(month_secs.min(u32::MAX as u64) as u32) } else { S::new().s(b"--") };
+            let value = if clock_ok { dur(month_secs.min(u32::MAX as u64) as u32) } else if st.log_source { dur(st.total) } else { S::new().s(b"--") };
             // Use Dessen's native FreeInk font. The hand-drawn 5x7 digits
             // became pixelated at the enlargement used on X3/Picco.
             let headline_top = top + self.lb + 13;
@@ -254,7 +281,7 @@ impl Ui {
             dsn_line(x + 9, line, x + w - 9, line, 1, DARK);
             for i in 1..3 { dsn_line(x + w * i / 3, line + 6, x + w * i / 3, top + hero - 8, 1, DARK); }
             let streak = st.streaks().0;
-            let vals = [S::new().n(streak), if clock_ok { S::new().n(active) } else { S::new().s(b"--") }, S::new().n(st.book_count)];
+            let vals = [if st.date_current { S::new().n(streak) } else { S::new().s(b"--") }, if clock_ok { S::new().n(active) } else { S::new().s(b"--") }, if st.books_limited { S::new().n(st.book_count).s(b"+") } else { S::new().n(st.book_count) }];
             let labels: [&[u8]; 3] = [b"Day Streak", b"Active Days", b"Books"];
             let bottom_space = (top + hero - 8 - line).max(self.lt + self.ls);
             let values_top = line + ((bottom_space - self.lt - self.ls) / 2).max(4);
@@ -270,10 +297,11 @@ impl Ui {
             let my = top + hero + gap;
             let mw = (w - gap) / 2;
             self.metric(x, my, mw, metric_h, b"Sessions", S::new().n(st.sessions).get(), 0);
-            self.metric(x + mw + gap, my, w - mw - gap, metric_h, b"Page Turns", S::new().n(st.progress_bp).get(), 1);
+            let avg = average_session(st.total, st.sessions);
+            self.metric(x + mw + gap, my, w - mw - gap, metric_h, b"Avg. Session", avg.get(), 3);
             let py = my + metric_h + gap;
             let vals = [st.hour[0], st.hour[1], st.hour[2], st.hour[3]];
-            self.periods(x, py, w, periods_h, &vals);
+            self.periods(x, py, w, periods_h, &vals, st.log_source);
             self.week_chart(x, py + periods_h + gap, w, week_h, st);
         } else {
             let mut metrics = available * 38 / 100;
@@ -298,16 +326,14 @@ impl Ui {
             let mw = (w - gap) / 2;
             let mh = (metrics - gap) / 2;
             let sessions = if detail.found { S::new().n(detail.sessions) } else { S::new().s(b"--") };
-            let turns = if detail.found { S::new().n(detail.turns) } else { S::new().s(b"--") };
-            let active = if detail.found { S::new().n(detail.active) } else { S::new().s(b"--") };
-            let avg = if detail.found && detail.turns > 0 {
-                S::new().n(detail.secs / detail.turns).s(b"s")
-            } else { S::new().s(b"--") };
+            let reading = if detail.found { dur(detail.secs) } else { S::new().s(b"--") };
+            let active = if detail.found && st.date_known { S::new().n(detail.active) } else { S::new().s(b"--") };
+            let avg = if detail.found { average_session(detail.secs, detail.sessions) } else { S::new().s(b"--") };
             self.metric(x, my, mw, mh, b"Sessions", sessions.get(), 0);
-            self.metric(x + mw + gap, my, w - mw - gap, mh, b"Page Turns", turns.get(), 1);
+            self.metric(x + mw + gap, my, w - mw - gap, mh, b"Reading Time", reading.get(), 4);
             self.metric(x, my + mh + gap, mw, mh, b"Active Days", active.get(), 2);
-            self.metric(x + mw + gap, my + mh + gap, w - mw - gap, mh, b"Avg. / Turn", avg.get(), 3);
-            self.periods(x, my + metrics + gap, w, periods_h, &detail.periods);
+            self.metric(x + mw + gap, my + mh + gap, w - mw - gap, mh, b"Avg. Session", avg.get(), 3);
+            self.periods(x, my + metrics + gap, w, periods_h, &detail.periods, st.log_source);
         }
         if st.sessions == 0 && page == 0 {
             let msg: &[u8] = if st.err == ERR_UNAVAILABLE { b"Reading stats need newer firmware." }

@@ -1,5 +1,33 @@
 {
-  "title": "Reading Statistics (Rust)",
-  "description": "Razor-Crest statistics, server pairing and optional automatic refresh",
-  "version": "0.6.16"
+  "id": "reading-statistics",
+  "title": "Reading Statistics",
+  "description": "Reading statistics, device-code pairing and optional server refresh",
+  "version": "0.6.31",
+  "permissions": {
+    "filesystem": {
+      "app_directory": [
+        "read",
+        "write",
+        "delete",
+        "list"
+      ],
+      "read": [
+        "/.crosspoint/reading-stats/**",
+        "/.crosspoint/reading_sessions.jsonl",
+        "/Books/**"
+      ]
+    },
+    "library": true,
+    "credentials": {
+      "shared": [
+        "/.crosspoint/reading-statistics-token.json"
+      ]
+    },
+    "network": {
+      "origins": [
+        "https://sync.techy-notes.com"
+      ],
+      "handoff": true
+    }
+  }
 }
