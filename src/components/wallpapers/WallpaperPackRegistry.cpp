@@ -10,7 +10,6 @@
 
 #include "CrossPointSettings.h"
 #include "components/wallpapers/WallpaperPackSelection.h"
-#include "util/ReadingStatsSleepSource.h"
 
 namespace {
 constexpr char ROOT[] = "/.crosspoint/wallpapers";
@@ -138,7 +137,6 @@ bool WallpaperPackRegistry::reconcileSelection() {
   if (!Storage.ready()) return false;
   // A live dashboard source is a virtual wallpaper collection. It is valid only
   // while the installed plugin can supply its own declarative V1 page.
-  if (readingstatssleep::selected(SETTINGS.wallpaperPackId) && readingstatssleep::available()) return false;
   if (!wallpaperselection::isUnavailable(SETTINGS.wallpaperPackId, installed)) return false;
   LOG_INF("WPK", "Selected wallpaper pack %s is unavailable; switching to All Wallpapers", SETTINGS.wallpaperPackId);
   SETTINGS.wallpaperPackId[0] = '\0';

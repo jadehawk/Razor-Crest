@@ -3,7 +3,6 @@
 const TOKEN_PATH: &[u8] = b"/.crosspoint/reading-statistics-token.json";
 const CODE_HEAD: &[u8] = b"POST https://sync.techy-notes.com/api/device/code\nContent-Type: application/json\n";
 const TOKEN_HEAD: &[u8] = b"POST https://sync.techy-notes.com/api/device/token\nContent-Type: application/json\n";
-const REVOKE_HEAD: &[u8] = b"DELETE https://sync.techy-notes.com/api/device/login-code\nAuthorization: Bearer ";
 const LOGIN_HEAD: &[u8] = b"POST https://sync.techy-notes.com/api/device/login-code\nAuthorization: Bearer ";
 const OVERVIEW_HEAD: &[u8] = b"GET https://sync.techy-notes.com/api/device/overview\nAuthorization: Bearer ";
 
@@ -284,23 +283,6 @@ impl Pairing {
 
     #[inline(never)]
     fn disconnect(&mut self) -> bool {
-        let mut response = [0u8; 128];
-        // Revoke the login before deleting the token shared with session sync.
-        let mut head = [0u8; 192];
-        head[..REVOKE_HEAD.len()].copy_from_slice(REVOKE_HEAD);
-        head[REVOKE_HEAD.len()..REVOKE_HEAD.len() + 72].copy_from_slice(&self.access_token);
-        let end = REVOKE_HEAD.len() + 72;
-        head[end] = b'\n';
-        if dsn_wifi_connect() < 0 || dsn_net_request(&head[..end + 1], b"", &mut response) < 0 ||
-            !matches!(u16::from_be_bytes([response[0], response[1]]), 200 | 401 | 403) {
-            self.message = b"Could not disconnect. Check Wi-Fi and retry.";
-            return false;
-        }
-        self.forget_local()
-    }
-
-    #[inline(never)]
-    fn forget_local(&mut self) -> bool {
         // Remove only this application's saved files. Never report success
         // if the persisted pairing credential could not be removed.
         if dsn_fs_delete(TOKEN_PATH) != 0 {

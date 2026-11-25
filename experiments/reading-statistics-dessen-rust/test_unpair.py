@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Confirm, cancel, revoke and delete pairing through generic Dessen services."""
+"""Confirm, cancel and delete pairing through generic Dessen services."""
 import json
 from pathlib import Path
 import tempfile
 import sys
-from test_sync import run, fixture, TOKEN
+from test_sync import run, TOKEN
 
 def main(host, app):
     for touch, portrait in ((False, False), (True, False), (True, True)):
@@ -23,34 +23,20 @@ def main(host, app):
             local.mkdir()
             stats = local / "global_v2.bin"
             stats.write_bytes(b"local reading statistics")
-            network = root / "network"
-            fixture(network, "login-code", {})
             prefix = b"uT" if touch else b"upc"
-            prompt = run(host, app, root, network, keys=prefix, touch=touch, portrait=portrait)
+            prompt = run(host, app, root, keys=prefix, touch=touch, portrait=portrait)
             assert "Disconnect this reader?" in prompt
             assert secret.exists() and all(c.exists() for c in caches)
-            run(host, app, root, network, keys=prefix + (b"N" if touch else b"b"), touch=touch, portrait=portrait)
+            run(host, app, root, keys=prefix + (b"N" if touch else b"b"), touch=touch, portrait=portrait)
             assert secret.exists() and all(c.exists() for c in caches)
-            failed = run(host, app, root, keys=prefix + (b"Y" if touch else b"c"), touch=touch, portrait=portrait)
-            assert "Could not disconnect" in failed and secret.exists(), (touch, portrait, failed[-2500:])
-            confirmed = run(host, app, root, network, keys=prefix + (b"Y" if touch else b"c"), touch=touch, portrait=portrait)
+            confirmed = run(host, app, root, keys=prefix + (b"Y" if touch else b"c"), touch=touch, portrait=portrait)
             assert "Disconnecting reader..." in confirmed and "Please wait." in confirmed
             assert confirmed.index("Disconnecting reader...") < confirmed.index("NOT PAIRED")
             assert not secret.exists() and not any(c.exists() for c in caches)
             assert stats.read_bytes() == b"local reading statistics"
             restarted = run(host, app, root, keys=b"u", touch=touch, portrait=portrait)
             assert "READER PAIRED" not in restarted
-    # An already-invalid token must still be removable.
-    with tempfile.TemporaryDirectory() as td:
-        root = Path(td)
-        secret = root / ".crosspoint" / "reading-statistics-token.json"
-        secret.parent.mkdir()
-        secret.write_text(json.dumps({"token": TOKEN}))
-        network = root / "network"
-        fixture(network, "login-code", {}, status=401)
-        run(host, app, root, network, keys=b"upcc")
-        assert not secret.exists()
-    print("Generic unpair confirmation, cancellation, failure, revocation and local cleanup: PASS")
+    print("Generic unpair confirmation, cancellation and offline local cleanup: PASS")
 
 if __name__ == "__main__":
     main(*sys.argv[1:3])

@@ -14,28 +14,27 @@ class StatsDashboardPluginCatalogActivity final : public PluginCatalogActivity {
   using PluginCatalogActivity::PluginCatalogActivity;
 
  protected:
-  void activateIndex(int index) override {
-    const std::string path = pickerManifestForRow(index);
+  bool openNativeDashboard(const std::string& path) override {
     if (VocabularyHighlightsActivity::supportsManifest(path)) {
       auto view = makeUniqueNoThrow<VocabularyHighlightsActivity>(renderer, mappedInput);
       if (!view) {
         LOG_ERR("VOCAB", "Out of memory opening native vocabulary browser");
-        return;
+        return true;
       }
       app.clearTapFlash();
       startActivityForResult(std::move(view), [](const ActivityResult&) {});
-      return;
+      return true;
     }
     if (StatsDashboardActivity::supportsManifest(path)) {
       auto view = makeUniqueNoThrow<StatsDashboardActivity>(renderer, mappedInput, path);
       if (!view) {
         LOG_ERR("STATS", "Out of memory opening dashboard");
-        return;
+        return true;
       }
       app.clearTapFlash();
       startActivityForResult(std::move(view), [](const ActivityResult&) {});
-      return;
+      return true;
     }
-    activateStandardPluginRow(index);
+    return false;
   }
 };

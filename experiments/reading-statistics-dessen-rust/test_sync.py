@@ -83,6 +83,26 @@ def main(host, app):
         assert json.loads((sd / "app" / "server-overview.json").read_text())["month_seconds"] == 7200
         assert target.exists(), ("Completed pairing did not persist shared credential", trace[-3500:])
         assert json.loads(target.read_text())["token"] == TOKEN, "Saved token mismatch"
+        # A capability file stands in for the firmware's virtual capture endpoint.
+        capture = sd / "app" / "sleep-frame.capture"
+        capture.write_bytes(b"\x01")
+        original_wallpaper = sd / "sleep.bmp"
+        original_wallpaper.write_bytes(b"user wallpaper")
+        preference = sd / "app" / "stats-on-sleep"
+        run(host, app, sd, keys=b"")
+        assert not preference.exists(), "Sleep stats must default to off"
+        enabled = run(host, app, sd, keys=b"uunc")
+        assert "Stats on Sleep" in enabled and preference.read_bytes() == b"\x01"
+        assert capture.read_bytes() == b"\x01", "Paired capture must publish the server page"
+        run(host, app, sd, keys=b"uuppc")
+        assert preference.read_bytes() == b"\x00"
+        assert original_wallpaper.read_bytes() == b"user wallpaper"
+        preference.write_bytes(b"\x01")
+        target.unlink()
+        run(host, app, sd, keys=b"")
+        assert capture.read_bytes() == b"\x00", "Unpaired capture must publish the device page"
+        capture.unlink()
+        target.write_text(json.dumps({"token": TOKEN}))
         # Firmware injects event 11 every five seconds while waiting; the app
         # must poll approval without another press of Confirm/touch.
         target.unlink()

@@ -4833,7 +4833,7 @@ void PluginCatalogActivity::activateIndex(const int index) {
     if (pluginIndex < 0) return;
     const PluginRef& plugin = installedPlugins[pluginIndex];
 #if CROSSPOINT_DESSEN_APPS
-    // A plugin that ships an app binary runs it; this wins over its catalog or README.
+    // Prefer the installed Dessen app for ordinary picker launches.
     if (!plugin.appPath.empty() && !(forceInitialCatalog && plugin.name == initialPlugin)) {
       auto appActivity = makeUniqueNoThrow<DessenAppActivity>(renderer, mappedInput, plugin.appPath);
       if (!appActivity) {
@@ -4871,6 +4871,7 @@ void PluginCatalogActivity::activateIndex(const int index) {
       return;
     }
 #endif
+    if (!(forceInitialCatalog && plugin.name == initialPlugin) && openNativeDashboard(plugin.manifestPath)) return;
     const auto action = PluginLocations::pickerAction(plugin.deviceKind, !plugin.readmePath.empty());
     if (action == PluginLocations::PickerAction::Readme) {
       // A plain paged text view, not the book reader: viewing instructions must

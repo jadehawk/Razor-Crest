@@ -1,4 +1,4 @@
-# Reading Statistics 0.6.31
+# Reading Statistics 0.6.35
 
 Full Rust Dessen application: Overall, Device Statistics, Current Book, Your Week,
 Reading Calendar, All Books, Server Sync and Settings.
@@ -25,8 +25,8 @@ retains these scopes across networking reboots only if the manifest digest match
 
 The Rust application owns device-code pairing, Web PIN requests and persistence,
 server-overview validation and caching, manual refresh confirmation, optional
-daily refresh and disconnect confirmation. Disconnect revokes the server login
-before removing the shared token and app caches. Local reading records remain.
+daily refresh and disconnect confirmation. Disconnect clears the shared reader
+token and cached server data locally. Local reading records remain.
 
 When session history exists it supplies local statistics, including undated
 sessions and devices without an RTC. Otherwise the application reads validated
@@ -40,8 +40,8 @@ confirmation. A newly paired reader fetches its initial account statistics once,
 regardless of the Auto Sync preference. Automatic refresh checks at launch and
 when Auto Sync is enabled; it runs only if the cache is missing or at least
 24 hours old. Navigation never refreshes it. Without a reliable clock, existing
-cached totals are retained. Disconnect paints a waiting screen before
-networking. Touch gestures use the
+cached totals are retained. Disconnect works offline.
+Touch gestures use the
 same coordinate and event contract on both firmwares. The app opts into the
 generic five-second timer for pairing checks.
 

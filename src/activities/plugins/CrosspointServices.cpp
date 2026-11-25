@@ -46,6 +46,11 @@
 #include "network/HttpDownloader.h"
 #include "util/BookProgress.h"
 #include "util/PluginHttp.h"
+#include "util/PluginLocations.h"
+#include "util/ReadingStatsSleepSource.h"
+#include "util/ScreenshotUtil.h"
+
+extern GfxRenderer renderer;
 
 using freeink::content::Crypto;
 using freeink::content::RsaKeyPairDer;
@@ -307,6 +312,12 @@ int CrosspointServices::resolve(const char* path, uint32_t maxLen) {
 int CrosspointServices::fsRead(const char* path, uint8_t* out, uint32_t cap) {
   if (int e = resolve(path)) return e;
   if (!permissions_.allows(path, DessenPermissions::Access::Read)) return DSN_ERR_UNAVAILABLE;
+  // The virtual app-local file exposes the optional capture operation without a new guest ABI.
+  if (appName_ == readingstatssleep::kId && path == appDir_ + readingstatssleep::kCaptureRequest) {
+    if (cap == 0 || PluginLocations::findPluginDir(readingstatssleep::kId) != appDir_) return DSN_ERR_UNAVAILABLE;
+    out[0] = 1;
+    return 1;
+  }
   HalFile f;
   if (!Storage.openFileForRead("DSN", path, f)) return DSN_ERR_IO;
   const size_t size = f.fileSize();
@@ -329,6 +340,16 @@ int CrosspointServices::fsReadAt(const char* path, uint32_t offset, uint8_t* out
 int CrosspointServices::fsWrite(const char* path, const uint8_t* data, uint32_t n) {
   if (int e = resolve(path)) return e;
   if (!permissions_.allows(path, DessenPermissions::Access::Write)) return DSN_ERR_DENIED;
+  if (appName_ == readingstatssleep::kId && path == appDir_ + readingstatssleep::kCaptureRequest) {
+    if (n != 1 || data[0] > 1 || PluginLocations::findPluginDir(readingstatssleep::kId) != appDir_ ||
+        !readingstatssleep::enabled(appDir_)) return DSN_ERR_UNAVAILABLE;
+    const std::string destination = appDir_ + (data[0] ? readingstatssleep::kServerImage : readingstatssleep::kDeviceImage);
+    const std::string temp = destination + ".tmp";
+    if (ScreenshotUtil::saveFramebufferAsBmp(temp.c_str(), renderer) &&
+        Storage.replaceFile(temp.c_str(), destination.c_str())) return 0;
+    Storage.remove(temp.c_str());
+    return DSN_ERR_IO;
+  }
   const bool credential = permissions_.isSharedCredential(path);
   if (credential && n > MAX_SHARED_CREDENTIAL_SIZE) return DSN_ERR_TOO_BIG;
   constexpr const char* temporary = "/.crosspoint/dsn-write.tmp";

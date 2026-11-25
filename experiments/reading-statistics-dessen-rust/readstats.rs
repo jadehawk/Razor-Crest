@@ -320,6 +320,18 @@ struct Ui {
     native_hint_height: i32,
 }
 
+#[inline(never)]
+fn sleep_capture(server_page: Option<bool>) -> bool {
+    let mut path = [0u8; 192];
+    let n = StatsSettings::path(&mut path, b"/sleep-frame.capture");
+    if n == 0 { return false; }
+    if let Some(server) = server_page {
+        return dsn_fs_write(&path[..n], &[u8::from(server)]) == 0;
+    }
+    let mut capability = [0u8; 1];
+    dsn_fs_read(&path[..n], &mut capability) == 1 && capability[0] == 1
+}
+
 #[no_mangle]
 pub extern "C" fn main() -> i32 {
     checkpoint(201);
@@ -410,6 +422,9 @@ pub extern "C" fn main() -> i32 {
     let mut settings = StatsSettings::load();
     checkpoint(205);
 
+    let sleep_capture_supported = sleep_capture(None);
+    let mut capture_sleep = sleep_capture_supported && settings.stats_on_sleep;
+
     let mut confirm_month_sync = false;
     let mut confirm_web_login = false;
     let mut generating_web_login = false;
@@ -435,6 +450,17 @@ pub extern "C" fn main() -> i32 {
         was_paired = paired;
         let first_page = if paired { 0 } else { 1 };
         if page == 0 && first_page == 1 { page = 1; }
+        if capture_sleep && !syncing_month {
+            let use_server = paired && server.available;
+            if use_server {
+                current_cover_loaded = false;
+                ui.overall_preview(carousel, &server, true, false, &mut home.cover);
+            } else {
+                ui.dashboard_render(&st, &home, &detail, 0, month_day, have_clock);
+            }
+            sleep_capture(Some(use_server));
+            capture_sleep = false;
+        }
         if disconnecting || (page == 6 && confirm_disconnect) {
             ui.sync_unpair_confirmation(disconnecting);
         } else if confirm_pairing || generating_pairing {
@@ -455,7 +481,7 @@ pub extern "C" fn main() -> i32 {
             ui.overall_preview(carousel, &server,
                                pairing.phase == PairPhase::Paired, syncing_month, &mut home.cover);
         } else if page == 7 {
-            ui.settings_page(&settings, &server, pairing.phase == PairPhase::Paired, settings_focus);
+            ui.settings_page(&settings, &server, paired, settings_focus, sleep_capture_supported);
         } else if page == 6 {
             ui.sync_page(&pairing, sync_focus, disconnect_failed);
         } else if page <= 2 {
@@ -487,7 +513,11 @@ pub extern "C" fn main() -> i32 {
         if disconnecting {
             disconnecting = false;
             disconnect_failed = !pairing.disconnect();
-            if !disconnect_failed { server = ServerOverall::new(); sync_focus = 0; }
+            if !disconnect_failed {
+                server = ServerOverall::new();
+                sync_focus = 0;
+                capture_sleep = sleep_capture_supported && settings.stats_on_sleep;
+            }
             continue;
         }
         if generating_pairing {
@@ -505,6 +535,7 @@ pub extern "C" fn main() -> i32 {
         if syncing_month {
             syncing_month = false;
             server.fetch(&pairing);
+            capture_sleep = sleep_capture_supported && settings.stats_on_sleep;
             continue;
         }
 
@@ -559,7 +590,7 @@ pub extern "C" fn main() -> i32 {
                 if decision == 1 {
                     if confirm_pairing { generating_pairing = true; }
                     else {
-                        settings.toggle();
+                        settings.toggle_flag(false);
                         syncing_month = settings.auto_fetch && pairing.phase == PairPhase::Paired && server.stale(dsn_time());
                     }
                 }
@@ -610,9 +641,13 @@ pub extern "C" fn main() -> i32 {
             match e & 0xff {
                 1 if page == 7 => {
                     if settings_focus == 0 {
-                        if settings.auto_fetch { settings.toggle(); } else { confirm_auto_sync = true; }
+                        if settings.auto_fetch { settings.toggle_flag(false); } else { confirm_auto_sync = true; }
                     }
-                    else if pairing.phase == PairPhase::Paired { confirm_month_sync = true; }
+                    else if settings_focus == 1 {
+                        settings.toggle_flag(true);
+                        capture_sleep = settings.stats_on_sleep;
+                    }
+                    else if paired { confirm_month_sync = true; }
                     else { page = 6; }
                     break;
                 }
@@ -651,7 +686,7 @@ pub extern "C" fn main() -> i32 {
                 2 => return 0,
                 3 | 8 | 10 => {
                     if page == 7 && (e & 0xff) == 3 && (e & SIDE_KEY) == 0 {
-                        settings_focus = 0; break;
+                        settings_focus = if sleep_capture_supported { (settings_focus + 2) % 3 } else { 0 }; break;
                     }
                     if page == 6 && pairing.phase == PairPhase::Paired && (e & 0xff) == 3 && (e & SIDE_KEY) == 0 {
                         sync_focus = (sync_focus + 2) % 3;
@@ -676,7 +711,7 @@ pub extern "C" fn main() -> i32 {
                         break;
                     }
                     if page == 7 && (e & 0xff) == 4 && (e & SIDE_KEY) == 0 {
-                        settings_focus = 1; break;
+                        settings_focus = if sleep_capture_supported { (settings_focus + 1) % 3 } else { 2 }; break;
                     }
                     if page == 0 && carousel.count > 1 &&
                         (((e & 0xff) == 4 && (e & SIDE_KEY) == 0) ||
@@ -723,9 +758,14 @@ pub extern "C" fn main() -> i32 {
                         break;
                     } else if page == 7 {
                         let (bx, by, bw, bh) = ui.settings_bounds(0);
-                        let (rx, ry, rw, rh) = ui.settings_bounds(1);
-                        if x >= bx && x < bx+bw && y >= by && y < by+bh {
-                            if settings.auto_fetch { settings.toggle(); } else { confirm_auto_sync = true; }
+                        let (rx, ry, rw, rh) = ui.settings_bounds(2);
+                        let (sx, sy, sw, sh) = ui.settings_bounds(1);
+                        if sleep_capture_supported && x >= sx && x < sx+sw && y >= sy && y < sy+sh {
+                            settings.toggle_flag(true);
+                            capture_sleep = settings.stats_on_sleep;
+                        }
+                        else if x >= bx && x < bx+bw && y >= by && y < by+bh {
+                            if settings.auto_fetch { settings.toggle_flag(false); } else { confirm_auto_sync = true; }
                         }
                         else if x >= rx && x < rx+rw && y >= ry && y < ry+rh {
                             if pairing.phase == PairPhase::Paired { confirm_month_sync = true; } else { page = 6; }

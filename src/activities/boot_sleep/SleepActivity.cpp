@@ -26,7 +26,6 @@
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
-#include "activities/plugins/StatsDashboardActivity.h"
 #include "activities/reader/ReaderUtils.h"
 #include "components/UITheme.h"
 #include "components/wallpapers/WallpaperPackRegistry.h"
@@ -775,13 +774,8 @@ bool SleepActivity::renderTimedSleepScreen() const {
                                       APP_STATE.lastSleepCoverFallback))
     return false;
 
-  // On a timer wake, dispatch to the selected live screen source before the
-  // ordinary wallpaper pool. Rebuild page one from SD/native statistics and
-  // then return to deep sleep through the existing main.cpp timer path.
-  if (readingstatssleep::selected(SETTINGS.wallpaperPackId)) {
-    LOG_DBG("SLP", "Timed wake: refreshing live Reading Statistics screen");
-    return renderReadingStatisticsSleepScreen();
-  }
+  // Reuse the last Dessen capture before checking the wallpaper pool.
+  if (readingstatssleep::enabled() && renderReadingStatisticsSleepScreen()) return true;
   std::string selectedPath;
   if (SETTINGS.wallpaperPackId[0] &&
       !WallpaperPackRegistry::getInstance().selectImage(SETTINGS.wallpaperPackId, selectedPath))
@@ -819,21 +813,10 @@ bool SleepActivity::renderTimedSleepScreen() const {
 }
 
 bool SleepActivity::renderReadingStatisticsSleepScreen() const {
-  const std::string manifest = readingstatssleep::manifestPath();
-  if (manifest.empty()) return false;
-  auto dashboard = makeUniqueNoThrow<StatsDashboardActivity>(renderer, mappedInput, manifest);
-  if (!dashboard) {
-    LOG_ERR("SLP", "Insufficient memory for Reading Statistics sleep screen");
-    return false;
+  for (const auto& path : readingstatssleep::imageCandidates()) {
+    if (Storage.exists(path.c_str()) && renderCustomSleepBmp(path)) return true;
   }
-  if (!dashboard->renderSleepOverview()) {
-    LOG_ERR("SLP", "Failed to render Reading Statistics overview for sleep");
-    return false;
-  }
-  // Free the temporary dashboard state before transferring the e-ink frame.
-  dashboard.reset();
-  renderer.displayBuffer(kSleepClean);
-  return true;
+  return false;
 }
 
 bool SleepActivity::renderCustomSleepBmp(const std::string& path) const {
@@ -884,7 +867,7 @@ bool SleepActivity::renderCustomSleepBmp(const std::string& path) const {
 }
 
 void SleepActivity::renderCustomSleepScreen() const {
-  if (readingstatssleep::selected(SETTINGS.wallpaperPackId)) {
+  if (readingstatssleep::enabled()) {
     if (renderReadingStatisticsSleepScreen()) return;
     LOG_ERR("SLP", "Reading Statistics unavailable; falling back to custom wallpapers");
   }

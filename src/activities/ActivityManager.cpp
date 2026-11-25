@@ -405,6 +405,23 @@ void ActivityManager::goToPlugins() {
 
 void ActivityManager::goToPluginDashboard(std::string deviceManifest) {
   if (!SETTINGS.pluginsEnabled) return;
+#if CROSSPOINT_DESSEN_APPS
+  const size_t fileSlash = deviceManifest.find_last_of('/');
+  if (fileSlash != std::string::npos && deviceManifest.compare(fileSlash, std::string::npos, "/device.json") == 0) {
+    const std::string dir = deviceManifest.substr(0, fileSlash);
+    const std::string name = dir.substr(dir.find_last_of('/') + 1);
+    const std::string appPath = dir + "/app.bin";
+    if (!name.empty() && name.front() != '.' && PluginLocations::findPluginDir(name.c_str()) == dir &&
+        Storage.exists(appPath.c_str())) {
+      if (auto app = makeUniqueNoThrow<DessenAppActivity>(renderer, mappedInput, appPath)) {
+        LOG_INF("DSN", "Launching Home plugin shortcut: %s", appPath.c_str());
+        replaceActivity(std::move(app));
+        return;
+      }
+      LOG_ERR("DSN", "OOM: plugin shortcut");
+    }
+  }
+#endif
   if (VocabularyHighlightsActivity::supportsManifest(deviceManifest)) {
     auto activity = makeUniqueNoThrow<VocabularyHighlightsActivity>(renderer, mappedInput);
     if (activity) replaceActivity(std::move(activity));

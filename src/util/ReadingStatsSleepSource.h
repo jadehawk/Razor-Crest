@@ -1,12 +1,15 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace readingstatssleep {
-// Reserved virtual Custom Wallpaper Collection source, not a wallpaper-pack ID.
 inline constexpr const char* kId = "reading-statistics";
-inline constexpr const char* kLabel = "Reading Statistics";
-bool selected(const char* id);
-std::string manifestPath();
-bool available();
+inline constexpr char kEnabledFile[] = "/stats-on-sleep";
+inline constexpr char kCaptureRequest[] = "/sleep-frame.capture";
+inline constexpr char kServerImage[] = "/sleep-server.bmp";
+inline constexpr char kDeviceImage[] = "/sleep-device.bmp";
+std::vector<std::string> imageCandidates();
+bool enabled(const std::string& dir);
+bool enabled();
 }  // namespace readingstatssleep

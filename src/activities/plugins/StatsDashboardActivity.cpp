@@ -194,6 +194,10 @@ bool StatsDashboardActivity::loadManifest() {
     for (const JsonVariantConst item : widgets)
       if (strcmp(item["type"] | "", "server_sync") == 0) syncWidget = true;
     if (syncWidget && widgets.size() != 1) return false;
+    if (syncWidget) {
+      const char* displayUrl = doc["auth"]["display_url"] | "";
+      if (strlen(displayUrl) <= 128) pairingDisplayUrl = displayUrl;
+    }
     Page& page = pages[pageCount++];
     page.title = pageJson["title"] | "Reading";
     for (const JsonVariantConst widgetJson : widgets) {
@@ -1404,12 +1408,13 @@ void StatsDashboardActivity::drawServerSync(const int x, const int y, const int 
   int top = y + 13;
   const char* lines[] = {
       "Techy-Notes Reading Sync",
-      "Server: sync-beta.techy-notes.com",
+      pairingDisplayUrl.empty() ? nullptr : pairingDisplayUrl.c_str(),
       syncPaired ? "Reader paired" : "Reader not paired",
       "KOSync is unchanged",
       "Select Open to manage server sync",
   };
   for (size_t i = 0; i < sizeof(lines) / sizeof(lines[0]) && top + step <= y + h; ++i) {
+    if (!lines[i]) continue;
     const auto weight = i == 0 || i == 2 ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
     const std::string fitted = renderer.truncatedText(kStatsFont, lines[i], textWidth, weight);
     renderer.drawText(kStatsFont, left, top, fitted.c_str(), true, weight);
@@ -1540,26 +1545,4 @@ void StatsDashboardActivity::drawDashboardPage(bool interactive) {
 void StatsDashboardActivity::render(RenderLock&&) {
   drawDashboardPage(true);
   renderer.displayBuffer();
-}
-
-bool StatsDashboardActivity::renderSleepOverview() {
-  // Not entered as an activity: never modify navigation/ActivityManager state.
-  // Reuse the exact page-one widget renderer, but do not draw input hints.
-  if (!loadManifest()) return false;
-  activePage = 0;
-  // Avoid EPUB metadata and cover work on a global-only sleep overview,
-  // especially on non-PSRAM devices.
-  bool needsBook = false;
-  for (uint8_t i = 0; i < pages[0].count; ++i)
-    if (pages[0].widgets[i].currentBook) needsBook = true;
-  if (needsBook) {
-    resolveBook();
-    loadSeries();
-    currentProgress = hasBookInfo ? readingstats::media::progress(bookInfo) : -1;
-    currentAuthor = hasBookInfo ? readingstats::media::author(bookInfo) : std::string();
-    if (hasBookInfo) readingstats::media::ensureCover(bookInfo, 142);
-  }
-  refresh();
-  drawDashboardPage(false);
-  return true;
 }

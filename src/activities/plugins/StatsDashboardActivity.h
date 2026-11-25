@@ -26,9 +26,6 @@ class StatsDashboardActivity final : public Activity {
   void onEnter() override;
   void loop() override;
   void render(RenderLock&&) override;
-  // Paint only dashboard page one into the current framebuffer, without
-  // activity navigation/footer or an intermediate screen refresh.
-  bool renderSleepOverview();
 
  private:
   struct Widget {
@@ -121,6 +118,7 @@ class StatsDashboardActivity final : public Activity {
   void openServerSync();
   bool serverSyncPage() const;
   void drawServerSync(int x, int y, int width, int height) const;
+  std::string pairingDisplayUrl;
   bool syncPaired = false;
   bool serverSyncAvailable = false;
   bool booksPage() const;

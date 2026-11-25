@@ -27,6 +27,24 @@ class DessenNativeSleepCacheTests(unittest.TestCase):
         self.assertIn("if (pickerSuspendedForDessen) return;", src)
         self.assertIn("Dessen picker release: free=%u->%u max_block=%u->%u", launch)
 
+    def test_plugin_launches_prefer_dessen_before_native_dashboard(self):
+        picker = self.text("src/activities/plugins/PluginCatalogActivity.cpp")
+        dispatch = picker.split("void PluginCatalogActivity::activateIndex(", 1)[1].split(
+            "const auto action = PluginLocations::pickerAction", 1)[0]
+        self.assertLess(dispatch.index("#if CROSSPOINT_DESSEN_APPS"),
+                        dispatch.index("makeUniqueNoThrow<DessenAppActivity>"))
+        self.assertLess(dispatch.index("makeUniqueNoThrow<DessenAppActivity>"),
+                        dispatch.index("openNativeDashboard(plugin.manifestPath)"))
+        self.assertEqual(dispatch.count("!(forceInitialCatalog && plugin.name == initialPlugin)"), 2)
+
+        home = self.text("src/activities/ActivityManager.cpp")
+        shortcut = home.split("void ActivityManager::goToPluginDashboard(", 1)[1].split(
+            "bool ActivityManager::goToReader(", 1)[0]
+        self.assertLess(shortcut.index("#if CROSSPOINT_DESSEN_APPS"),
+                        shortcut.index("makeUniqueNoThrow<DessenAppActivity>"))
+        self.assertLess(shortcut.index("makeUniqueNoThrow<DessenAppActivity>"),
+                        shortcut.index("StatsDashboardActivity::supportsManifest"))
+
     def test_empty_wifi_scans_retry_before_hidden_network(self):
         header = self.text("src/activities/network/WifiSelectionActivity.h")
         src = self.text("src/activities/network/WifiSelectionActivity.cpp")
@@ -45,6 +63,17 @@ class DessenNativeSleepCacheTests(unittest.TestCase):
         self.assertIn('pluginhttp::loadTokenFromFile("/.crosspoint/reading-statistics-token.json"', src)
         self.assertIn('const std::string tmp = dest + ".part";', src)
         self.assertIn("MAX_EVENT_DOWNLOAD", src)
+
+    def test_sleep_overview_reuses_the_guest_screenshot(self):
+        service = self.text("src/activities/plugins/CrosspointServices.cpp")
+        sleep = self.text("src/activities/boot_sleep/SleepActivity.cpp")
+        sources = self.text("src/util/ReadingStatsSleepSource.cpp")
+        self.assertIn("ScreenshotUtil::saveFramebufferAsBmp(temp.c_str(), renderer)", service)
+        self.assertIn("Storage.replaceFile(temp.c_str(), destination.c_str())", service)
+        self.assertIn("renderCustomSleepBmp(path)", sleep)
+        self.assertIn("return {dir + kServerImage, dir + kDeviceImage};", sources)
+        self.assertIn("return {dir + kDeviceImage};", sources)
+        self.assertIn("readingstatssleep::kServerImage", self.text("src/util/PluginHttp.cpp"))
 
     def test_token_change_invalidates_all_cached_accounts(self):
         src = self.text("src/util/PluginHttp.cpp")

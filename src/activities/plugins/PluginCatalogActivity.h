@@ -55,15 +55,8 @@ class PluginCatalogActivity : public CatalogActivity {
   bool handleHomeGesture() override;
 
  protected:
-  // Generic hosts can claim supported local plugin manifests while leaving all
-  // existing catalog, events, README, and install behavior unchanged.
-  std::string pickerManifestForRow(int index) const {
-    if (state != State::PLUGIN_PICKER) return {};
-    const int pluginIndex = pickerPluginForRow(index);
-    if (pluginIndex < 0) return {};
-    return installedPlugins[pluginIndex].manifestPath;
-  }
-  void activateStandardPluginRow(int index) { PluginCatalogActivity::activateIndex(index); }
+  // Hosts may open supported native dashboards after the Dessen launch check.
+  virtual bool openNativeDashboard(const std::string&) { return false; }
 
  private:
   static constexpr freeink::ui::ActionId ACTION_PLUGIN_TAB = ACTION_USER + 2;
