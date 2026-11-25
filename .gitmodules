@@ -1,7 +1,7 @@
 [submodule "freeink-sdk"]
 	path = freeink-sdk
-	url = https://github.com/Free-Ink/freeink-sdk.git
-	branch = main
+	url = https://github.com/jadehawk/freeink-sdk.git
+	branch = razor-crest/onepage-fonts
 [submodule "dessen"]
 	path = dessen
 	url = https://github.com/jadehawk/dessen-engine.git
