@@ -116,6 +116,7 @@ struct CssPropertyFlags {
   uint16_t initialLetter : 1;
   uint16_t whiteSpace : 1;
   uint16_t visibility : 1;
+  uint16_t fontFamily : 1;
 
   CssPropertyFlags()
       : textAlign(0),
@@ -149,21 +150,22 @@ struct CssPropertyFlags {
         floatLeft(0),
         initialLetter(0),
         whiteSpace(0),
-        visibility(0) {}
+        visibility(0),
+        fontFamily(0) {}
 
   [[nodiscard]] bool anySet() const {
     return textAlign || fontStyle || fontWeight || textDecoration || textIndent || marginTop || marginBottom ||
            marginLeft || marginRight || paddingTop || paddingBottom || paddingLeft || paddingRight || imageHeight ||
            imageWidth || display || direction || verticalAlign || listStyleType || fontSize || smallCaps ||
            pageBreakBefore || pageBreakAfter || borderTop || borderRight || borderBottom || borderLeft || shaded ||
-           floatLeft || initialLetter || whiteSpace || visibility;
+           floatLeft || initialLetter || whiteSpace || visibility || fontFamily;
   }
 };
 
-// Cache serializes defined flags as uint32_t with bit indices 0..31.
-static_assert(sizeof(CssPropertyFlags) <= sizeof(uint32_t),
-              "CssPropertyFlags exceeds 32 bits; update cache read/write in CssParser.cpp");
-static_assert(sizeof(CssPropertyFlags) * 8 >= 32,
+// Cache serializes the first 32 flags as uint32_t and fontFamily as a separate byte.
+static_assert(sizeof(CssPropertyFlags) <= 3 * sizeof(uint16_t),
+              "CssPropertyFlags exceeds three 16-bit words; update cache read/write in CssParser.cpp");
+static_assert(sizeof(CssPropertyFlags) * 8 >= 33,
               "CssPropertyFlags has fewer bits than properties; update bitfield widths");
 
 // Represents a collection of CSS style properties
@@ -204,6 +206,9 @@ struct CssStyle {
   uint8_t initialLetter = 0;  // initial-letter: lines a drop cap spans, 0 = normal
 
   bool preserveWhitespace = false;  // white-space: pre, pre-wrap or break-spaces
+  // First font-family name, hashed case-insensitively (CssParser::hashFontFamily); 0 for a
+  // generic family, which selects the reader font.
+  uint32_t fontFamily = 0;
 
   CssPropertyFlags defined;  // Tracks which properties were explicitly set
 
@@ -344,6 +349,10 @@ struct CssStyle {
     if (base.defined.visibility) {
       visibilityHidden = base.visibilityHidden;
       defined.visibility = 1;
+    }
+    if (base.defined.fontFamily) {
+      fontFamily = base.fontFamily;
+      defined.fontFamily = 1;
     }
   }
 

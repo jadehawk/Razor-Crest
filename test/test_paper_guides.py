@@ -57,11 +57,15 @@ assert "UiListActivity::render(std::move(lock))" in guides_ui
 # Drawing is part of the existing EPUB renderer, before foreground text, and
 # repeats for grayscale planes (including strip uploads on constrained panels).
 paint = reader.split("void EpubReaderActivity::renderContents(", 1)[1]
-assert "drawPaperGuides(0, renderer.getDisplayHeight());\n  drawClippingHighlights" in paint
+bw_guides = paint.index("drawPaperGuides(0, renderer.getDisplayHeight());")
+bw_clippings = paint.index("drawClippingHighlights(*page", bw_guides)
+bw_text = paint.index("page->render(renderer, fontId", bw_guides)
+assert bw_guides < bw_clippings < bw_text
 assert "auto renderGrayscalePass = [&](const int stripTop, const int stripBottom)" in paint
 assert "drawPaperGuides(stripTop, stripBottom);" in paint
 assert paint.count("renderGrayscalePass(y, y + rows)") == 3
 assert paint.count("renderGrayscalePass(0, renderer.getDisplayHeight())") == 2
+assert "renderGrayscalePass(0, gh)" in paint
 assert "case GfxRenderer::PortraitInverted:" in paint
 assert "case GfxRenderer::LandscapeClockwise:" in paint
 assert "case GfxRenderer::LandscapeCounterClockwise:" in paint

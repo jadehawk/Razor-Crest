@@ -90,6 +90,13 @@ if (parsedSize != fileSize) {
 
 ## `section.bin`
 
+### Version 79
+
+Combines Razor-Crest layout and visibility flags with upstream embedded publisher fonts.
+Section headers include the publisherFonts byte after wordSpacingPercent.
+CSS cache version 21 retains visibility and font-family as distinct flags and stores the family hash.
+Older caches are rebuilt without changing reading progress.
+
 ### Version 78
 
 Version 78 combines Razor-Crest layout fixes (centered paragraphs, final-pixel
