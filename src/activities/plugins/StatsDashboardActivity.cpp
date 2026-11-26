@@ -1,5 +1,6 @@
 #include "StatsDashboardActivity.h"
 
+#include <Arduino.h>
 #include <ArduinoJson.h>
 #include <Bitmap.h>
 #include <Epub.h>
@@ -22,15 +23,15 @@
 #include "MappedInputManager.h"
 #include "PluginCatalogActivity.h"
 #include "RecentBooksStore.h"
-#include "StatsImportActivity.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "sync/SyncEngine.h"
 #include "util/PluginHttp.h"
 #include "util/PluginLocations.h"
+#include "util/ReadingHistoryMigration.h"
 #include "util/ReadingStatsBookMedia.h"
 #include "util/ReadingStatsSnapshot.h"
-#include "util/ReadingStatsStore.h"
 
 namespace {
 constexpr char kPersistentSyncToken[] = "/.crosspoint/reading-statistics-token.json";
@@ -139,10 +140,11 @@ StatsDashboardActivity::StatsDashboardActivity(GfxRenderer& renderer, MappedInpu
     : Activity("PluginDashboard", renderer, input), manifestPath(std::move(manifest)) {}
 
 StatsDashboardActivity::StatsDashboardActivity(GfxRenderer& renderer, MappedInputManager& input, std::string manifest,
-                                               const readingstats::BookEntry& selected)
+                                               const readingstats::BookEntry& selected, std::string document)
     : Activity("PluginDashboard", renderer, input),
       manifestPath(std::move(manifest)),
       bookInfo(selected),
+      selectedDocument(std::move(document)),
       selectedBook(true),
       hasBookInfo(true) {}
 
@@ -267,6 +269,7 @@ bool StatsDashboardActivity::loadManifest() {
 void StatsDashboardActivity::resolveBook() {
   if (selectedBook) return;
   hasBookInfo = false;
+  selectedDocument.clear();
   bookInfo = {};
   // Prefer the active reader path, then the persisted most-recent book.
   const auto& recents = RECENT_BOOKS.getBooks();
@@ -280,31 +283,8 @@ void StatsDashboardActivity::resolveBook() {
       break;
     }
 
-  // Prefer an exact record. If a book was renamed since importing its
-  // history, bind the uniquely matching title/author to that existing record.
-  // A duplicate title is ambiguous and must never join unrelated histories.
-  auto candidate = makeUniqueNoThrow<readingstats::BookEntry>();
-  int titleMatches = 0;
-  if (candidate) {
-    for (uint32_t i = 0, total = readingstats::bookCount(); i < total; ++i) {
-      if (!readingstats::bookAt(i, *candidate)) continue;
-      if (path == candidate->path) {
-        bookInfo = *candidate;
-        hasBookInfo = true;
-        return;
-      }
-      if (recent && !recent->title.empty() && recent->title == candidate->title &&
-          (candidate->author[0] == 0 || recent->author == candidate->author)) {
-        ++titleMatches;
-        if (titleMatches == 1) bookInfo = *candidate;
-      }
-    }
-  }
-  if (titleMatches == 1) {
-    hasBookInfo = true;
-    return;
-  }
-
+  // Prefer the configured document ID, not title-based guesses.
+  selectedDocument = syncEngine::documentId(path);
   // A book without a stats index still deserves Home metadata and cover.
   bookInfo = {};
   bookInfo.setHash(readingstats::media::hashSourcePath(path.c_str()));
@@ -340,20 +320,58 @@ void StatsDashboardActivity::loadSeries() {
 }
 
 void StatsDashboardActivity::refresh() {
-  recordedBookCount = readingstats::bookCount();
-  statsAvailable = readingstats::loadGlobal(stats);
-  readingstats::loadTimeGlobal(timeGlobal);
-  bookStatsAvailable =
-      hasBookInfo && (bookInfo.hash() != 0 ? readingstats::loadBookHash(bookInfo.hash(), bookStats)
-                                           : readingstats::loadBook(APP_STATE.openEpubPath.c_str(), bookStats));
-  if (hasBookInfo) {
-    if (bookInfo.hash() != 0)
-      readingstats::loadTimeBookHash(bookInfo.hash(), timeBook);
-    else
-      readingstats::loadTimeBook(APP_STATE.openEpubPath.c_str(), timeBook);
-  } else {
-    timeBook = readingstats::TimeBuckets{};
+  history.reset();
+  stats = {};
+  bookStats = {};
+  timeGlobal = {};
+  timeBook = {};
+  recordedBookCount = 0;
+  statsAvailable = bookStatsAvailable = turnsAvailable = bookTurnsAvailable = false;
+  if (!readingHistory::migrationReady()) return;
+  auto provider = makeUniqueNoThrow<readingHistory::Provider>();
+  if (!provider) return;
+  auto status = provider->begin(selectedDocument, 0, true);
+  while (status == readingHistory::Status::Scanning) {
+    delay(1);
+    status = provider->step();
   }
+  const auto* summary = provider->summary();
+  if (!summary) return;
+  const auto clamp = [](uint64_t v) { return static_cast<uint32_t>(std::min<uint64_t>(v, UINT32_MAX)); };
+  auto copy = [&](const readingHistory::Totals& totals, readingstats::Snapshot& snapshot,
+                  readingstats::TimeBuckets& times) {
+    snapshot.totalSecondsLo = static_cast<uint32_t>(totals.seconds);
+    snapshot.totalSecondsHi = static_cast<uint32_t>(totals.seconds >> 32);
+    snapshot.sessions = clamp(totals.sessions);
+    snapshot.pageTurns = clamp(totals.turns);
+    for (size_t i = 0; i < 4; ++i) times.total[i] = clamp(totals.periods[i]);
+    snapshot.latestDay = times.latestDay = summary->anchorDay ? summary->anchorDay + 1 : 0;
+  };
+  copy(summary->overall, stats, timeGlobal);
+  copy(summary->book, bookStats, timeBook);
+  for (uint32_t i = 0; i < readingstats::kHistoryDays && i < summary->anchorDay; ++i) {
+    readingHistory::Day day{};
+    if (!provider->readDay(summary->anchorDay - i, day)) return;
+    const auto ordinal = summary->anchorDay - i + 1;
+    stats.daySeconds[ordinal % readingstats::kHistoryDays] = clamp(day.seconds);
+    bookStats.daySeconds[ordinal % readingstats::kHistoryDays] = clamp(day.bookSeconds);
+    if (i < readingstats::kTimeHistoryDays) {
+      uint64_t global[4]{}, selected[4]{};
+      if (!provider->readWeekDay(ordinal - 1, global, false) || !provider->readWeekDay(ordinal - 1, selected, true))
+        return;
+      for (size_t p = 0; p < 4; ++p) {
+        timeGlobal.recent[ordinal % readingstats::kTimeHistoryDays][p] = clamp(global[p]);
+        timeBook.recent[ordinal % readingstats::kTimeHistoryDays][p] = clamp(selected[p]);
+      }
+    }
+  }
+  statsAvailable = true;
+  bookStatsAvailable =
+      !selectedDocument.empty() && (summary->book.seconds || summary->book.sessions || summary->book.turns);
+  turnsAvailable = summary->overall.turnsComplete;
+  bookTurnsAvailable = summary->book.turnsComplete;
+  recordedBookCount = summary->books;
+  history = std::move(provider);
 }
 
 void StatsDashboardActivity::onEnter() {
@@ -431,11 +449,7 @@ bool StatsDashboardActivity::importPage() const {
   return false;
 }
 
-void StatsDashboardActivity::refreshLegacyPreviews() {
-  crossInkPreview = readingstats::legacy::inspect(readingstats::legacy::Source::CrossInk);
-  vCodexPreview = readingstats::legacy::inspect(readingstats::legacy::Source::VCodex);
-  legacyPreviewLoaded = true;
-}
+void StatsDashboardActivity::refreshLegacyPreviews() {}
 
 int StatsDashboardActivity::dashboardContentTop() const {
   const auto& metrics = UITheme::getInstance().getMetrics();
@@ -450,18 +464,29 @@ int StatsDashboardActivity::listCapacity() const {
 }
 
 void StatsDashboardActivity::loadVisibleBooks() {
-  visibleCount = 0;
-  nextCoverIndex = 0;
+  visibleCount = nextCoverIndex = 0;
+  if (!history) return;
+  auto info = makeUniqueNoThrow<readingHistory::BookInfo>();
+  if (!info) return;
   const int capacity = listCapacity();
-  // A snapshot is ~1.5 KiB: keep one reusable instance off the X3 task stack.
-  auto summary = makeUniqueNoThrow<readingstats::Snapshot>();
   for (int i = 0; i < capacity && visibleStart + i < recordedBookCount; ++i) {
+    if (history->readBooks(visibleStart + i, info.get(), 1) != readingHistory::Status::Ready) break;
     BookRow& row = visibleBooks[visibleCount];
     row = {};
-    if (!readingstats::bookAt(visibleStart + i, row.entry)) continue;
-    if (summary && readingstats::loadBookHash(row.entry.hash(), *summary)) row.seconds = summary->totalSeconds();
-    row.progress = readingstats::media::progress(row.entry, false);
-    const std::string author = readingstats::media::author(row.entry);
+    static constexpr char hex[] = "0123456789abcdef";
+    for (auto byte : info->id) {
+      row.document += hex[byte >> 4];
+      row.document += hex[byte & 15];
+    }
+    snprintf(row.entry.path, sizeof(row.entry.path), "%s", info->path);
+    snprintf(row.entry.title, sizeof(row.entry.title), "%.*s", static_cast<int>(info->titleLength), info->title);
+    snprintf(row.entry.author, sizeof(row.entry.author), "%s", info->author);
+    row.entry.setHash(readingstats::media::hashSourcePath(info->path[0] ? info->path : row.document.c_str()));
+    row.seconds = info->seconds;
+    row.progress = info->progress == UINT16_MAX ? -1 : (info->progress + 50) / 100;
+    const int live = readingstats::media::progress(row.entry, false);
+    if (live >= 0) row.progress = live;
+    const auto author = readingstats::media::author(row.entry);
     snprintf(row.displayAuthor, sizeof(row.displayAuthor), "%s", author.c_str());
     ++visibleCount;
   }
@@ -482,60 +507,28 @@ void StatsDashboardActivity::moveBookCursor(int delta) {
 
 void StatsDashboardActivity::openBooks() {
   if (!recordedBookCount || bookCursor < visibleStart || bookCursor >= visibleStart + visibleCount) return;
-  const auto& book = visibleBooks[bookCursor - visibleStart].entry;
-  auto view = makeUniqueNoThrow<StatsDashboardActivity>(renderer, mappedInput, manifestPath, book);
+  const auto& row = visibleBooks[bookCursor - visibleStart];
+  auto view = makeUniqueNoThrow<StatsDashboardActivity>(renderer, mappedInput, manifestPath, row.entry, row.document);
   if (!view) {
     LOG_ERR("STATS", "OOM opening book details");
     return;
   }
-  startActivityForResult(std::move(view), [](const ActivityResult&) {});
-}
-
-void StatsDashboardActivity::promptRemoveBook() {
-  if (!booksPage() || !recordedBookCount || bookCursor < visibleStart || bookCursor >= visibleStart + visibleCount)
-    return;
-  const auto& book = visibleBooks[bookCursor - visibleStart].entry;
-  const uint64_t hash = book.hash();
-  if (!hash) return;
-  const std::string subject = book.title[0] ? book.title : "Unnamed Book";
-  auto confirmation = makeUniqueNoThrow<ConfirmationActivity>(
-      renderer, mappedInput, "Remove reading history?",
-      "Remove saved statistics for " + subject + "? The book file and global totals stay intact.", "Cancel", "Remove",
-      true);
-  if (!confirmation) {
-    LOG_ERR("STATS", "OOM: remove history confirmation");
-    return;
-  }
-  startActivityForResult(std::move(confirmation), [this, hash](const ActivityResult& result) {
-    if (result.isCancelled) return;
-    if (!readingstats::removeBookRecord(hash)) {
-      LOG_ERR("STATS", "Could not remove book statistics %016llx", static_cast<unsigned long long>(hash));
-      return;
-    }
+  history.reset();
+  startActivityForResult(std::move(view), [this](const ActivityResult&) {
     refresh();
-    if (recordedBookCount)
-      bookCursor = std::min(bookCursor, recordedBookCount - 1);
-    else
-      bookCursor = 0;
-    visibleStart = recordedBookCount
-                       ? (bookCursor / static_cast<uint32_t>(listCapacity())) * static_cast<uint32_t>(listCapacity())
-                       : 0;
     loadVisibleBooks();
     requestUpdate();
   });
 }
 
+void StatsDashboardActivity::promptRemoveBook() {
+  // Removing a legacy snapshot cannot remove append-only history.
+  LOG_INF("STATS", "Book history removal is not available for JSONL");
+}
+
 void StatsDashboardActivity::openImport() {
-  auto view = makeUniqueNoThrow<StatsImportActivity>(renderer, mappedInput);
-  if (!view) {
-    LOG_ERR("STATS", "OOM opening legacy import");
-    return;
-  }
-  startActivityForResult(std::move(view), [this](const ActivityResult&) {
-    refreshLegacyPreviews();
-    refresh();
-    requestUpdate();
-  });
+  // Other firmware histories are outside Razor-Crest migration scope.
+  LOG_INF("STATS", "External statistics import is disabled");
 }
 
 void StatsDashboardActivity::advance(const int delta) {
@@ -543,7 +536,7 @@ void StatsDashboardActivity::advance(const int delta) {
   activePage = static_cast<uint8_t>((activePage + pageCount + delta) % pageCount);
   LOG_DBG("STATS", "Dashboard page %u/%u (delta=%d)", static_cast<unsigned>(activePage + 1),
           static_cast<unsigned>(pageCount), delta);
-  if (importPage() && !legacyPreviewLoaded) refreshLegacyPreviews();
+
   if (booksPage()) {
     refresh();
     loadVisibleBooks();
@@ -684,7 +677,7 @@ void StatsDashboardActivity::loop() {
   if (booksPage() && nextCoverIndex < visibleCount) {
     auto& row = visibleBooks[nextCoverIndex++];
     const int updated = readingstats::media::progress(row.entry);
-    if (updated != row.progress) {
+    if (updated >= 0 && updated != row.progress) {
       row.progress = updated;
       requestUpdate();
     }
@@ -731,7 +724,8 @@ std::string StatsDashboardActivity::metricValue(const Widget& widget) const {
   const auto& field = widget.field;
   if (field == "total_seconds") return duration(stats.totalSeconds());
   if (field == "sessions") return std::to_string(stats.sessions);
-  if (field == "qualified_turns") return std::to_string(stats.pageTurns);
+  if (field == "qualified_turns")
+    return (widget.currentBook ? bookTurnsAvailable : turnsAvailable) ? std::to_string(stats.pageTurns) : "--";
   if (field == "latest_day_seconds") return stats.latestDay ? duration(stats.secondsOnDay(stats.latestDay)) : "--";
   if (field == "last_7_seconds") {
     if (!stats.latestDay) return "--";
@@ -746,7 +740,9 @@ std::string StatsDashboardActivity::metricValue(const Widget& widget) const {
     return std::to_string(count);
   }
   if (field == "seconds_per_turn")
-    return stats.pageTurns ? std::to_string(stats.totalSeconds() / stats.pageTurns) + "s" : "--";
+    return (widget.currentBook ? bookTurnsAvailable : turnsAvailable) && stats.pageTurns
+               ? std::to_string(stats.totalSeconds() / stats.pageTurns) + "s"
+               : "--";
   return "--";
 }
 
@@ -1265,49 +1261,7 @@ void StatsDashboardActivity::drawMonthInsights(const Widget& widget, const int x
 void StatsDashboardActivity::drawLegacyImport(const int x, const int y, const int w, const int h) const {
   if (h <= 0) return;
   renderer.drawRect(x, y, w, h, true);
-  constexpr int inset = 9;
-  const int step = renderer.getLineHeight(kStatsFont) + 3;
-  const int rowHeight = std::max(54, (h - 3 * inset - 2 * step - 12) / 2);
-  auto source = [&](int top, const char* name, const char* filename, const readingstats::legacy::Preview& preview,
-                    bool showTurns) {
-    renderer.drawRect(x + inset, top, w - 2 * inset, rowHeight, true);
-    int line = top + 7;
-    auto textLine = [&](const char* text, bool bold = false) {
-      if (line + step > top + rowHeight - 2) return;
-      const auto style = bold ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
-      const std::string fitted = renderer.truncatedText(kStatsFont, text, w - 4 * inset, style);
-      renderer.drawText(kStatsFont, x + inset * 2, line, fitted.c_str(), true, style);
-      line += step;
-    };
-    textLine(name, true);
-    textLine(filename);
-    if (!legacyPreviewLoaded) {
-      textLine("Checking source...");
-    } else if (!preview.present) {
-      textLine("Not found on SD card");
-    } else if (!preview.supported) {
-      textLine(preview.truncated ? "Too large for preview" : "Unsupported or damaged");
-    } else {
-      char value[96];
-      snprintf(value, sizeof(value), "%lu sessions | %lluh %llum", static_cast<unsigned long>(preview.totals.sessions),
-               static_cast<unsigned long long>(preview.totals.totalSeconds / 3600),
-               static_cast<unsigned long long>((preview.totals.totalSeconds / 60) % 60));
-      textLine(value);
-      if (showTurns) {
-        snprintf(value, sizeof(value), "%lu page turns", static_cast<unsigned long>(preview.totals.turns));
-      } else {
-        snprintf(value, sizeof(value), "%lu books; no turn history", static_cast<unsigned long>(preview.books));
-      }
-      textLine(value);
-    }
-  };
-  source(y + inset, "CrossInk", "global_stats.bin", crossInkPreview, true);
-  source(y + 2 * inset + rowHeight, "vCodex", "reading_stats.json", vCodexPreview, false);
-  const int footer = y + 3 * inset + 2 * rowHeight;
-  if (footer + 2 * step < y + h) {
-    renderer.drawText(kStatsFont, x + inset, footer, "Preview only; sources are unchanged.");
-    renderer.drawText(kStatsFont, x + inset, footer + step, "Select to review / import history.");
-  }
+  renderer.drawText(kStatsFont, x + 9, y + 9, "External history import disabled.");
 }
 
 void StatsDashboardActivity::drawBookList(int top, int bottom) const {
@@ -1356,7 +1310,7 @@ void StatsDashboardActivity::drawBookList(int top, int bottom) const {
   const int noteHeight = renderer.getLineHeight(kStatsFont);
   if (footer + noteHeight < bottom) renderer.drawText(kStatsFont, kMargin, footer, count);
   if (footer + noteHeight * 2 + 4 < bottom)
-    renderer.drawText(kStatsFont, kMargin, footer + noteHeight + 4, "Hold Open to remove selected book history");
+    renderer.drawText(kStatsFont, kMargin, footer + noteHeight + 4, "Open for book statistics");
 }
 
 void StatsDashboardActivity::cyclePluginCard(const int direction) {
@@ -1489,7 +1443,9 @@ void StatsDashboardActivity::drawDashboardPage(bool interactive) {
   const bool monthPage =
       page.count == 2 && page.widgets[0].type == "month_calendar" && page.widgets[1].type == "month_insights";
   if (!statsAvailable && !isBookMetrics && !importPage() && !serverSyncPage() && !genericCardDashboard && !monthPage) {
-    renderer.drawText(kStatsFont, kMargin, y, "No saved reading sessions");
+    renderer.drawText(
+        kStatsFont, kMargin, y,
+        readingHistory::migrationReady() ? "No saved reading sessions" : "History migration requires recovery");
     y += renderer.getLineHeight(kStatsFont) + 5;
   }
   int widgetRows = 0;

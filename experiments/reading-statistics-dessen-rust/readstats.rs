@@ -1,5 +1,5 @@
 // Razor-Crest native statistics for the first two Reading Statistics dashboard pages.
-// Read-only access to versioned native binary data and checksummed backups.
+// Read-only JSONL history through the native provider or the stock-runtime scanner.
 #![no_std]
 #![allow(dead_code)]
 
@@ -28,6 +28,7 @@ include!("sync.rs"); // Optional Techy-Notes device-code registration.
 include!("qr.rs"); // Scannable QR with prefilled pairing link.
 include!("settings.rs");
 include!("session_history.rs");
+include!("native_history.rs");
 include!("server.rs"); // Account-scoped server totals; local offline fallback.
 fn next_page(page: i32) -> i32 { match page { 5 => 7, 7 => 6, 6 => 0, _ => page + 1 } }
 fn prev_page(page: i32) -> i32 { match page { 0 => 6, 6 => 7, 7 => 5, _ => page - 1 } }
@@ -49,14 +50,6 @@ const BOLD: i32 = 1;
 const ERR_UNAVAILABLE: i32 = -4;
 const SIDE_KEY: u32 = 1 << 8; // Dessen PREV/NEXT source marker
 
-const GLOBAL: &[u8] = b"/.crosspoint/reading-stats/global_v2.bin";
-const GLOBAL_BACKUP: &[u8] = b"/.crosspoint/reading-stats/global_v2.bin.bak";
-const BOOK_INDEX: &[u8] = b"/.crosspoint/reading-stats/books_v1.bin";
-const PERIODS: &[u8] = b"/.crosspoint/reading-stats/time_global_v1.bin";
-const PERIODS_BACKUP: &[u8] = b"/.crosspoint/reading-stats/time_global_v1.bin.bak";
-const BOOK_PREFIX: &[u8] = b"/.crosspoint/reading-stats/book_";
-const BOOK_SUFFIX: &[u8] = b"_v2.bin";
-const BOOK_SUFFIX_BACKUP: &[u8] = b"_v2.bin.bak";
 const DAYS: usize = 53 * 7; // retained day history
 const G: i32 = 18; // safe-area side gutter for narrow displays
 
@@ -78,29 +71,26 @@ impl Home {
     }
     #[inline(never)]
     fn load(&mut self) {
-        let n = dsn_recent_shelf(0, 1, &mut self.rec);
-        let n = if n > 0 { (n as usize).min(self.rec.len()) } else { 0 };
-        let (mut start, mut k) = (0, 0);
-        for i in 0..n {
-            let c = self.rec[i];
-            if c == b'\t' || c == b'\n' {
-                if k < 5 {
-                    self.f[k] = (start, i);
-                    k += 1;
-                }
-                start = i + 1;
-                if c == b'\n' {
-                    break;
+        self.percent = -1;
+        for index in 0..10 {
+            self.f = [(0,0);5];
+            let n = dsn_recent_shelf(index, 1, &mut self.rec);
+            if n <= 0 { break; }
+            let (mut start, mut k, mut complete) = (0, 0, false);
+            for i in 0..(n as usize).min(self.rec.len()) {
+                let c = self.rec[i];
+                if c == b'\t' || c == b'\n' {
+                    if k < 5 { self.f[k] = (start, i); k += 1; }
+                    start = i + 1;
+                    if c == b'\n' { complete = true; break; }
                 }
             }
+            if complete && k >= 2 && self.has_book() {
+                let p = dsn_book_progress(self.field(0));
+                if (0..100).contains(&p) { self.percent=p; return; }
+            }
         }
-        if k < 2 {
-            self.f[0] = (0, 0); // not a whole record
-        }
-        if self.has_book() {
-            let p = dsn_book_progress(self.field(0));
-            self.percent = if (0..=100).contains(&p) { p } else { -1 };
-        }
+        self.f = [(0,0);5];
     }
 }
 
@@ -114,6 +104,7 @@ struct Stats {
     progress_bp: u32, // native qualified forward page turns
     err: i32,
     log_source: bool,
+    native_stats: bool,
     books_limited: bool,
     week_hour: [u32; 4],
     date_known: bool,
@@ -123,95 +114,7 @@ struct Stats {
 fn le32(data: &[u8], off: usize) -> u32 {
     u32::from_le_bytes([data[off], data[off+1], data[off+2], data[off+3]])
 }
-fn record_valid(data: &[u8], magic: u32, version: u32) -> bool {
-    if data.len() < 12 || le32(data, 0) != magic || le32(data, 4) != version {
-        return false;
-    }
-    let mut hash: u32 = 2166136261;
-    for &byte in &data[..data.len()-4] {
-        hash = (hash ^ byte as u32).wrapping_mul(16777619);
-    }
-    hash == le32(data, data.len()-4)
-}
-fn read_native(path: &[u8], output: &mut [u8], magic: u32, version: u32) -> bool {
-    dsn_fs_read(path, output) == output.len() as i32 && record_valid(output, magic, version)
-}
-
 impl Stats {
-    #[inline(never)]
-    fn load(&mut self, have_clock: bool) {
-        let mut raw = [0u8; 1500];
-        let mut ok = read_native(GLOBAL, &mut raw, 0x32545352, 2);
-        if !ok {
-            ok = read_native(GLOBAL_BACKUP, &mut raw, 0x32545352, 2);
-        }
-        if !ok {
-            return; // genuinely empty or unavailable store
-        }
-        let latest = le32(&raw, 28);
-        self.sessions = le32(&raw, 12);
-        let total = (le32(&raw, 20) as u64) << 32 | le32(&raw, 16) as u64;
-        self.total = total.min(u32::MAX as u64) as u32;
-        self.progress_bp = le32(&raw, 24); // repurposed as qualified page turns
-        if !have_clock && latest != 0 {
-            self.end = latest - 1; // native ordinal is Unix day + 1
-        }
-        if latest != 0 {
-            for i in 0..DAYS {
-                let day = self.end as i64 - (DAYS - 1 - i) as i64;
-                let ordinal = day + 1;
-                if ordinal > 0 && ordinal <= latest as i64 &&
-                    latest - (ordinal as u32) < 366 {
-                    self.day[i] = le32(&raw, 32 + ((ordinal as usize % 366) * 4));
-                }
-            }
-        }
-        // The native store has four truthful periods, not 24 hourly values.
-        let mut timed = [0u8; 148];
-        if read_native(PERIODS, &mut timed, 0x31505452, 1) ||
-            read_native(PERIODS_BACKUP, &mut timed, 0x31505452, 1) {
-            for i in 0..4 {
-                self.hour[i] = le32(&timed, 16 + 4*i);
-            }
-        }
-        // Native book index uses fixed 316-byte, checksummed records.
-        // Bound the scan; count only books with valid native snapshots.
-        let mut record = [0u8; 316];
-        // The global record is no longer needed; reuse its scratch space.
-        let book_snapshot = &mut raw;
-        for index in 0..2048u32 {
-            let n = dsn_fs_read_at(BOOK_INDEX, index * 316, &mut record);
-            if n != 316 {
-                break;
-            }
-            if !record_valid(&record, 0x314b4252, 1) ||
-                !record[16..192].contains(&0) ||
-                !record[192..264].contains(&0) ||
-                !record[264..312].contains(&0) {
-                break; // don't fabricate entries from a corrupt catalog
-            }
-            let hash = (le32(&record, 12) as u64) << 32 | le32(&record, 8) as u64;
-            let mut path = [0u8; 80];
-            let prefix = BOOK_PREFIX.len();
-            path[..prefix].copy_from_slice(BOOK_PREFIX);
-            const HEX: &[u8;16] = b"0123456789abcdef";
-            for k in 0..16 {
-                path[prefix+k] = HEX[((hash >> (60 - 4*k)) & 15) as usize];
-            }
-            let suffix = prefix + 16;
-            path[suffix..suffix+BOOK_SUFFIX.len()].copy_from_slice(BOOK_SUFFIX);
-            let size = suffix + BOOK_SUFFIX.len();
-            let valid = read_native(&path[..size], book_snapshot, 0x32545352, 2);
-            if !valid {
-                path[suffix..suffix+BOOK_SUFFIX_BACKUP.len()].copy_from_slice(BOOK_SUFFIX_BACKUP);
-                if !read_native(&path[..suffix+BOOK_SUFFIX_BACKUP.len()], book_snapshot, 0x32545352, 2) {
-                    continue;
-                }
-            }
-            self.book_count = self.book_count.saturating_add(1);
-        }
-    }
-
     // (current, best) runs of consecutive days with reading. Today not having
     // been read yet doesn't break the current streak.
     fn streaks(&self) -> (u32, u32) {
@@ -344,22 +247,41 @@ pub extern "C" fn main() -> i32 {
         sessions: 0,
         progress_bp: 0,
         err: 0,
-        log_source: false, books_limited: false, week_hour: [0;4], date_known: false, date_current: false,
+        log_source: true, native_stats: false, books_limited: false, week_hour: [0;4], date_known: false, date_current: false,
     };
     // dsn_clock_t: u16 year, month, day, ... in local time.
     let _ = dsn_timer_set(5000);
     let mut c = [0u8; 8];
     let mut year = if dsn_clock(&mut c) >= 0 { c[0] as u32 | (c[1] as u32) << 8 } else { 0 };
     let mut have_clock = year >= 2000 && (1..=12).contains(&c[2]) && (1..=31).contains(&c[3]);
-    let mut header = [0u8; 4];
     let mut session_probe = [0u8; 1];
     let have_sessions = dsn_fs_read_at(SESSION_LOG, 0, &mut session_probe) >= 0;
-    let binary_stats = !have_sessions && ((dsn_fs_read_at(GLOBAL, 0, &mut header) == 4 && le32(&header, 0) == 0x32545352) ||
-        (dsn_fs_read_at(GLOBAL_BACKUP, 0, &mut header) == 4 && le32(&header, 0) == 0x32545352));
-    st.log_source = !binary_stats;
-    let latest = if st.log_source { session_latest() } else { (0,0) };
+
+    // One invocation owns this buffer for its entire lifetime. Avoid moving
+    // the 5 KiB Home value through the small guest stack.
+    static mut HOME: Home = Home {
+        rec: [0; 1100],
+        f: [(0, 0); 5],
+        percent: 0,
+        cover: [0; 4096],
+        cover_n: 0,
+    };
+    let home = unsafe { &mut *core::ptr::addr_of_mut!(HOME) };
+    home.percent = -1;
+    home.load();
+    if have_sessions { loading_history(); }
+    let anchor = if have_clock { days_from_civil(year,c[2] as u32,c[3] as u32) } else { 0 };
+    let use_native = native_available();
+    let native_detail = if use_native {
+        native_load(&mut st, &home.rec[home.f[0].0..home.f[0].1], anchor, &mut home.cover)
+    } else { None };
+    let (latest, current_id, book_count, has_baseline) = if have_sessions && !use_native {
+        session_inventory(&home.rec[home.f[0].0..home.f[0].1], &mut home.cover)
+    } else { ((0,0),[0;32],0,false) };
+    if has_baseline { st.err=ERR_UNAVAILABLE; }
+    if !use_native && !has_baseline { st.book_count=book_count; }
     st.date_current = have_clock;
-    if !have_clock {
+    if !have_clock && !st.native_stats {
         let now = dsn_time() as i64;
         if valid_epoch(now) {
             let (y,m,d) = civil_from_days(((now + latest.1*60)/86400) as u32);
@@ -371,7 +293,6 @@ pub extern "C" fn main() -> i32 {
         }
     }
     if have_clock { st.end=days_from_civil(year,c[2] as u32,c[3] as u32); }
-    if binary_stats { st.load(have_clock); }
     if !have_clock && st.end >= 10957 {
         let (y,m,d)=civil_from_days(st.end);
         year=y; c[2]=m as u8; c[3]=d as u8; have_clock=true;
@@ -393,18 +314,12 @@ pub extern "C" fn main() -> i32 {
         buttons,
         native_hint_height: (u16::from_le_bytes([device[22], device[23]]) as i32).min((scr & 0xffff) as i32),
     };
-    let mut home = Home {
-        rec: [0; 1100],
-        f: [(0, 0); 5],
-        percent: -1,
-        cover: [0; 4096],
-        cover_n: 0,
-    };
-    home.load();
     // The cover buffer is shared by the two mutually exclusive hero pages.
     let mut current_cover_loaded = false;
 
-    let detail = if st.log_source { load_sessions(&mut st, &home) } else { load_current(&home) };
+    let detail = if let Some(detail) = native_detail { detail }
+        else if !use_native && !has_baseline { load_sessions(&mut st, &home.rec[home.f[0].0..home.f[0].1], &current_id, &mut home.cover) }
+        else { Current {found:false,secs:0,sessions:0,turns:0,active:0,periods:[0;4]} };
     let month_day = if have_clock { c[3] as u32 } else { 0 };
     // One guest invocation owns this storage; avoid a large constructor copy on the stack.
     static mut CAROUSEL: BookCarousel = BookCarousel::new();
@@ -494,13 +409,17 @@ pub extern "C" fn main() -> i32 {
             }
             ui.dashboard_render(&st, &home, &detail, page - 1, month_day, have_clock);
         } else {
+            let books_ready = if page == 5 && st.native_stats {
+                current_cover_loaded = false;
+                native_ensure_books(st.end, &mut home.cover)
+            } else { true };
             dsn_clear();
             ui.header(page);
             let month_number = if have_clock { year * 12 + c[2] as u32 - 1 - calendar_offset } else { 0 };
             let shown_year = if have_clock { month_number / 12 } else { 0 };
             let shown_month = if have_clock { month_number % 12 + 1 } else { 0 };
             let shown_day = if calendar_offset == 0 && st.date_current { month_day } else { 0 };
-            ui.extra_page(&st, page - 1, shown_year, shown_month, shown_day, book_offset);
+            ui.extra_page(&st, page - 1, shown_year, shown_month, shown_day, book_offset, books_ready, &mut home.cover);
         }
         checkpoint(207);
         if !disconnecting && !generating_web_login && !generating_pairing && !syncing_month {

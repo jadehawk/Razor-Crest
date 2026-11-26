@@ -1,11 +1,11 @@
-# Reading Statistics 0.1.13
+# Reading Statistics 0.1.16
 
 Full Rust Dessen application: Overall, Device Statistics, Current Book, Your Week,
 Reading Calendar, All Books, Server Sync and Settings.
 
-The application keeps its 80 KiB guest allocation. It uses the same generated
-Dessen ABI on CrossPoint and Razor-Crest. There are no firmware identity checks,
-native statistics launch calls or application resume-page markers.
+The application uses an 85 KiB guest allocation (4 KiB above 0.1.14) to retain
+stack headroom. It probes the optional native reading-history API rather than
+checking firmware identity. Unsupported hosts use the streaming JSONL parser.
 
 Install the `reading-statistics` directory at:
 
@@ -13,8 +13,12 @@ Install the `reading-statistics` directory at:
 /.crosspoint/plugins/reading-statistics/
 ```
 
-Keep app.bin, manifest.json and device.json together. This revision requires the
-matching Phase 3 firmware changes; earlier experimental firmware is incompatible.
+Keep app.bin, manifest.json and device.json together. Native aggregation requires
+the matching firmware changes. Use the same package on both firmware families.
+The top-level optional_permissions.device_identity grant is ignored by older
+hosts. Supporting hosts attach hardware identity only to authorized HTTPS
+origins; no physical ID is exposed by the app-scoped device ID API.
+The existing runtime and service requirements for pairing and refresh still apply.
 Configure a saved Wi-Fi network in firmware before pairing or refreshing.
 
 Installing the plugin authorizes its validated manifest scopes without extra
@@ -28,9 +32,14 @@ server-overview validation and caching, manual refresh confirmation, optional
 daily refresh and disconnect confirmation. Disconnect clears the shared reader
 token and cached server data locally. Local reading records remain.
 
-When session history exists it supplies local statistics, including undated
-sessions and devices without an RTC. Otherwise the application reads validated
-native binary snapshots and backups. Device Statistics and Current Book use reading duration and average session length rather than local page-turn counts. Overall Statistics retains server-reported page turns. Book titles, authors, series, progress,
+When session history exists, the application uses the native provider when
+available, otherwise it streams JSONL locally. All Books reads indexed metadata
+without scanning the complete log on every page. After networking, a released
+snapshot is queried again on demand. Undated sessions contribute to lifetime
+statistics without inventing dates. No BIN snapshot fallback remains. Native-provider failures are not silently
+reinterpreted as stock JSONL. A migrated Razor-Crest baseline needs the native
+provider; older hosts can read ordinary stock and v2 session rows. Current Book excludes
+recent books whose reported progress is 100% and books with unknown progress. Device Statistics and Current Book use reading duration and average session length rather than local page-turn counts. Overall Statistics retains server-reported page turns. Book titles, authors, series, progress,
 covers and navigation retain the existing full application layout.
 
 Front Left/Right select widgets and actions; configured side buttons change
@@ -68,9 +77,6 @@ make test RUST=no
 make rust
 ```
 
-The versioned package includes the application and a matching source tree under
-`source/experiments/reading-statistics-dessen-rust`, together with its SDK and
-the FreeInkUI headers needed for desktop tests. Earlier versioned folders remain
-unchanged.
+The test package includes the app and its manifest/device metadata. The authoritative source is this worktree. Earlier versioned folders remain unchanged.
 
 Firmware compilation and hardware verification are performed by the user.

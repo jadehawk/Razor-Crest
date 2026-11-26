@@ -20,6 +20,8 @@ void ReaderSession::onRenderComplete(const uint32_t monotonicMs, const int64_t t
     if (elapsedSeconds >= MIN_DWELL_SECONDS) {
       if (turns != UINT32_MAX) ++turns;
       const uint32_t contribution = std::min(elapsedSeconds, MAX_DWELL_SECONDS);
+      if (!duration) localStartProgress = localEndProgress = anchorProgress;
+      localEndProgress = std::max(localEndProgress, progress);
       duration = contribution > UINT32_MAX - duration ? UINT32_MAX : duration + contribution;
       if (anchorEpoch > 0) {
         if (eventDuration == 0) {
@@ -50,6 +52,7 @@ void ReaderSession::reset() {
   anchorProgress = 0;
   startProgress = 0;
   endProgress = 0;
+  localStartProgress = localEndProgress = 0;
   hasAnchor = false;
   pendingForward = false;
 }

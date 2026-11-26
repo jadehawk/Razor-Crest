@@ -23,7 +23,7 @@ std::vector<std::string> progressFetches;
 bool primaryProgressMissing = false;
 int KOReaderSyncClient::lastHttpCode = 0;
 KOReaderSyncClient::Error KOReaderSyncClient::getProgress(const std::string& documentHash, KOReaderProgress& out,
-                                                         uint32_t /*timeoutMs*/) {
+                                                          uint32_t /*timeoutMs*/) {
   progressFetches.push_back(documentHash);
   const bool primary = documentHash == "filename-id";
   if (primary && primaryProgressMissing) return NOT_FOUND;
@@ -241,10 +241,12 @@ void sessionsUploadOnce() {
   // Path and title are stored escaped, and a path too long for one line is left out.
   const auto& log = fake::files["/.crosspoint/reading_sessions.jsonl"]->bytes;
   const std::string stored(log.begin(), log.end());
-  assert(stored.find("\"title\":\"A \\\"quoted\\\" title\",\"path\":\"/book.epub\"}\n") != std::string::npos);
+  assert(stored.find("\"title\":\"A \\\"quoted\\\" title\",\"path\":\"/book.epub\",\"device\":\"a0a1a2a3a4a5\"}\n") !=
+         std::string::npos);
   assert(readingSessionLog::append(document, std::string(600, 'p'), "Long", 1700050000, 30, 0, 0));
   const std::string grown(log.begin(), log.end());
-  assert(grown.find("\"title\":\"Long\"}\n") != std::string::npos && grown.find("ppp") == std::string::npos);
+  assert(grown.find("\"title\":\"Long\",\"device\":\"a0a1a2a3a4a5\"}\n") != std::string::npos &&
+         grown.find("ppp") == std::string::npos);
 
   SyncRequest sync;
   // A server that does not list the stored ids leaves everything queued.
@@ -274,8 +276,49 @@ void sessionsUploadOnce() {
   assert(readingSessionLog::upload(sync));
   assert(uploads.size() == 1 && acceptedCount(uploads[0]) == 1);
 
-  // A power cut left an unfinished line. The next session starts on its own line and is uploaded.
+  // A stock CrossPoint row and a row recorded on another reader can coexist.
+  // Their timestamps are identical, but their factory identities differ.
   auto& bytes = fake::files["/.crosspoint/reading_sessions.jsonl"]->bytes;
+  const std::string common = "{\"doc\":\"" + document + "\",\"start\":1700110000,\"secs\":60,\"tz\":0";
+  const auto mixed = common + "}\n" + common + ",\"device\":\"0123456789ab\"}\n";
+  bytes.insert(bytes.end(), mixed.begin(), mixed.end());
+  uploads.clear();
+  assert(readingSessionLog::upload(sync));
+  assert(uploads.size() == 1 && acceptedCount(uploads[0]) == 2);
+  JsonDocument mixedPayload;
+  assert(!deserializeJson(mixedPayload, uploads[0]));
+  assert(mixedPayload["items"][0]["session_id"] == "1700110000-a0a1a2a3a4a5");
+  assert(mixedPayload["items"][1]["session_id"] == "1700110000-0123456789ab");
+  uploads.clear();
+  assert(readingSessionLog::upload(sync));
+  assert(uploads.empty());
+
+  // Extended local metrics must survive serialization without changing the stock payload.
+  const readingSessionLog::LocalDetails extended{150, 7, "Author", "Series", "2.5"};
+  assert(readingSessionLog::append(document, book, "Extended", 1700120000, 120, 0, 100, &extended));
+  const readingSessionLog::LocalDetails undated{90, 3, "Author", "Series", "2.5"};
+  assert(readingSessionLog::append(document, book, "Undated", 0, 90, 100, 200, &undated));
+  const std::string content(bytes.begin(), bytes.end());
+  assert(content.find("\"tracked_secs\":150,\"turns\":7") != std::string::npos);
+  assert(content.find("\"series_index\":\"2.5\"") != std::string::npos);
+  assert(readingSessionLog::upload(sync));
+  assert(uploads.size() == 1 && acceptedCount(uploads[0]) == 1);
+  JsonDocument extendedPayload;
+  assert(!deserializeJson(extendedPayload, uploads[0]));
+  assert(extendedPayload["items"][0]["seconds"] == 120);
+  assert(extendedPayload["items"][0]["session_id"] == "1700120000-a0a1a2a3a4a5");
+  assert(uploads[0].find("tracked_secs") == std::string::npos);
+  uploads.clear();
+
+  // A migrated historical aggregate is never uploaded as an individual
+  // session, even if a future format happens to contain stock session keys.
+  const auto baseline =
+      "{\"type\":\"rc-baseline-total\",\"doc\":\"" + document + "\",\"start\":1700190000,\"secs\":60,\"tz\":0}\n";
+  bytes.insert(bytes.end(), baseline.begin(), baseline.end());
+  assert(readingSessionLog::upload(sync));
+  assert(uploads.empty());
+
+  // A power cut left an unfinished line. The next session starts on its own line and is uploaded.
   const char cut[] = "{\"doc\":\"";
   bytes.insert(bytes.end(), cut, cut + sizeof(cut) - 1);
   assert(readingSessionLog::append(document, book, "After the cut", 1700200000, 45, 0, 0));

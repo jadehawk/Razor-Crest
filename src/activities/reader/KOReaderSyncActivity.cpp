@@ -5,6 +5,7 @@
 #include <I18n.h>
 #include <LibrarySeriesFormat.h>
 #include <Logging.h>
+#include <Memory.h>
 #include <TrustedTime.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
@@ -31,7 +32,8 @@
 #include "sync/SyncEngine.h"
 #include "util/PluginEvents.h"
 #include "util/PluginHttp.h"
-#include "util/ReadingStatsStore.h"
+#include "util/ReadingHistoryMigration.h"
+#include "util/ReadingHistoryProvider.h"
 
 namespace fui = freeink::ui;
 
@@ -634,10 +636,18 @@ void KOReaderSyncActivity::onEnter() {
 
   resetUi();
   if (!pluginEventsOnly) {
-    readingstats::Snapshot savedStats;
-    hasLocalBookStats = readingstats::loadBook(epubPath.c_str(), savedStats);
-    if (hasLocalBookStats) {
-      localBookSeconds = savedStats.totalSeconds();
+    const auto document = syncEngine::documentId(epubPath);
+    auto history = makeUniqueNoThrow<readingHistory::Provider>();
+    if (history && readingHistory::migrationReady() && !document.empty()) {
+      auto status = history->begin(document);
+      while (status == readingHistory::Status::Scanning) {
+        delay(1);
+        status = history->step();
+      }
+      if (const auto* summary = history->summary()) {
+        hasLocalBookStats = summary->book.seconds != 0;
+        localBookSeconds = summary->book.seconds;
+      }
     }
   }
   app.on(ACTION_ROW, &KOReaderSyncActivity::onResultRow, this);

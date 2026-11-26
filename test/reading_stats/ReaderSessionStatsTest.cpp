@@ -14,6 +14,8 @@ int main() {
   session.onRenderComplete(12200, 1710000000, 300);
   assert(session.trackedSeconds() == 11);
   assert(session.qualifiedTurns() == 2);
+  assert(session.localStartProgressBp() == 100);
+  assert(session.localEndProgressBp() == 300);
   assert(!session.isEmitWorthy());  // The earlier unknown-clock time is not exported.
 
   session.noteTurn(true, true);
@@ -36,4 +38,5 @@ int main() {
   session.reset();
   assert(!session.isTrackWorthy());
   assert(session.qualifiedTurns() == 0);
+  assert(session.localStartProgressBp() == 0 && session.localEndProgressBp() == 0);
 }

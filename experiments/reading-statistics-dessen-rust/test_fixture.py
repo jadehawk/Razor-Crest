@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Regression checks for the Rust Dessen port of Razor-Crest native statistics."""
 import hashlib
+import json
 import os
 import re
 from pathlib import Path
@@ -9,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from datetime import date
+from datetime import date, datetime
 
 def seal(data):
     h=2166136261
@@ -156,18 +157,20 @@ def main(host,app):
         restored = run(host, app, root, b"db")
         assert "Device Statistics" in restored, "Side Next must preserve page navigation"
         token.unlink()
-        folder=root/".crosspoint"/"reading-stats"
-        folder.mkdir(parents=True)
-        (folder/"global_v2.bin").write_bytes(snapshot())
-        (folder/"time_global_v1.bin").write_bytes(period_data())
-        (folder/"books_v1.bin").write_bytes(index_book(1,"Dune","/books/dune.epub"))
-        (folder/"time_0000000000000001_v1.bin").write_bytes(period_data())
-        (folder/"book_0000000000000001_v2.bin").write_bytes(snapshot(3600,3,33))
-        hashes={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in folder.iterdir()}
+        folder=root/".crosspoint"
+        folder.mkdir(parents=True,exist_ok=True)
+        log=folder/"reading_sessions.jsonl"
+        now=int(datetime.now().timestamp())
+        def event(i,title,path,secs,ago=0):
+            return json.dumps(dict(doc=f"{i:032x}",title=title,path=path,secs=secs,start=now-ago*86400,tz=0))
+        rows=[event(1,"Dune","/books/dune.epub",1200,i) for i in range(3)]
+        rows += [event(2,"Other Book","/books/other.epub",600,i%3) for i in range(9)]
+        log.write_text("\n".join(rows)+"\n")
+        hashes={log.name:hashlib.sha256(log.read_bytes()).hexdigest()}
         os.environ["DESSEN_NATIVE_STATS"]="1"
         output=run(host,app,root,b"dddddddddddddb")
         device=run(host,app,root,b"db")
-        assert "Device Statistics" in device and "Time of Day" in device
+        assert "Device Statistics" in device and "Session Start Periods" in device, device[-6000:]
         os.environ["DESSEN_TEST_NARROW"]="1"
         try:
             for wrap in (False, True):
@@ -182,9 +185,9 @@ def main(host,app):
         offline_pages=run(host,app,root,b"dddddbb")
         for value in ("Your Week", "Reading Calendar", "All Books", "Last Read Day",
                       "Best Day", "Daily Average", "Reading Consistency",
-                      "None", "<15m", "15-44m", "45m+", "Books tracked: 1", "Dune", "Next >"):
+                      "None", "<15m", "15-44m", "45m+", "Books tracked: 2", "Dune", "Next >"):
             assert value in offline_pages, f"Missing offline page content {value}:\\n{offline_pages[-5000:]}"
-        for value in ["Device Statistics","Current Book","THIS MONTH","12","12m","Time of Day",
+        for value in ["Device Statistics","Current Book","THIS MONTH","12","12m","Session Start Periods",
                       "Morning","Afternoon","Evening","Night","Latest 7 Days",
                       "Dune","Reading Time","Active Days","Avg. Session","1h 0m","3"]:
             assert value in output,f"Missing {value}:\n{output[-5000:]}"
@@ -196,29 +199,23 @@ def main(host,app):
             count = len(re.findall(r"(?m)^text \d+,\d+ " + label + r"$", output))
             assert count >= 3, f"Time of Day label {label} rendered only {count} times"
         assert not re.search(r"(?m)^text \d+,\d+ 1 / 1$", offline_pages), "Redundant single-page footer"
-        assert {p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in folder.iterdir()}==hashes,"App modified data"
+        assert {log.name:hashlib.sha256(log.read_bytes()).hexdigest()}==hashes,"App modified data"
         # All Books must page through native records without requiring a cache
         # proportional to library size.
-        (folder/"books_v1.bin").write_bytes(b"".join(
-            index_book(i, f"Native Book {i}", f"/books/book{i}.epub") for i in range(1, 8)))
-        for i in range(2, 8):
-            (folder/f"book_{i:016x}_v2.bin").write_bytes(snapshot(600 * i, i, 3 * i))
+        log.write_text("\n".join(event(i,f"Native Book {i}",f"/books/book{i}.epub",600*i) for i in range(1,8))+"\n")
         all_books=run(host,app,root,b"dddddn bb".replace(b" ",b""))
         for value in ("Books tracked: 7", "Native Book 1",
                       "Native Book 6", "Native Book 7"):
             assert value in all_books, f"Missing paginated book item {value}:\\n{all_books[-5000:]}"
-        (folder/"books_v1.bin").write_bytes(index_book(1,"Dune","/books/dune.epub"))
-        for i in range(2, 8):
-            (folder/f"book_{i:016x}_v2.bin").unlink()
-        # Check backup fallback, and never present data from corrupted backups.
-        (folder/"global_v2.bin").write_bytes(b"corrupt")
-        (folder/"global_v2.bin.bak").write_bytes(snapshot())
-        backup = run(host,app,root,b"b")
-        assert re.search(r"(?m)^text \d+,\d+ 12m$", backup), backup[-2000:]
-        (folder/"global_v2.bin.bak").write_bytes(b"corrupt")
-        assert "0m" in run(host,app,root,b"b")
+        # No binary fallback, even with a valid legacy snapshot.
+        legacy=folder/"reading-stats"
+        legacy.mkdir()
+        (legacy/"global_v2.bin").write_bytes(snapshot())
+        log.unlink()
+        empty=run(host,app,root,b"b")
+        assert "No reading sessions yet" in empty and "12m" not in empty
         os.environ.pop("DESSEN_NATIVE_STATS",None)
-        print("PASS: six offline pages plus Server Sync; paired availability; native totals; book data; period bars; calendar; reading time and average session; read-only; backup; corruption")
+        print("PASS: six offline pages plus Server Sync; paired availability; JSONL totals; book data; period bars; calendar; reading time and average session; read-only; no BIN fallback")
 
 if __name__=="__main__":
     main(*sys.argv[1:3])

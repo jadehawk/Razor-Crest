@@ -2,7 +2,7 @@
   "id": "reading-statistics",
   "title": "Reading Statistics",
   "description": "Reading statistics, device-code pairing and optional server refresh",
-  "version": "0.1.13",
+  "version": "0.1.16",
   "permissions": {
     "filesystem": {
       "app_directory": [
@@ -12,7 +12,6 @@
         "list"
       ],
       "read": [
-        "/.crosspoint/reading-stats/**",
         "/.crosspoint/reading_sessions.jsonl",
         "/Books/**"
       ]
@@ -29,5 +28,8 @@
       ],
       "handoff": true
     }
+  },
+  "optional_permissions": {
+    "device_identity": true
   }
 }

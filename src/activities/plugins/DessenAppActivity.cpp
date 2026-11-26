@@ -10,6 +10,7 @@
 #include <esp_random.h>
 #include <sdk/dessen_abi.h>  // DSN_HOME_*
 
+#include <cstdio>
 #include <utility>
 #ifndef BOARD_HAS_PSRAM
 #include <esp_attr.h>
@@ -17,7 +18,6 @@
 #include <wolfssl/wolfcrypt/aes.h>
 
 #include <algorithm>
-#include <cstdio>
 #include <cstring>
 #endif
 
@@ -152,8 +152,7 @@ bool DessenAppActivity::takeResumePath(std::string& path, bool& launchHome) {
   haveResume = false;
   haveNetwork = false;
   cleanupDessenTemporaryFiles();
-  if (esp_reset_reason() != ESP_RST_SW ||
-      (rebootTicket.magic != RESUME_MAGIC && rebootTicket.magic != NETWORK_MAGIC) ||
+  if (esp_reset_reason() != ESP_RST_SW || (rebootTicket.magic != RESUME_MAGIC && rebootTicket.magic != NETWORK_MAGIC) ||
       !memchr(rebootTicket.appPath, 0, sizeof(rebootTicket.appPath))) {
     clearTicket(rebootTicket);
     Storage.remove(VM_SNAPSHOT);
@@ -329,6 +328,7 @@ DessenAppActivity::~DessenAppActivity() {
 
 void DessenAppActivity::onExit() {
   stopNetworkWork();
+  if (services) services->cancelReadingStats();
 #ifndef BOARD_HAS_PSRAM
   if (suspended) {
     discardSnapshot();
@@ -430,8 +430,8 @@ void DessenAppActivity::onEnter() {
       snapshotPath = VM_SNAPSHOT;
       if (auto* fcm = renderer.getFontCacheManager()) fcm->releaseSdFontCaches();
       const uint32_t size = activeTicket.requestSize;
-      auto request = size && size <= CrosspointServices::MAX_NETWORK_REQUEST
-                         ? makeUniqueNoThrow<uint8_t[]>(size) : nullptr;
+      auto request =
+          size && size <= CrosspointServices::MAX_NETWORK_REQUEST ? makeUniqueNoThrow<uint8_t[]>(size) : nullptr;
       const bool ready = request && readSnapshot(REQUEST_SNAPSHOT, request.get(), size, activeTicket.key, 2) &&
                          services->importNetworkRequest(request.get(), size, activeTicket.continuation.memorySize);
       request.reset();
@@ -631,6 +631,24 @@ void DessenAppActivity::loop() {
 #else
         if (!startNetworkWork()) requestUpdate();
 #endif
+      } else if (services->readingStatsBusy()) {
+        if (services->serviceAsyncWork()) {
+          historyProgressAt = 0;
+          requestUpdate();
+        } else {
+          // Leave fast queries alone; display progress after roughly a second
+          // and then at most every five seconds to avoid excessive e-ink refreshes.
+          const auto now = millis();
+          if (!historyProgressAt) historyProgressAt = now - 4000;
+          if (now - historyProgressAt >= 5000) {
+            historyProgressAt = now;
+            requestUpdate();
+          }
+          lock.unlock();
+          // skipLoopDelay keeps the CPU awake. A real RTOS yield permits idle
+          // and other tasks to run, even during a long continuous scan.
+          vTaskDelay(1);
+        }
       } else if (services->serviceAsyncWork()) {
         requestUpdate();
       }
@@ -716,8 +734,8 @@ void DessenAppActivity::loop() {
       LOG_ERR("DSN", "App fault at 0x%08x (pc 0x%08x): %s", static_cast<unsigned>(host.vm().fault_addr),
               static_cast<unsigned>(host.vm().pc), appPath.c_str());
     } else {
-      LOG_INF("DSN", "App exited: code=%d sp=%u path=%s", host.exitCode(),
-              static_cast<unsigned>(host.vm().x[2]), appPath.c_str());
+      LOG_INF("DSN", "App exited: code=%d sp=%u path=%s", host.exitCode(), static_cast<unsigned>(host.vm().x[2]),
+              appPath.c_str());
     }
     leaveApp();
     return;
@@ -728,6 +746,28 @@ void DessenAppActivity::loop() {
 void DessenAppActivity::render(RenderLock&&) {
   if (networkRunning.load(std::memory_order_acquire)) return;
   if (!services || !memory || !services->permissions().ready() || host.state() == dessen::State::Launch) return;
+  if (host.state() == dessen::State::Busy && services->readingStatsBusy()) {
+    // Native progress belongs to the optional host service, not to a particular
+    // plugin. The guest stays parked and will redraw after the query completes.
+    if (frameStored) {
+      renderer.discardStoredBwBuffer();
+      frameStored = false;
+    }
+    const auto percent = services->readingStatsProgress();
+    const int w = renderer.getScreenWidth(), h = renderer.getScreenHeight();
+    const int barW = w * 3 / 4, barX = (w - barW) / 2, barY = h / 2;
+    char progress[16];
+    snprintf(progress, sizeof(progress), "%u%%", percent);
+    renderer.clearScreen();
+    renderer.drawCenteredText(UI_12_FONT_ID, barY - 44, tr(STR_LOADING), true, EpdFontFamily::BOLD);
+    renderer.drawRect(barX, barY, barW, 14, true);
+    const int filled = (barW - 4) * static_cast<int>(percent) / 100;
+    if (filled > 0) renderer.fillRect(barX + 2, barY + 2, filled, 10, true);
+    renderer.drawCenteredText(UI_10_FONT_ID, barY + 24, progress);
+    renderer.drawCenteredText(SMALL_FONT_ID, barY + 56, "Hold Back to cancel");
+    renderer.displayBuffer();
+    return;
+  }
   // Carries the board's bezel insets for the current rotation; the app draws inside them.
   const fui::DeviceContext device = uiTarget.deviceContext();
   bool drew = false;

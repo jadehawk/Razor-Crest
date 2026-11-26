@@ -1,4 +1,4 @@
-﻿#include <cassert>
+#include <cassert>
 #include <fstream>
 #include <iterator>
 #include <string>
@@ -55,6 +55,31 @@ int main(int argc, char** argv) {
     assert(!p.allows(path, Access::Read));
   }
   assert(p.allowsUrl("https://example.com/a?b=c"));
+  assert(!p.allowsDeviceIdentity("https://example.com/a"));
+  DessenPermissions identity;
+  assert(identity.parse(R"({"permissions":{"network":{"origins":["https://example.com"],"device_identity":true}}})",
+                        "/plugins/reader"));
+  assert(!identity.allowsDeviceIdentity("https://example.com/a"));
+  identity.authorize();
+  assert(identity.allowsDeviceIdentity("https://example.com/a"));
+  assert(!identity.allowsDeviceIdentity("https://example.com.evil/a"));
+  assert(!identity.allowsDeviceIdentity("http://example.com/a"));
+  assert(!identity.allowsDeviceIdentity("https://example.com:444/a"));
+  DessenPermissions optionalIdentity;
+  assert(optionalIdentity.parse(
+      R"({"permissions":{"network":{"origins":["https://example.com"],"handoff":true}},"optional_permissions":{"device_identity":true,"future_capability":true}})",
+      "/plugins/reader"));
+  assert(!optionalIdentity.allowsDeviceIdentity("https://example.com/a"));
+  optionalIdentity.authorize();
+  assert(optionalIdentity.allowsDeviceIdentity("https://example.com/a"));
+  assert(!optionalIdentity.allowsDeviceIdentity("https://other.example/a"));
+  assert(!optionalIdentity.allowsDeviceIdentity("http://example.com/a"));
+  assert(!optionalIdentity.allowsDeviceIdentity("https://example.com:444/a"));
+  assert(optionalIdentity.parse(
+      R"({"permissions":{"network":{"origins":["https://example.com"]}},"optional_permissions":{"device_identity":false}})",
+      "/plugins/reader"));
+  optionalIdentity.authorize();
+  assert(!optionalIdentity.allowsDeviceIdentity("https://example.com/a"));
   assert(p.allowsUrl("https://EXAMPLE.COM:443/a"));
   for (auto url :
        {"http://example.com/", "https://example.com.evil/", "https://example.com@evil/", "https://evil@example.com/",
@@ -78,6 +103,16 @@ int main(int argc, char** argv) {
   bad(R"({"permissions":{"filesystem":{"read":["/.crosspoint/shared-token.json.bak"]}}})");
   bad(R"({"permissions":{"credentials":{"shared":["/exports/token.json"]}}})");
   bad(R"({"permissions":{"network":{"origins":["https://*.example.com"]}}})");
+  bad(R"({"permissions":{"network":{"origins":["http://example.com"],"device_identity":true}}})");
+  bad(R"({"permissions":{"network":{"origins":["https://example.com"],"device_identity":"yes"}}})");
+  bad(R"({"permissions":{"network":{"origins":[],"device_identity":true}}})");
+  bad(R"({"permissions":{},"optional_permissions":{"device_identity":true}})");
+  bad(R"({"permissions":{"network":{"origins":["http://example.com"]}},"optional_permissions":{"device_identity":true}})");
+  bad(R"({"permissions":{"network":{"origins":["https://example.com","http://other.example"]}},"optional_permissions":{"device_identity":true}})");
+  bad(R"({"permissions":{"network":{"origins":["https://example.com"]}},"optional_permissions":{"device_identity":"yes"}})");
+  bad(R"({"permissions":{"network":{"origins":["https://example.com"]}},"optional_permissions":{"device_identity":null}})");
+  bad(R"({"permissions":{},"optional_permissions":[]})");
+  bad(R"({"permissions":{"network":{"origins":["https://example.com"],"device_identity":true}},"optional_permissions":{"device_identity":false}})");
   bad(R"({"permissions":{"network":{"origins":["https://example.com"],"handoff":"yes"}}})");
   bad(std::string(4097, ' '));
   bad(std::string("{\"permissions\":") + std::string(100, '[') + "0" + std::string(100, ']') + "}");
@@ -113,5 +148,7 @@ int main(int argc, char** argv) {
     assert(installed.allowsUrl("https://sync.techy-notes.com/api/device/code"));
     assert(!installed.allowsUrl("http://sync.techy-notes.com/api/device/code"));
     assert(installed.allowsLibrary() && installed.allowsHandoff());
+    assert(installed.allowsDeviceIdentity("https://sync.techy-notes.com/api/device/code"));
+    assert(!installed.allowsDeviceIdentity("https://other.example/api/device/code"));
   }
 }

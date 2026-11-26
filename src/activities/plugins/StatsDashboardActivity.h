@@ -6,9 +6,9 @@
 
 #include "DashboardCardAssets.h"
 #include "activities/Activity.h"
+#include "util/ReadingHistoryProvider.h"
 #include "util/ReadingStatsBookIndex.h"
 #include "util/ReadingStatsData.h"
-#include "util/ReadingStatsLegacyPreview.h"
 #include "util/SingleCardPager.h"
 
 struct Rect;  // Defined by the active UI theme; only referenced in this header.
@@ -19,7 +19,7 @@ class StatsDashboardActivity final : public Activity {
  public:
   StatsDashboardActivity(GfxRenderer& renderer, MappedInputManager& input, std::string manifest);
   StatsDashboardActivity(GfxRenderer& renderer, MappedInputManager& input, std::string manifest,
-                         const readingstats::BookEntry& selected);
+                         const readingstats::BookEntry& selected, std::string document);
 
   static bool supportsManifest(const std::string& path);
 
@@ -71,8 +71,13 @@ class StatsDashboardActivity final : public Activity {
   readingstats::TimeBuckets timeGlobal;
   readingstats::TimeBuckets timeBook;
   readingstats::BookEntry bookInfo{};
+  std::unique_ptr<readingHistory::Provider> history;
+  std::string selectedDocument;
+  bool turnsAvailable = false;
+  bool bookTurnsAvailable = false;
   struct BookRow {
     readingstats::BookEntry entry{};
+    std::string document;
     char displayAuthor[48] = {};
     uint64_t seconds = 0;
     int progress = -1;
@@ -93,9 +98,6 @@ class StatsDashboardActivity final : public Activity {
   uint32_t recordedBookCount = 0;
   bool statsAvailable = false;
   bool bookStatsAvailable = false;
-  readingstats::legacy::Preview crossInkPreview{};
-  readingstats::legacy::Preview vCodexPreview{};
-  bool legacyPreviewLoaded = false;
 
   void drawDashboardPage(bool interactive);
   bool loadManifest();

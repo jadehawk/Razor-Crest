@@ -86,6 +86,8 @@ TEST(ReaderSession, RequiresTenSecondsAndTrustedStart) {
   anchor(session, 1000, 0, 1000);
   turnAndRender(session, true, true, 11000, 10, 1100);
   EXPECT_EQ(session.durationSeconds(), 0u);
+  EXPECT_EQ(session.localStartProgressBp(), 1000);
+  EXPECT_EQ(session.localEndProgressBp(), 1100);
 
   turnAndRender(session, true, true, 20000, 19, 1200);
   EXPECT_EQ(session.durationSeconds(), 9u);

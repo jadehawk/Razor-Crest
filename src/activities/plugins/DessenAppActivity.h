@@ -28,6 +28,8 @@ class DessenAppActivity final : public Activity {
   void loop() override;
   void render(RenderLock&&) override;
   bool handleHomeGesture() override;
+  bool preventAutoSleep() override { return services && services->readingStatsBusy(); }
+  bool skipLoopDelay() override { return preventAutoSleep(); }
   static bool takeResumePath(std::string& path, bool& homeLauncher);
   static void abandonResume();
 
@@ -69,6 +71,7 @@ class DessenAppActivity final : public Activity {
   std::atomic<bool> networkRunning{false}, networkDone{false};
   bool leaveAfterNetwork = false;
   unsigned long lastWakeMs = 0;
+  unsigned long historyProgressAt = 0;
   bool suppressTimerFrameRestore = false;
 #ifndef BOARD_HAS_PSRAM
   bool suspendNetwork();

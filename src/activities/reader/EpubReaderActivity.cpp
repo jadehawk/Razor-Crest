@@ -289,6 +289,19 @@ EpubReaderActivity::~EpubReaderActivity() {
   }
 }
 
+void EpubReaderActivity::getBookSeries(std::string& name, std::string& index) {
+  Epub::SyncMetadata metadata;
+  if (!epub || !epub->loadSyncMetadata(metadata)) return;
+  name = std::move(metadata.series);
+  if (metadata.seriesIndex) {
+    char value[24];
+    snprintf(value, sizeof(value), "%.2f", static_cast<double>(*metadata.seriesIndex));
+    index = value;
+    while (!index.empty() && index.back() == '0') index.pop_back();
+    if (!index.empty() && index.back() == '.') index.pop_back();
+  }
+}
+
 bool EpubReaderActivity::loadBook() {
   auto loadedEpub = makeUniqueNoThrow<Epub>(bookPath, "/.crosspoint");
   if (!loadedEpub) {

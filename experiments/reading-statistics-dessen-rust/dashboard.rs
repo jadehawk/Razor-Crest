@@ -11,61 +11,6 @@ struct Current {
     periods: [u32; 4],
 }
 
-#[inline(never)]
-fn load_current(home: &Home) -> Current {
-    let mut out = Current { found: false, secs: 0, sessions: 0, turns: 0, active: 0, periods: [0; 4] };
-    if !home.has_book() { return out; }
-    let mut record = [0u8; 316];
-    for i in 0..2048u32 {
-        if dsn_fs_read_at(BOOK_INDEX, i * 316, &mut record) != 316 { break; }
-        if !record_valid(&record, 0x314b4252, 1) { break; }
-        let path_end = record[16..192].iter().position(|&b| b == 0).unwrap_or(176);
-        if &record[16..16 + path_end] != home.field(0) { continue; }
-        let hash = (le32(&record, 12) as u64) << 32 | le32(&record, 8) as u64;
-        let mut path = [0u8; 80];
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        let make_path = |p: &mut [u8; 80], prefix: &[u8], suffix: &[u8]| {
-            p[..prefix.len()].copy_from_slice(prefix);
-            for j in 0..16 {
-                p[prefix.len() + j] = HEX[((hash >> (60 - j * 4)) & 15) as usize];
-            }
-            let end = prefix.len() + 16;
-            p[end..end + suffix.len()].copy_from_slice(suffix);
-            end + suffix.len()
-        };
-        let n = make_path(&mut path, BOOK_PREFIX, BOOK_SUFFIX);
-        let mut snap = [0u8; 1500];
-        if !read_native(&path[..n], &mut snap, 0x32545352, 2) {
-            let n = make_path(&mut path, BOOK_PREFIX, BOOK_SUFFIX_BACKUP);
-            if !read_native(&path[..n], &mut snap, 0x32545352, 2) { break; }
-        }
-        out.found = true;
-        out.secs = (((le32(&snap, 20) as u64) << 32) | le32(&snap, 16) as u64).min(u32::MAX as u64) as u32;
-        out.sessions = le32(&snap, 12);
-        out.turns = le32(&snap, 24);
-        let latest = le32(&snap, 28);
-        for ago in 0..366 {
-            if latest <= ago { break; }
-            let ordinal = latest - ago;
-            if le32(&snap, 32 + (ordinal as usize % 366) * 4) != 0 { out.active += 1; }
-        }
-        let prefix = b"/.crosspoint/reading-stats/time_";
-        let suffix = b"_v1.bin";
-        let n = make_path(&mut path, prefix, suffix);
-        let mut times = [0u8; 148];
-        if read_native(&path[..n], &mut times, 0x31505452, 1) {
-            for j in 0..4 { out.periods[j] = le32(&times, 16 + 4 * j); }
-        } else {
-            let suffix = b"_v1.bin.bak";
-            let n = make_path(&mut path, prefix, suffix);
-            if read_native(&path[..n], &mut times, 0x31505452, 1) {
-                for j in 0..4 { out.periods[j] = le32(&times, 16 + 4 * j); }
-            }
-        }
-        break;
-    }
-    out
-}
 
 impl Ui {
     #[inline(never)]
@@ -320,7 +265,7 @@ impl Ui {
                 self.book_hero(x, top, w, hero, &home.cover[..home.cover_n],
                     home.field(1), home.field(2), home.field(4), home.percent);
             } else {
-                self.centered(x + 10, top + hero / 3, w - 20, self.lb, b"No recent book", false);
+                self.centered(x + 10, top + hero / 3, w - 20, self.lb, b"No book currently being read", false);
             }
             let my = top + hero + gap;
             let mw = (w - gap) / 2;

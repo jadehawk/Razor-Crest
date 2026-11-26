@@ -162,7 +162,7 @@ bool DessenPermissions::addRule(std::string_view path, uint8_t access, bool cred
 }
 
 bool DessenPermissions::parse(std::string_view manifest, std::string_view appDirectory) {
-  valid = authorized = handoff = library = false;
+  valid = authorized = handoff = deviceIdentity = library = false;
   ruleCount = originCount = 0;
   if (manifest.empty() || manifest.size() > MAX_MANIFEST || !canonical(appDirectory, appDir) || appDir == "/")
     return false;
@@ -232,7 +232,7 @@ bool DessenPermissions::parse(std::string_view manifest, std::string_view appDir
   if (!permissions["network"].isNull()) {
     if (!permissions["network"].is<JsonObjectConst>()) return false;
     const auto network = permissions["network"].as<JsonObjectConst>();
-    if (!keys(network, "|origins||handoff|") || !network["origins"].is<JsonArrayConst>() ||
+    if (!keys(network, "|origins||handoff||device_identity|") || !network["origins"].is<JsonArrayConst>() ||
         network["origins"].size() > MAX_ORIGINS)
       return false;
     for (JsonVariantConst value : network["origins"].as<JsonArrayConst>()) {
@@ -243,7 +243,25 @@ bool DessenPermissions::parse(std::string_view manifest, std::string_view appDir
     }
     if (!network["handoff"].isNull() && !network["handoff"].is<bool>()) return false;
     handoff = network["handoff"] | false;
+    if (!network["device_identity"].isNull() && !network["device_identity"].is<bool>()) return false;
+    deviceIdentity = network["device_identity"] | false;
     if (handoff && !originCount) return false;
+  }
+  // Optional grants live outside the strict required permission schema, so
+  // older hosts can load the same manifest without granting new capabilities.
+  if (!document["optional_permissions"].isUnbound()) {
+    const auto optional = document["optional_permissions"];
+    if (!optional.is<JsonObjectConst>()) return false;
+    const auto grants = optional.as<JsonObjectConst>();
+    if (!grants["device_identity"].isUnbound()) {
+      if (!grants["device_identity"].is<bool>() || !permissions["network"]["device_identity"].isUnbound()) return false;
+      deviceIdentity = grants["device_identity"].as<bool>();
+    }
+  }
+  if (deviceIdentity) {
+    if (!originCount) return false;
+    for (size_t i = 0; i < originCount; ++i)
+      if (!origins[i].starts_with("https://")) return false;
   }
   valid = true;
   return true;
@@ -291,6 +309,10 @@ bool DessenPermissions::allowsUrl(std::string_view url) const {
   for (size_t i = 0; i < originCount; ++i)
     if (origin == origins[i]) return true;
   return false;
+}
+
+bool DessenPermissions::allowsDeviceIdentity(std::string_view url) const {
+  return deviceIdentity && url.starts_with("https://") && allowsUrl(url);
 }
 
 #endif  // CROSSPOINT_DESSEN_APPS

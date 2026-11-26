@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import sys
+import struct
 from pathlib import Path
 from datetime import datetime, timezone
 from test_fixture import run, snapshot
@@ -46,7 +47,7 @@ def main(host, app):
         log.write_bytes(before)
         log.rename(base/"sessions.saved")
         trace=run(host,app,root,b"b",portrait=True)
-        assert "12m" in trace and "Session Start Periods" not in trace
+        assert "No reading sessions yet" in trace and "12m" not in trace
         (base/"sessions.saved").rename(log)
         # More than 64 books, reverse order and repeated IDs across chunks.
         rows=[]
@@ -58,6 +59,34 @@ def main(host, app):
         assert "Books tracked: 70" in trace, trace[-3000:]
         assert "Book 1" in trace
         assert "Book 6" in trace and "Book 11" in trace and "Book 41" in trace, trace[-3000:]
-    print("CrossPoint history, no RTC, undated totals, source isolation: PASS")
+        # Native response fixtures are intentionally different from the JSONL
+        # contents, proving that the guest consumes the host rather than rescans.
+        anchor=epoch//86400-1
+        summary=struct.pack("<8I20Q",1,1,anchor,anchor,1,1,2,0,
+                            100,0,7200,4,4,0,0,0,7200,
+                            3600,2,2,0,0,0,3600,0,0,0,7200)
+        assert len(summary)==192
+        (base/"test-native-summary.bin").write_bytes(summary)
+        (base/"test-native-days.bin").write_bytes(bytes(370*16)+struct.pack("<2Q",7200,3600))
+        def book(id, title, progress):
+            title=title.encode()
+            return bytes([id])*16+struct.pack("<HBB",progress,len(title),0)+title.ljust(80,b"\0")
+        (base/"test-native-books.bin").write_bytes(book(1,"Native Book A",10000)+book(2,"Native Book B",4321))
+        log.write_text(records[0]+"\n")
+        os.environ["DESSEN_TEST_NATIVE_STATS"]="1"
+        os.environ["DESSEN_TEST_NO_TIME"]="1"
+        trace=run(host,app,root,b"ddddb",portrait=True)
+        assert "Books tracked: 2+" in trace and "Native Book A" in trace and "Native Book B" in trace, trace[-4000:]
+        assert "43%" in trace and "2h" in trace and "1h" in trace, trace[-4000:]
+        assert "LAST RECORDED MONTH" in trace
+        os.environ.pop("DESSEN_TEST_NATIVE_STATS")
+        os.environ["DESSEN_TEST_FINISHED_BOOK"]="1"
+        trace=run(host,app,root,b"db",portrait=True)
+        assert "Hyperion" in trace and "Dune" not in trace
+        trace=run(host,app,root,b"db",portrait=True,one_book=True)
+        assert "No book currently being read" in trace
+        os.environ.pop("DESSEN_TEST_FINISHED_BOOK")
+        os.environ.pop("DESSEN_TEST_NO_TIME")
+    print("CrossPoint history, native provider, completed-book exclusion, no RTC, undated totals, source isolation: PASS")
 if __name__=="__main__":
     main(*sys.argv[1:3])

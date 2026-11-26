@@ -19,6 +19,8 @@ class ReaderSession {
   uint32_t durationSeconds() const { return eventDuration; }
   uint16_t startProgressBp() const { return startProgress; }
   uint16_t endProgressBp() const { return endProgress; }
+  uint16_t localStartProgressBp() const { return localStartProgress; }
+  uint16_t localEndProgressBp() const { return localEndProgress; }
 
  private:
   static uint16_t clampProgress(int progressBp);
@@ -32,6 +34,8 @@ class ReaderSession {
   uint16_t anchorProgress = 0;
   uint16_t startProgress = 0;
   uint16_t endProgress = 0;
+  uint16_t localStartProgress = 0;
+  uint16_t localEndProgress = 0;
   bool hasAnchor = false;
   bool pendingForward = false;
 };

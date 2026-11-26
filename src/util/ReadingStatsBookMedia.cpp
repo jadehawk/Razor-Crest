@@ -17,12 +17,11 @@
 
 namespace readingstats::media {
 namespace {
-constexpr char kDir[] = "/.crosspoint/reading-stats/covers";
+constexpr char kDir[] = "/.crosspoint/reading-history-covers";
 constexpr uint8_t kProgressMarker = 0xA7;
 
 bool ensureDir() {
   return (Storage.exists("/.crosspoint") || Storage.mkdir("/.crosspoint")) &&
-         (Storage.exists("/.crosspoint/reading-stats") || Storage.mkdir("/.crosspoint/reading-stats")) &&
          (Storage.exists(kDir) || Storage.mkdir(kDir));
 }
 std::string pathFor(uint64_t hash, const char* ext) {

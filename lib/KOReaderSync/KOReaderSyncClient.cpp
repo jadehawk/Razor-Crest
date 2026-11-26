@@ -8,6 +8,7 @@
 #include <string>
 
 #include "KOReaderCredentialStore.h"
+#include "ReaderHardwareIdentity.h"
 
 int KOReaderSyncClient::lastHttpCode = 0;
 
@@ -260,7 +261,8 @@ KOReaderSyncClient::Error KOReaderSyncClient::updateProgress(const KOReaderProgr
   doc["progress"] = progress.progress;
   doc["percentage"] = progress.percentage;
   doc["device"] = DEVICE_NAME;
-  doc["device_id"] = DEVICE_ID;
+  readerHardwareIdentity::Id hardware;
+  doc["device_id"] = readerHardwareIdentity::read(hardware) ? hardware.data() : DEVICE_ID;
   if (progress.position.has_value() && KOREADER_STORE.supportsRichProgress()) {
     // Enhanced position is opt-in by server type; strict KOSync never receives it.
     const auto& p = *progress.position;

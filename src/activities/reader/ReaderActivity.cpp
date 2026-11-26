@@ -19,9 +19,11 @@
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
 #include "XtcReaderActivity.h"
+#include "activities/ActivityManager.h"
 #include "activities/RenderLock.h"
 #include "sync/ReadingSessionLog.h"
 #include "util/PluginEvents.h"
+#include "util/ReadingHistoryMigration.h"
 #include "util/ReadingStatsStore.h"
 
 ReaderActivity::ReaderActivity(const char* name, GfxRenderer& renderer, MappedInputManager& mappedInput,
@@ -60,6 +62,11 @@ void ReaderActivity::notePageTurn(const bool forward, const bool succeeded) {
 
 void ReaderActivity::onEnter() {
   Activity::onEnter();
+  if (!readingHistory::migrationReady() && readingHistory::migrationPending()) {
+    LOG_ERR("RMIG", "Reader blocked while publication requires recovery");
+    activityManager.goToFullScreenMessage("Reading history recovery required. Restart with the original SD card.");
+    return;
+  }
 
   // Heap ledger for field crash reports: free vs largest block distinguishes a
   // leak (free falls) from fragmentation (free stable, largest collapses).
@@ -99,11 +106,10 @@ void ReaderActivity::rememberBookOnceRendered() {
   const std::string title = getBookTitle();
   const std::string author = getBookAuthor();
   RECENT_BOOKS.addBook(bookPath, title, author, getBookThumbBmpPath());
-  // A deleted book returns to All Books the next time it really opens.
-  // Register only the identity; actual seconds/turns still require a
-  // qualifying session flushed on exit or sleep.
-  if (!readingstats::rememberOpenedBook(bookPath.c_str(), title.c_str(), author.c_str()))
-    LOG_ERR("RST", "Could not index opened book: %s", bookPath.c_str());
+  // Pre-cutover recovery is the only remaining legacy recorder path.
+  if (!readingHistory::migrationReady() && !readingHistory::migrationPending() &&
+      !readingstats::rememberOpenedBook(bookPath.c_str(), title.c_str(), author.c_str()))
+    LOG_ERR("RST", "Could not index opened book before cutover: %s", bookPath.c_str());
   const pluginevents::Var openVars[] = {{"book", bookPath.c_str()}};
   pluginevents::emit(pluginevents::Event::ReaderOpen, openVars, 1);
 }
@@ -146,26 +152,41 @@ void ReaderActivity::onExit() {
 void ReaderActivity::prepareForSleep() { flushReaderSession(); }
 
 void ReaderActivity::flushReaderSession() {
-  // Native BIN records are local and independent of plugin subscriptions.
-  if (readerSession.isTrackWorthy()) {
-    const std::string title = getBookTitle();
-    const std::string author = getBookAuthor();
-    readingstats::record(bookPath.c_str(), readerSession.trackedSeconds(), readerSession.qualifiedTurns(),
-                         readerSession.startTime(), title.c_str(), author.c_str());
-  }
-  if (!readerSession.isEmitWorthy()) {
+  const bool tracked = readerSession.isTrackWorthy();
+  const bool dated = readerSession.isEmitWorthy();
+  if (!tracked && !dated) {
     readerSession.reset();
     return;
   }
-
-  // The history uses the id progress sync uses, so the server files a session under the same book.
-  // Plugins always receive the binary id; hash the file only when one of the two needs it.
-  const bool subscribed = pluginevents::anySubscriber(pluginevents::Event::ReaderSession);
+  // A failed pre-commit conversion leaves the existing recorder untouched.
+  // Never append into an interrupted rename transaction or mutate its inputs.
+  const bool jsonOnly = readingHistory::migrationReady();
+  const bool publicationPending = !jsonOnly && readingHistory::migrationPending();
+  if (!jsonOnly && !publicationPending && tracked) {
+    if (!readingstats::record(bookPath.c_str(), readerSession.trackedSeconds(), readerSession.qualifiedTurns(),
+                              readerSession.startTime(), getBookTitle().c_str(), getBookAuthor().c_str()))
+      LOG_ERR("RST", "Pre-cutover session write failed");
+  }
+  const bool subscribed = dated && pluginevents::anySubscriber(pluginevents::Event::ReaderSession);
   const bool binaryMatch = KOREADER_STORE.getMatchMethod() == DocumentMatchMethod::BINARY;
   const std::string document = (subscribed || binaryMatch) ? KOReaderDocumentId::calculate(bookPath) : std::string();
-  readingSessionLog::append(binaryMatch ? document : KOReaderDocumentId::calculateFromFilename(bookPath), bookPath,
-                            getBookTitle(), readerSession.startTime(), readerSession.durationSeconds(),
-                            readerSession.startProgressBp(), readerSession.endProgressBp());
+  const auto syncId = binaryMatch ? document : KOReaderDocumentId::calculateFromFilename(bookPath);
+  if (publicationPending) {
+    LOG_ERR("RMIG", "Session not persisted: interrupted migration requires recovery");
+  } else if (jsonOnly && tracked) {
+    readingSessionLog::LocalDetails local{
+        readerSession.trackedSeconds(), readerSession.qualifiedTurns(), getBookAuthor(), {}, {}};
+    getBookSeries(local.series, local.seriesIndex);
+    if (!readingSessionLog::append(syncId, bookPath, getBookTitle(), dated ? readerSession.startTime() : 0,
+                                   dated ? readerSession.durationSeconds() : readerSession.trackedSeconds(),
+                                   dated ? readerSession.startProgressBp() : readerSession.localStartProgressBp(),
+                                   dated ? readerSession.endProgressBp() : readerSession.localEndProgressBp(), &local))
+      LOG_ERR("RSL", "Local reading session write failed");
+  } else if (dated) {
+    readingSessionLog::append(syncId, bookPath, getBookTitle(), readerSession.startTime(),
+                              readerSession.durationSeconds(), readerSession.startProgressBp(),
+                              readerSession.endProgressBp());
+  }
 
   const bool validDocument =
       document.size() == 32 && std::all_of(document.begin(), document.end(), [](const unsigned char c) {

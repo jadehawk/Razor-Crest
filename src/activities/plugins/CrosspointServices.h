@@ -58,6 +58,8 @@ class CrosspointServices : public dessen::Services {
   int recents(char* out, uint32_t cap) override;
   int recentShelf(uint32_t first, uint32_t count, char* out, uint32_t cap) override;
   int bookProgress(const char* path) override;
+  int readingStatsStart(const uint8_t* book, uint32_t length, uint32_t anchorDay) override;
+  int readingStatsRead(uint32_t kind, uint32_t first, uint8_t* out, uint32_t cap) override;
   int bookCover(const char* path, uint32_t height, uint8_t* out, uint32_t cap) override;
   int wifiConnectStart() override;
 
@@ -93,6 +95,9 @@ class CrosspointServices : public dessen::Services {
   }
   // Called by the operation's sole owner. True when the parked call has completed.
   bool serviceAsyncWork();
+  bool readingStatsBusy() const { return readingStatsActive_.load(std::memory_order_acquire); }
+  unsigned readingStatsProgress() const;
+  void cancelReadingStats();
   void cancelNetwork() { networkCancelled_.store(true, std::memory_order_relaxed); }
   void failNetwork();
 #ifndef BOARD_HAS_PSRAM
@@ -127,7 +132,7 @@ class CrosspointServices : public dessen::Services {
  private:
   static constexpr size_t MAX_SHARED_CREDENTIAL_SIZE = 4096;
   void cleanupDownload();
-  enum class Op : uint8_t { None, Net, Fetch, Keygen, TextInput, WifiStart, WifiConnecting };
+  enum class Op : uint8_t { None, Net, Fetch, Keygen, TextInput, WifiStart, WifiConnecting, ReadingStats };
 
   static int resolve(const char* path, uint32_t maxLen = 255);  // validates an app path (already the SD path)
 
@@ -139,6 +144,10 @@ class CrosspointServices : public dessen::Services {
   std::unique_ptr<freeink::content::Crypto> crypto_;
   struct ShelfOverlap;
   std::unique_ptr<ShelfOverlap> shelfOverlap_;
+  struct ReadingStatsRequest;
+  std::unique_ptr<ReadingStatsRequest> readingStats_;
+  std::atomic<bool> readingStatsActive_{false};
+  bool serviceReadingStats();
 
   // Single outstanding async op. Buffers point into guest memory (valid while
   // the VM is parked). Request strings from the syscall stack are copied.

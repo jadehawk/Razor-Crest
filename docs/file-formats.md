@@ -902,3 +902,30 @@ Book moves rename the store and its `.deleted` journal (plus recovery sidecars)
 together. The stored source path is informational and is refreshed on the next
 save; the current file path selects the store. Local book deletion cleans up all
 of these sidecars but preserves the independent `My Clippings.txt` export.
+
+## `/.crosspoint/reading_sessions-history.cache`
+
+Disposable native reading-history checkpoint, format `RHISTC04`. All integers are
+explicit little-endian; no compiler-dependent structures are serialized.
+
+| Offset | Size | Field |
+| ---: | ---: | --- |
+| 0 | 8 | ASCII magic/version RHISTC04 |
+| 8 | 4 | Requested local Unix day anchor (0 = inferred) |
+| 12 | 4 | Flags: selected document bit 0, detailed book totals bit 1 |
+| 16 | 16 | Binary selected document ID (zero if absent) |
+| 32 | 8 | FNV-1a 64-bit checksum of source prefix |
+| 40 | 192 | Version 1 Dessen reading-history summary, including source byte length and book count; internal reserved u32 at summary offset 28 indicates a verified historical baseline |
+| 232 | 24 | Overall and selected turns (u64 each), u32 completeness flags, u32 reserved |
+| 256 | 7,420 | 371 ring records: u64 overall seconds, u64 selected-book seconds, u32 date |
+| 7,676 | 476 | Seven weekly ring records: four u64 overall periods, four u64 selected-book periods, u32 date |
+| 8,152 | 28 × book count | Sorted 16-byte document IDs, u32 latest valid JSONL line offsets and u64 detailed total seconds (zero unless requested) |
+| After index | 8 | FNV-1a 64-bit checksum of all preceding checkpoint bytes |
+
+An offset of UINT32_MAX denotes unavailable book metadata. The maximum file
+length is 36,832 bytes for 1,024 books. The source JSONL remains authoritative;
+the cache is replaced through the HAL only after closing a complete temp file.
+Reopen validates format, query key, length, cache checksum and the full source
+prefix. If the prefix is unchanged, append only from a complete newline
+boundary. Invalid checkpoints rebuild. See `native-reading-history-provider.md`
+for lifecycle, verification and limitations.

@@ -16,10 +16,22 @@ struct HalFile {
   std::string path;
   std::string content;
   uint64_t position = 0;
+  size_t readLimit = SIZE_MAX;
   bool writable = false;
   bool opened = false;
   explicit operator bool() const { return opened; }
   size_t fileSize() const { return content.size(); }
+  uint64_t fileSize64() const { return content.size(); }
+  bool directory = false;
+  std::string lastChild;
+  bool isDirectory() const { return directory; }
+  size_t getName(char* name, size_t cap) const {
+    const auto base = path.substr(path.find_last_of('/') + 1);
+    if (base.size() >= cap) return 0;
+    memcpy(name, base.c_str(), base.size() + 1);
+    return base.size();
+  }
+  HalFile openNextFile();
   bool seek64(uint64_t target) {
     if (!opened || target > content.size()) return false;
     position = target;
@@ -27,7 +39,9 @@ struct HalFile {
   }
   int read(void* dest, size_t count) {
     if (!opened) return -1;
-    const size_t amount = std::min<size_t>(count, content.size() - static_cast<size_t>(position));
+    const size_t end = std::min(content.size(), readLimit);
+    if (position >= end) return 0;
+    const size_t amount = std::min<size_t>(count, end - static_cast<size_t>(position));
     if (amount) std::memcpy(dest, content.data() + position, amount);
     position += amount;
     return static_cast<int>(amount);
@@ -53,6 +67,8 @@ struct FakeHalStorage {
   std::map<std::string, std::string> files;
   std::set<std::string> directories;
   std::string failRenameTo;
+  bool failRemoveDir = false;
+  size_t readLimit = SIZE_MAX;
   bool exists(const char* p) const { return files.count(p) || directories.count(p); }
   bool mkdir(const char* p) {
     directories.insert(p);
@@ -64,6 +80,7 @@ struct FakeHalStorage {
     out.storage = this;
     out.path = p;
     out.content = it->second;
+    out.readLimit = readLimit;
     out.writable = false;
     out.position = 0;
     out.opened = true;
@@ -78,17 +95,36 @@ struct FakeHalStorage {
     out.opened = true;
     return true;
   }
-  HalFile open(const std::string& p, int flags) {
+  HalFile open(const std::string& p, int flags = 0) {
     HalFile file;
-    if (!(flags & O_CREAT) && !files.count(p)) return file;
+    if (!(flags & O_CREAT) && !exists(p.c_str())) return file;
     file.storage = this;
     file.path = p;
-    file.content = files[p];
+    file.directory = directories.count(p) != 0;
+    if (!file.directory) file.content = files[p];
     file.writable = (flags & O_RDWR) != 0;
     file.opened = true;
     return file;
   }
   bool remove(const char* p) { return files.erase(p) != 0; }
+  bool removeDir(const char* p) {
+    if (failRemoveDir) return false;
+    const std::string prefix = std::string(p) + "/";
+    for (auto it = files.begin(); it != files.end();) {
+      if (it->first.starts_with(prefix))
+        it = files.erase(it);
+      else
+        ++it;
+    }
+    for (auto it = directories.begin(); it != directories.end();) {
+      if (*it == p || it->starts_with(prefix))
+        it = directories.erase(it);
+      else
+        ++it;
+    }
+    return true;
+  }
+  bool replaceFile(const char* tmp, const char* path) { return rename(tmp, path); }
   bool rename(const char* oldPath, const char* newPath) {
     if (failRenameTo == newPath) return false;
     auto item = files.find(oldPath);
@@ -98,6 +134,22 @@ struct FakeHalStorage {
     return true;
   }
 };
+
+inline HalFile HalFile::openNextFile() {
+  if (!directory || !opened) return {};
+  const std::string prefix = path + "/";
+  std::string next;
+  auto consider = [&](const std::string& name) {
+    if (!name.starts_with(prefix)) return;
+    const auto child = name.substr(0, name.find('/', prefix.size()));
+    if (child > lastChild && (next.empty() || child < next)) next = child;
+  };
+  for (const auto& item : storage->files) consider(item.first);
+  for (const auto& name : storage->directories) consider(name);
+  if (next.empty()) return {};
+  lastChild = next;
+  return storage->open(next);
+}
 
 inline bool HalFile::close() {
   if (!opened) return false;

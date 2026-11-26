@@ -267,6 +267,7 @@ class EpubReaderActivity final : public ReaderActivity {
   void beginLoanTimeSync();
   std::string getBookTitle() const override { return epub ? epub->getTitle() : ""; }
   std::string getBookAuthor() const override { return epub ? epub->getAuthor() : ""; }
+  void getBookSeries(std::string& name, std::string& index) override;
   std::string getBookThumbBmpPath() const override { return epub ? epub->getThumbBmpPath() : ""; }
   int getProgressBasisPoints() const override;
   void renderBook() override;

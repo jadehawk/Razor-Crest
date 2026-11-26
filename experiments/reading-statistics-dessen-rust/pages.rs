@@ -1,22 +1,7 @@
 // Additional offline pages matching the original Reading Statistics widget order.
 // All rendering is bounded by Dessen's safe-area dimensions.
 
-fn weekly_periods(st: &Stats) -> [u32; 4] {
-    if st.log_source { return st.week_hour; }
-    let mut out = [0u32; 4];
-    let mut bytes = [0u8; 148];
-    if !(read_native(PERIODS, &mut bytes, 0x31505452, 1) ||
-         read_native(PERIODS_BACKUP, &mut bytes, 0x31505452, 1)) { return out; }
-    let latest = le32(&bytes, 12);
-    if latest == 0 { return out; }
-    for ago in 0..7u32 {
-        let ordinal = st.end.saturating_add(1).saturating_sub(ago);
-        if ordinal == 0 || ordinal > latest || latest - ordinal >= 7 { continue; }
-        let off = 32 + (ordinal % 7) as usize * 16;
-        for k in 0..4 { out[k] = out[k].saturating_add(le32(&bytes, off + k * 4)); }
-    }
-    out
-}
+fn weekly_periods(st: &Stats) -> [u32; 4] { st.week_hour }
 
 fn latest_day_seconds(st: &Stats) -> (u32, u32) {
     for ago in 0..DAYS {
@@ -34,34 +19,6 @@ fn days_in_month(year: u32, month: u32) -> u32 {
         4 | 6 | 9 | 11 => 30,
         _ => 31,
     }
-}
-
-fn book_at(idx: u32, record: &mut [u8; 316]) -> bool {
-    if idx >= 2048 || dsn_fs_read_at(BOOK_INDEX, idx * 316, record) != 316 { return false; }
-    record_valid(record, 0x314b4252, 1) &&
-        record[16..192].contains(&0) && record[192..264].contains(&0)
-}
-
-#[inline(never)]
-fn book_time(record: &[u8; 316]) -> Option<u32> {
-    let hash = (le32(record, 12) as u64) << 32 | le32(record, 8) as u64;
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut name = [0u8; 80];
-    let prefix = BOOK_PREFIX.len();
-    name[..prefix].copy_from_slice(BOOK_PREFIX);
-    for j in 0..16 { name[prefix + j] = HEX[((hash >> (60 - j * 4)) & 15) as usize]; }
-    let end = prefix + 16;
-    name[end..end + BOOK_SUFFIX.len()].copy_from_slice(BOOK_SUFFIX);
-    let mut snap = [0u8; 1500];
-    let ok = read_native(&name[..end + BOOK_SUFFIX.len()], &mut snap, 0x32545352, 2);
-    if !ok {
-        name[end..end + BOOK_SUFFIX_BACKUP.len()].copy_from_slice(BOOK_SUFFIX_BACKUP);
-        if !read_native(&name[..end + BOOK_SUFFIX_BACKUP.len()], &mut snap, 0x32545352, 2) {
-            return None;
-        }
-    }
-    Some((((le32(&snap, 20) as u64) << 32) | le32(&snap, 16) as u64)
-         .min(u32::MAX as u64) as u32)
 }
 
 impl Ui {
@@ -82,7 +39,7 @@ impl Ui {
         dsn_line(x+12,y+h-3,x+w-12,y+h-3,1,LIGHT);
     }
     #[inline(never)]
-    fn extra_page(&self, st: &Stats, page: i32, year: u32, month: u32, day: u32, book_offset: u32) {
+    fn extra_page(&self, st: &Stats, page: i32, year: u32, month: u32, day: u32, book_offset: u32, books_ready: bool, scratch: &mut [u8]) {
         let x = G;
         let w = self.w - G * 2;
         let y = 13 + self.ls + self.lt;
@@ -119,13 +76,17 @@ impl Ui {
                 let top = y + self.lb + 20;
                 let row_h = self.lb + 12;
                 let capacity = self.books_capacity();
-                let mut record = [0u8; 316];
                 let mut shown = 0u32;
-                let mut valid = 0u32;
-                if st.log_source {
+                let mut failed = !books_ready;
+                if st.err != ERR_UNAVAILABLE {
                     let mut batch=[EMPTY_LOG_BOOK;5];
-                    while shown < capacity {
-                    let count=log_books_page(book_offset+shown,&mut batch);
+                    while shown < capacity && !failed {
+                    let count=if st.native_stats {
+                        match native_book_batch(book_offset+shown,&mut batch,scratch) {
+                            Some(n) => n,
+                            None => { failed=true; break; }
+                        }
+                    } else { log_books_page(book_offset+shown,&mut batch) };
                     if count==0 {break;}
                     for book in &batch[..count.min((capacity-shown) as usize)] {
                         let yy=top+shown as i32*row_h;
@@ -135,26 +96,10 @@ impl Ui {
                     }
 
                     }
-                } else { for index in 0..2048 {
-                    if !book_at(index, &mut record) { break; }
-                    if book_time(&record).is_some() {
-                        if valid >= book_offset && shown < capacity {
-                            let yy = top + shown as i32 * row_h;
-                            let len = record[192..264].iter().position(|&c| c == 0).unwrap_or(72);
-                            let title = if len > 0 { &record[192..192 + len] } else { b"Untitled" };
-                            let path_len=record[16..192].iter().position(|&c| c==0).unwrap_or(0);
-                            let progress=dsn_book_progress(&record[16..16+path_len]);
-                            self.book_row(x,yy,w,row_h,title,progress);
-                            shown += 1;
-                        }
-                        valid += 1;
-                        if shown >= capacity { break; }
-                    }
-                }
-                }
+                } else { failed = true; }
                 if shown == 0 {
                     self.centered(x + 12, top + self.lb, w - 24, self.lb,
-                                  b"No more books to display", false);
+                                  if failed { b"Reading history unavailable" } else { b"No more books to display" }, false);
                 }
                 // The headline already conveys the count when all books fit.
                 if st.book_count > capacity {

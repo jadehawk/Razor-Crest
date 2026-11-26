@@ -22,6 +22,7 @@
 #include <LibraryText.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <ReaderHardwareIdentity.h>
 #include <Utf8.h>
 #include <WiFi.h>
 #include <WifiCredentialStore.h>
@@ -39,14 +40,19 @@
 #include <ctime>
 #include <string_view>
 
+#include "DessenReadingStats.h"
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
 #include "components/icons/cover.h"  // CoverIcon, the fallback-cover glyph
 #include "network/HttpDownloader.h"
+#include "sync/SyncEngine.h"
 #include "util/BookProgress.h"
+#include "util/DeviceHardwareProfile.h"
+#include "util/FirmwareIdentity.h"
 #include "util/PluginHttp.h"
 #include "util/PluginLocations.h"
+#include "util/ReadingHistoryMigration.h"
 #include "util/ReadingStatsSleepSource.h"
 #include "util/ScreenshotUtil.h"
 
@@ -206,6 +212,15 @@ struct CrosspointServices::ShelfOverlap {
   }
 };
 
+struct CrosspointServices::ReadingStatsRequest {
+  readingHistory::Provider provider;
+  char key[DSN_BOOK_PATH_MAX + 1]{};
+  uint32_t anchorDay = 0;
+  unsigned long began = 0;
+  unsigned long lastProgressLog = 0;
+  bool started = false;
+};
+
 CrosspointServices::CrosspointServices(std::string appName, std::string appDir)
     : appName_(std::move(appName)), appDir_(std::move(appDir)), crypto_(makeUniqueNoThrow<WolfsslCrypto>()) {}
 CrosspointServices::~CrosspointServices() {
@@ -342,11 +357,14 @@ int CrosspointServices::fsWrite(const char* path, const uint8_t* data, uint32_t 
   if (!permissions_.allows(path, DessenPermissions::Access::Write)) return DSN_ERR_DENIED;
   if (appName_ == readingstatssleep::kId && path == appDir_ + readingstatssleep::kCaptureRequest) {
     if (n != 1 || data[0] > 1 || PluginLocations::findPluginDir(readingstatssleep::kId) != appDir_ ||
-        !readingstatssleep::enabled(appDir_)) return DSN_ERR_UNAVAILABLE;
-    const std::string destination = appDir_ + (data[0] ? readingstatssleep::kServerImage : readingstatssleep::kDeviceImage);
+        !readingstatssleep::enabled(appDir_))
+      return DSN_ERR_UNAVAILABLE;
+    const std::string destination =
+        appDir_ + (data[0] ? readingstatssleep::kServerImage : readingstatssleep::kDeviceImage);
     const std::string temp = destination + ".tmp";
     if (ScreenshotUtil::saveFramebufferAsBmp(temp.c_str(), renderer) &&
-        Storage.replaceFile(temp.c_str(), destination.c_str())) return 0;
+        Storage.replaceFile(temp.c_str(), destination.c_str()))
+      return 0;
     Storage.remove(temp.c_str());
     return DSN_ERR_IO;
   }
@@ -514,6 +532,143 @@ int CrosspointServices::recentShelf(uint32_t first, uint32_t count, char* out, u
     used += bytes;
   }
   return static_cast<int>(used);
+}
+
+int CrosspointServices::readingStatsStart(const uint8_t* book, uint32_t length, uint32_t anchorDay) {
+  if (!readingHistory::migrationReady()) return DSN_ERR_IO;
+  if (!permissions_.allows("/.crosspoint/reading_sessions.jsonl", DessenPermissions::Access::Read))
+    return DSN_ERR_DENIED;
+  if (pending_ != Op::None || length > DSN_BOOK_PATH_MAX || (length && (!book || memchr(book, 0, length))) ||
+      anchorDay > 47482)  // last supported local day, including UTC offset
+    return DSN_ERR_INVALID;
+  const bool path = length && book[0] == '/';
+  if (length && !path && length != 32) return DSN_ERR_INVALID;
+  if (length && !path) {
+    const std::string_view id(reinterpret_cast<const char*>(book), length);
+    if (id.find_first_not_of("0123456789abcdefABCDEF") != id.npos) return DSN_ERR_INVALID;
+  }
+  readingStats_.reset();
+  auto request = makeUniqueNoThrow<ReadingStatsRequest>();
+  if (!request) {
+    LOG_ERR("RHIST", "Cannot allocate %u-byte statistics request", static_cast<unsigned>(sizeof(ReadingStatsRequest)));
+    return DSN_STATS_NO_MEMORY;
+  }
+  if (length) memcpy(request->key, book, length);
+  if (path && (resolve(request->key, DSN_BOOK_PATH_MAX) || !permissions_.allowsBook(request->key)))
+    return DSN_ERR_DENIED;
+  request->anchorDay = anchorDay;
+  request->began = millis();
+  readingStats_ = std::move(request);
+  pending_ = Op::ReadingStats;
+  done_ = false;
+  readingStatsActive_.store(true, std::memory_order_release);
+  return dessen::kPending;
+}
+
+unsigned CrosspointServices::readingStatsProgress() const {
+  return readingStats_ ? readingStats_->provider.progressPercent() : 0;
+}
+
+void CrosspointServices::cancelReadingStats() {
+  if (!readingStatsBusy()) return;
+  if (readingStats_) {
+    LOG_INF("RHIST", "cancelled bytes=%llu/%llu sessions=%llu elapsed_ms=%lu",
+            static_cast<unsigned long long>(readingStats_->provider.processedBytes()),
+            static_cast<unsigned long long>(readingStats_->provider.expectedBytes()),
+            static_cast<unsigned long long>(readingStats_->provider.processedSessions()),
+            millis() - readingStats_->began);
+    readingStats_->provider.cancel();
+    readingStats_.reset();
+  }
+  result_ = DSN_ERR_IO;
+  done_ = true;
+  readingStatsActive_.store(false, std::memory_order_release);
+}
+
+bool CrosspointServices::serviceReadingStats() {
+  using readingHistory::Status;
+  if (!readingStats_) {
+    result_ = DSN_ERR_INVALID;
+    done_ = true;
+    readingStatsActive_.store(false, std::memory_order_release);
+    return true;
+  }
+  auto& request = *readingStats_;
+  Status state;
+  if (!request.started) {
+    request.started = true;
+    if (request.key[0] == '/') {
+      const auto document = syncEngine::documentId(request.key);
+      state = document.empty() ? Status::IoError : request.provider.begin(document, request.anchorDay);
+    } else {
+      state = request.provider.begin(request.key, request.anchorDay);
+    }
+    request.lastProgressLog = millis();
+    LOG_INF("RHIST", "start bytes=%llu cpu_mhz=%u free=%u max_block=%u",
+            static_cast<unsigned long long>(request.provider.expectedBytes()),
+            static_cast<unsigned>(getCpuFrequencyMhz()), static_cast<unsigned>(ESP.getFreeHeap()),
+            static_cast<unsigned>(ESP.getMaxAllocHeap()));
+  } else {
+    const auto sliceStart = millis();
+    unsigned chunks = 0;
+    do {
+      state = request.provider.step();
+    } while (state == Status::Scanning && ++chunks < 4 && millis() - sliceStart < 12);
+  }
+  if (state == Status::Scanning) {
+    const auto now = millis();
+    if (now - request.lastProgressLog >= 2000) {
+      request.lastProgressLog = now;
+      LOG_INF("RHIST",
+              "progress bytes=%llu/%llu percent=%u sessions=%llu rejected=%llu elapsed_ms=%lu cpu_mhz=%u free=%u "
+              "max_block=%u phase=%s parsed_bytes=%llu",
+              static_cast<unsigned long long>(request.provider.processedBytes()),
+              static_cast<unsigned long long>(request.provider.expectedBytes()), request.provider.progressPercent(),
+              static_cast<unsigned long long>(request.provider.processedSessions()),
+              static_cast<unsigned long long>(request.provider.rejectedLines()), now - request.began,
+              static_cast<unsigned>(getCpuFrequencyMhz()), static_cast<unsigned>(ESP.getFreeHeap()),
+              static_cast<unsigned>(ESP.getMaxAllocHeap()), request.provider.validatingCache() ? "verify" : "parse",
+              static_cast<unsigned long long>(request.provider.parsedBytes()));
+    }
+    return false;
+  }
+  result_ = dessenReadingStats::resultCode(state);
+  if (state == Status::Ready) {
+    const auto* summary = request.provider.summary();
+    LOG_INF("RHIST",
+            "ready sessions=%llu books=%u elapsed_ms=%lu free=%u bytes=%llu rejected=%llu cpu_mhz=%u max_block=%u "
+            "limited=%u tail=%u parsed_bytes=%llu scratch_bytes=%u",
+            static_cast<unsigned long long>(summary->overall.sessions), static_cast<unsigned>(summary->books),
+            millis() - request.began, static_cast<unsigned>(ESP.getFreeHeap()),
+            static_cast<unsigned long long>(summary->bytes), static_cast<unsigned long long>(summary->rejected),
+            static_cast<unsigned>(getCpuFrequencyMhz()), static_cast<unsigned>(ESP.getMaxAllocHeap()),
+            static_cast<unsigned>(summary->booksLimited), static_cast<unsigned>(summary->incompleteTail),
+            static_cast<unsigned long long>(request.provider.parsedBytes()),
+            static_cast<unsigned>(request.provider.aggregationBuffersBytes()));
+  } else {
+    LOG_ERR("RHIST", "failed status=%u code=%d bytes=%llu/%llu elapsed_ms=%lu free=%u max_block=%u",
+            static_cast<unsigned>(state), result_, static_cast<unsigned long long>(request.provider.processedBytes()),
+            static_cast<unsigned long long>(request.provider.expectedBytes()), millis() - request.began,
+            static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()));
+    readingStats_.reset();
+  }
+  done_ = true;
+  readingStatsActive_.store(false, std::memory_order_release);
+  return true;
+}
+
+int CrosspointServices::readingStatsRead(uint32_t kind, uint32_t first, uint8_t* out, uint32_t cap) {
+  if (!permissions_.allows("/.crosspoint/reading_sessions.jsonl", DessenPermissions::Access::Read))
+    return DSN_ERR_DENIED;
+  if (kind == DSN_STATS_CAPABILITY) return first ? DSN_ERR_INVALID : DSN_STATS_VERSION;
+  if (kind == DSN_STATS_RELEASE) {
+    if (first || pending_ != Op::None) return DSN_ERR_INVALID;
+    readingStats_.reset();
+    return 0;
+  }
+  if (!readingStats_) return DSN_ERR_INVALID;
+  if (kind == DSN_STATS_BOOK_INFO) return dessenReadingStats::readBookInfo(readingStats_->provider, first, out, cap);
+  return dessenReadingStats::read(readingStats_->provider, kind, first, out, cap);
 }
 
 int CrosspointServices::bookProgress(const char* path) {
@@ -898,6 +1053,7 @@ int CrosspointServices::qrBitmap(const char* link, uint32_t length, uint8_t* out
 // ---- async: queue on the render task, execute on the loop task ----
 int CrosspointServices::wifiConnectStart() {
   if (!permissions_.allowsNetwork()) return DSN_ERR_UNAVAILABLE;
+  readingStats_.reset();
 #ifndef BOARD_HAS_PSRAM
   // Connection is deferred until the guest is unloaded by the request.
   if (!permissions_.allowsHandoff()) return DSN_ERR_UNAVAILABLE;
@@ -917,6 +1073,7 @@ int CrosspointServices::netStart(const char* head, const uint8_t* body, uint32_t
       !permissions_.allowsUrl(request.substr(space + 1, end == request.npos ? end : end - space - 1)))
     return DSN_ERR_UNAVAILABLE;
   if (bn > 8192 || cap > 32768) return DSN_ERR_TOO_BIG;
+  readingStats_.reset();
   networkCancelled_.store(false, std::memory_order_relaxed);
   pending_ = Op::Net;
   done_ = false;
@@ -934,6 +1091,7 @@ int CrosspointServices::fetchStart(const char* url, const char* dest) {
       !permissions_.allows(std::string(dest) + ".part", DessenPermissions::Access::Write) ||
       !permissions_.allows(std::string(dest) + ".part", DessenPermissions::Access::Delete))
     return DSN_ERR_UNAVAILABLE;
+  readingStats_.reset();
   const std::string temporary = std::string(dest) + ".part";
   HalFile marker;
   const bool saved = Storage.openFileForWrite("DSN", "/.crosspoint/dsn-download.tmp", marker) &&
@@ -1046,8 +1204,9 @@ bool CrosspointServices::importNetworkRequest(const uint8_t* data, uint32_t size
   if (!data || size < sizeof(fields) || size > MAX_NETWORK_REQUEST || !permissions_.allowsHandoff()) return false;
   memcpy(fields, data, sizeof(fields));
   const uint32_t kind = fields[0], a = fields[1], b = fields[2], offset = fields[3], cap = fields[4];
-  if ((kind != 1 && kind != 2) || !a || a > 1024 || b > (kind == 1 ? 8192u : 255u) ||
-      size != sizeof(fields) + a + b || memchr(data + sizeof(fields), 0, a)) return false;
+  if ((kind != 1 && kind != 2) || !a || a > 1024 || b > (kind == 1 ? 8192u : 255u) || size != sizeof(fields) + a + b ||
+      memchr(data + sizeof(fields), 0, a))
+    return false;
   const std::string first(reinterpret_cast<const char*>(data + sizeof(fields)), a);
   const uint8_t* second = data + sizeof(fields) + a;
   if (kind == 1) {
@@ -1141,6 +1300,7 @@ int CrosspointServices::poll() {
 
 bool CrosspointServices::serviceAsyncWork() {
   if (done_) return true;
+  if (pending_ == Op::ReadingStats) return serviceReadingStats();
   if (networkCancelled_.load(std::memory_order_relaxed)) {
     failNetwork();
 #ifndef BOARD_HAS_PSRAM
@@ -1164,8 +1324,8 @@ bool CrosspointServices::serviceAsyncWork() {
       completeSuspendedNetwork();
       return true;
     }
-    LOG_INF("DSN", "Suspended Wi-Fi connected: free=%u max_block=%u",
-            static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()));
+    LOG_INF("DSN", "Suspended Wi-Fi connected: free=%u max_block=%u", static_cast<unsigned>(ESP.getFreeHeap()),
+            static_cast<unsigned>(ESP.getMaxAllocHeap()));
     reconnecting_ = false;
     if (pending_ == Op::WifiStart) {
       result_ = 0;
@@ -1227,12 +1387,30 @@ bool CrosspointServices::serviceAsyncWork() {
         headers.emplace_back(name, value);
         const char* headerName = headers.back().first.c_str();
         if (strcasecmp(headerName, "Host") == 0 || strcasecmp(headerName, "Connection") == 0 ||
-            strcasecmp(headerName, "Content-Length") == 0 || strcasecmp(headerName, "Transfer-Encoding") == 0) {
+            strcasecmp(headerName, "Content-Length") == 0 || strcasecmp(headerName, "Transfer-Encoding") == 0 ||
+            strcasecmp(headerName, "X-CrossPoint-Device-ID") == 0 ||
+            strcasecmp(headerName, "X-CrossPoint-Device-Model") == 0 ||
+            strcasecmp(headerName, "X-CrossPoint-Firmware") == 0) {
           result_ = DSN_ERR_INVALID;
           break;
         }
       }
       if (result_ < 0) break;
+
+      // The installation manifest must explicitly allow physical identity
+      // disclosure to its HTTPS origins. dsn_device_id stays app-scoped.
+      if (permissions_.allowsDeviceIdentity(url)) {
+        readerHardwareIdentity::Id id;
+        if (readerHardwareIdentity::read(id)) {
+          if (headers.size() > 13) {
+            result_ = DSN_ERR_TOO_BIG;
+            break;
+          }
+          headers.emplace_back("X-CrossPoint-Device-ID", id.data());
+          headers.emplace_back("X-CrossPoint-Device-Model", devicehardware::model());
+          headers.emplace_back("X-CrossPoint-Firmware", std::string(firmwareidentity::ID) + " " + CROSSPOINT_VERSION);
+        }
+      }
 
       // TLS needs a healthy heap; refuse up front rather than OOM mid-handshake
       // (same thresholds as CatalogActivity / FontDownloadActivity).
@@ -1356,6 +1534,7 @@ bool CrosspointServices::serviceAsyncWork() {
       break;
     case Op::None:
     case Op::TextInput:
+    case Op::ReadingStats:
       return false;
   }
   cleanupDownload();

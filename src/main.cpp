@@ -46,6 +46,9 @@
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
 #include "activities/boot_sleep/SleepActivity.h"
+#include "sync/SyncEngine.h"
+#include "util/ReadingHistoryMigration.h"
+#include "util/ReadingStatsStore.h"
 #if CROSSPOINT_DESSEN_APPS
 #include "activities/plugins/DessenAppActivity.h"
 #endif
@@ -919,6 +922,13 @@ void setup() {
     case HalGPIO::WakeupReason::Other:
     default:
       break;
+  }
+
+  // Recover/convert the native history before readers or plugin activities run.
+  // Timer wakes and the recovery firmware picker do not access statistics.
+  if (!recoveryFirmwareMode &&
+      !readingHistory::migrateLegacy(syncEngine::documentId, readingstats::recoverLegacyImport, []() { delay(1); })) {
+    LOG_ERR("RMIG", "Native history cutover blocked; legacy files retained");
   }
 
   // Restore the light only after accepting the wake, so rejected wakes stay dark.
