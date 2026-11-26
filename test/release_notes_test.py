@@ -52,12 +52,13 @@ class ReleaseNotesTests(unittest.TestCase):
     @patch("release_notes.changes", return_value="A changelog entry")
     @patch("release_notes.previous_stable", return_value="razor-crest-v2.0.0-r9")
     @patch("release_notes.ancestor", return_value=True)
-    def test_stable_contains_eight_device_table_and_changelog(self, _ancestor, _previous, _changes):
+    def test_stable_contains_nine_device_table_and_changelog(self, _ancestor, _previous, _changes):
         notes = build_notes("stable", VERSION, TAG, SOURCE, REPO, "2.0.0", self.assets)
-        self.assertEqual(notes.count(" | `razor-crest-2.0.0-r10-"), 8)
+        self.assertEqual(notes.count(" | `razor-crest-2.0.0-r10-"), 9)
         self.assertIn("### Changes since previous Stable", notes)
         self.assertIn("A changelog entry", notes)
         self.assertIn("BOOX Picco", notes)
+        self.assertIn("OnePage Reader", notes)
         self.assertIn("USB app-only", notes)
         self.assertIn("| Device | Firmware asset | Size |", notes)
 
@@ -75,6 +76,11 @@ class ReleaseNotesTests(unittest.TestCase):
         self.assertIn("### Changes since previous Nightly", notes)
         self.assertIn("Only Nightly changes", notes)
         self.assertEqual(mock_changes.call_args.args[0], "a" * 40)
+
+    def test_missing_onepage_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "missing"):
+            build_notes("stable", VERSION, TAG, SOURCE, REPO, "2.0.0",
+                        [f for f in self.assets if not f.name.endswith("-onepage.bin")])
 
     def test_missing_picco_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "missing"):

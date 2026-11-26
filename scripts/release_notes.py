@@ -15,6 +15,7 @@ DEVICE_LABELS = {
     "metalio-eink4": "MetalIO EInk4",
     "eego-a4": "EEGO A4",
     "picco": "BOOX Picco",
+    "onepage": "OnePage Reader",
 }
 GROUPS = ("Features", "Fixes", "Performance", "Other changes")
 MAX_ENTRIES = 60
@@ -89,7 +90,7 @@ def build_notes(channel, version, tag, source, repo, base, firmware_files,
     expected = {f"razor-crest-{version}-{device}.bin" for device in DEVICE_LABELS}
     assets = {path.name: path for path in firmware_files}
     if assets.keys() != expected:
-        raise ValueError(f"Expected eight matching firmware images: missing={expected - assets.keys()}, "
+        raise ValueError(f"Expected {len(expected)} matching firmware images: missing={expected - assets.keys()}, "
                          f"extra={assets.keys() - expected}")
     if channel == "stable":
         previous = previous or previous_stable(version, source)

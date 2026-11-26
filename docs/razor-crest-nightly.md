@@ -17,7 +17,7 @@ hosts the JSON update feed, while the Pages root redirects to
 ## Publication
 
 The shared `.github/workflows/razor-crest-build.yml` handles both channels
-with the same host test suite, eight firmware targets for both channels,
+with the same host test suite, nine firmware targets for both channels,
 pinned PlatformIO setup, and binary naming. Nightlies run at 1:17 AM
 `America/New_York` (EST/EDT); GitHub Actions may queue a scheduled run.
 The workflow can also run manually with channel **Nightly**, including an
@@ -37,7 +37,7 @@ The combined X3/X4 image uses `x3-x4`. Picco builds are published on both
 Stable and Nightly channels for USB installation. Picco's stock layout has
 only one application slot, so it cannot install updates on-device via OTA or SD.
 
-Both release channels publish an eight-device download table and a changelog.
+Both release channels publish a nine-target download table and a changelog.
 Stable changelogs compare the new source with the preceding Stable tag;
 Nightly changelogs compare the new source with the preceding Nightly commit.
 Release notes include the exact source commit and a full GitHub comparison link.

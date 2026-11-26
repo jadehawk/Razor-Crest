@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host-only checks for the eight-target nightly feed generator."""
+"""Host-only checks for the nine-target nightly feed generator."""
 
 import sys
 import tempfile
@@ -26,13 +26,14 @@ class NightlyManifestTests(unittest.TestCase):
     def generate(self):
         return make_manifest(self.dist, "jadehawk/Razor-Crest", TAG, VERSION, COMMIT)
 
-    def test_exactly_eight_compatible_targets_and_pinned_urls(self):
+    def test_exactly_nine_compatible_targets_and_pinned_urls(self):
         meta = self.generate()
         self.assertEqual(meta["channel"], "nightly")
         self.assertEqual(meta["source_commit"], COMMIT)
         self.assertEqual(meta["tag_name"], TAG)
-        self.assertEqual(len(meta["assets"]), 8)
+        self.assertEqual(len(meta["assets"]), 9)
         self.assertIn(f"razor-crest-{VERSION}-picco.bin", {a["name"] for a in meta["assets"]})
+        self.assertIn(f"razor-crest-{VERSION}-onepage.bin", {a["name"] for a in meta["assets"]})
         self.assertEqual(
             {a["name"] for a in meta["assets"]},
             {f"razor-crest-{VERSION}-{device}.bin" for device in DEVICES},
@@ -55,6 +56,11 @@ class NightlyManifestTests(unittest.TestCase):
 
     def test_missing_picco_prevents_publication(self):
         (self.dist / f"razor-crest-{VERSION}-picco.bin").unlink()
+        with self.assertRaisesRegex(ValueError, "missing"):
+            self.generate()
+
+    def test_missing_onepage_prevents_publication(self):
+        (self.dist / f"razor-crest-{VERSION}-onepage.bin").unlink()
         with self.assertRaisesRegex(ValueError, "missing"):
             self.generate()
 

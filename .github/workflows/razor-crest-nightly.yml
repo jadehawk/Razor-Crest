@@ -57,7 +57,7 @@ jobs:
           pattern: razor-crest-*.bin
           merge-multiple: true
 
-      - name: Validate all eight binaries and prepare feed
+      - name: Validate all nine binaries and prepare feed
         env:
           BASE_VERSION: ${{ needs.firmware.outputs.base_version }}
           RAZOR_VERSION: ${{ needs.firmware.outputs.version }}

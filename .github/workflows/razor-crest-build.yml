@@ -140,7 +140,7 @@ jobs:
           echo "base_version=$base_version" >> "$GITHUB_OUTPUT"
           echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
 
-          # Publish the same eight board images for Stable and Nightly.
+          # Publish the same nine board images for Stable and Nightly.
           # Picco uses USB app-only flashing; its stock layout cannot self-update.
           build_matrix='[
             {"pio_env":"gh_release","device":"x3-x4","label":"X3 / X4"},
@@ -150,7 +150,8 @@ jobs:
             {"pio_env":"papermono-gh_release","device":"papermono","label":"Paper Mono"},
             {"pio_env":"metalio_eink4-gh_release","device":"metalio-eink4","label":"MetalIO EInk4"},
             {"pio_env":"eego_a4-gh_release","device":"eego-a4","label":"EEGO A4"},
-            {"pio_env":"picco-gh_release","device":"picco","label":"BOOX Picco"}
+            {"pio_env":"picco-gh_release","device":"picco","label":"BOOX Picco"},
+            {"pio_env":"onepage-gh_release","device":"onepage","label":"OnePage Reader"}
           ]'
           echo "build_matrix=$(jq -c . <<< "$build_matrix")" >> "$GITHUB_OUTPUT"
 
