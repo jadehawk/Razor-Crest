@@ -1,5 +1,8 @@
 // Compact account-wide server digest, read through a scoped device token.
 // The cache belongs to the Dessen app, independent of legacy SD plugins.
+const CALENDAR_CACHE_FILE: &[u8] = b"/server-calendar.bin";
+const CALENDAR_HEAD: &[u8] = b"GET https://sync.techy-notes.com/api/device/calendar\nAuthorization: Bearer ";
+const CALENDAR_BYTES: usize = 28 + DAYS*6;
 const STATS_CACHE_FILE: &[u8] = b"/server-overview.json";
 // A failed request leaves the last account snapshot available.
 #[inline(never)]
@@ -9,6 +12,7 @@ fn json_u32(json: &[u8], name: &[u8]) -> Option<u32> {
 }
 
 struct ServerOverall {
+    calendar_supported: bool,
     attempted: bool,
     attempts: u8,
     available: bool,
@@ -26,7 +30,7 @@ struct ServerOverall {
 }
 impl ServerOverall {
     fn new() -> Self {
-        Self { attempted: false, attempts: 0, available: false, last_synced: 0, icon_revealed: false, total_seconds: 0, month_seconds: 0,
+        Self { calendar_supported: false, attempted: false, attempts: 0, available: false, last_synced: 0, icon_revealed: false, total_seconds: 0, month_seconds: 0,
             month_active_days: 0, current_streak: 0, books: 0, sessions: 0,
             page_turns: 0, best_day_seconds: 0, daily_average_seconds: 0 }
     }
@@ -35,16 +39,16 @@ impl ServerOverall {
             (self.last_synced < 946_684_800 || now.saturating_sub(self.last_synced) >= 86_400))
     }
     #[inline(never)]
-    fn load_cached(&mut self) {
+    fn load_cached(&mut self, response: &mut [u8]) {
         self.attempted = true;
         self.available = false;
-        let mut response = [0u8; 640];
+        let response = &mut response[..640];
         let mut path = [0u8; 192];
         let n = dsn_fs_app_dir(&mut path);
         if n <= 0 || n as usize + STATS_CACHE_FILE.len() > path.len() { return; }
         let end = n as usize;
         path[end..end + STATS_CACHE_FILE.len()].copy_from_slice(STATS_CACHE_FILE);
-        let size = dsn_fs_read(&path[..end + STATS_CACHE_FILE.len()], &mut response);
+        let size = dsn_fs_read(&path[..end + STATS_CACHE_FILE.len()], response);
         if size > 0 && size as usize <= response.len() { self.parse_overview(&response[..size as usize]); }
     }
 
@@ -58,6 +62,7 @@ impl ServerOverall {
             json_u32(payload, b"sessions"), json_u32(payload, b"page_turns"),
             json_u32(payload, b"best_day_seconds"), json_u32(payload, b"daily_average_seconds")
         ) {
+            self.calendar_supported = json_u32(payload,b"calendar_version")==Some(1);
             self.last_synced = json_u32(payload, b"fetched_at").or_else(|| json_u32(payload, b"synced_at")).unwrap_or(0);
             self.total_seconds = total_seconds;
             self.month_seconds = month_seconds;
@@ -77,12 +82,12 @@ impl ServerOverall {
 
         let mut writer=HistoryJson::new(output);
         writer.raw(b"{\"source\":\"server\"");
-        let fields: [(&[u8], u32); 11] = [
+        let fields: [(&[u8], u32); 12] = [
             (b"total_seconds",self.total_seconds),(b"month_seconds",self.month_seconds),
             (b"month_active_days",self.month_active_days),(b"current_streak",self.current_streak),
             (b"books",self.books),(b"sessions",self.sessions),(b"page_turns",self.page_turns),
             (b"best_day_seconds",self.best_day_seconds),(b"daily_average_seconds",self.daily_average_seconds),
-            (b"synced_at",self.last_synced),(b"fetched_at",self.last_synced)];
+            (b"synced_at",self.last_synced),(b"fetched_at",self.last_synced),(b"calendar_version",u32::from(self.calendar_supported))];
         for (name,value) in fields {
             writer.field(name,value as u64);
         }
@@ -109,13 +114,42 @@ impl ServerOverall {
     }
 
     #[inline(never)]
+    fn fetch_calendar(&self, pairing:&Pairing, scratch:&mut [u8]) {
+        if !self.calendar_supported {return;}
+        if pairing.authorized(CALENDAR_HEAD,scratch,false)!=Ok(CALENDAR_BYTES) ||
+            !valid_calendar(&scratch[..CALENDAR_BYTES]) {return;}
+        scratch[CALENDAR_BYTES..CALENDAR_BYTES+8].copy_from_slice(&hist_hash(&pairing.access_token).to_le_bytes());
+        let hash=hist_hash(&scratch[..CALENDAR_BYTES+8]);
+        scratch[CALENDAR_BYTES+8..CALENDAR_BYTES+16].copy_from_slice(&hash.to_le_bytes());
+        let mut path=[0u8;192];
+        let n=StatsSettings::path(&mut path,CALENDAR_CACHE_FILE);
+        if n!=0 {let _=dsn_fs_write(&path[..n],&scratch[..CALENDAR_BYTES+16]);}
+    }
+    #[inline(never)]
     fn fetch(&mut self, pairing: &Pairing, response: &mut [u8]) -> bool {
         self.attempted = true;
         self.attempts = self.attempts.saturating_add(1);
         if pairing.phase != PairPhase::Paired { return false; }
         if let Ok(n) = pairing.authorized(OVERVIEW_HEAD, response, false) {
-            return self.accept_overview(response,n);
+            let ok=self.accept_overview(response,n);
+            // Calendar is refreshed once by the caller.
+            return ok;
         }
         false
     }
+}
+
+fn valid_calendar(data:&[u8])->bool {
+    data.len()==CALENDAR_BYTES && &data[..4]==b"RCA1" &&
+        (10957..=47482).contains(&le32(data,4)) && le32(data,8)<=1
+}
+
+#[inline(never)]
+fn cached_calendar(pairing:&Pairing,scratch:&mut [u8])->usize {
+    let mut path=[0u8;192];
+    let n=StatsSettings::path(&mut path,CALENDAR_CACHE_FILE);
+    if n==0 || dsn_fs_read(&path[..n],&mut scratch[..CALENDAR_BYTES+16])!=(CALENDAR_BYTES+16) as i32 {return 0;}
+    if valid_calendar(&scratch[..CALENDAR_BYTES]) &&
+        hist_u64(scratch,CALENDAR_BYTES)==hist_hash(&pairing.access_token) &&
+        hist_u64(scratch,CALENDAR_BYTES+8)==hist_hash(&scratch[..CALENDAR_BYTES+8]) {CALENDAR_BYTES} else {0}
 }

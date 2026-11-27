@@ -304,7 +304,7 @@ fn history_build_item(c:&mut HistoryCursor,doc:&[u8],offset:u32,
 
 #[inline(never)]
 fn upload_history(pairing:&Pairing,server:&mut ServerOverall,body:&mut [u8],scratch:&mut [u8],
-                  refreshed:&mut Option<bool>)->&'static [u8] {
+                  refreshed:&mut Option<bool>,owner:&mut [u8;16])->&'static [u8] {
     *refreshed=None;
     if !history_supported() || pairing.phase!=PairPhase::Paired || scratch.len()<513{return HISTORY_ERROR;}
     // Token rotation starts a safe cumulative replay. The server derives the
@@ -317,6 +317,7 @@ fn upload_history(pairing:&Pairing,server:&mut ServerOverall,body:&mut [u8],scra
         source=match history_query(u64::MAX,b""){Ok(s)=>s,Err(e)=>return history_native_error(e)};
     }
     if !source.owned{return HISTORY_INVALID;}
+    *owner=source.id;
     let Some(mut cursor)=HistoryCursor::load(account,source.id) else{return b"Invalid history upload cursor";};
     if cursor.target==0 {
         if cursor.completed>source.bytes{return HISTORY_INVALID;}

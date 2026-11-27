@@ -905,12 +905,12 @@ of these sidecars but preserves the independent `My Clippings.txt` export.
 
 ## `/.crosspoint/reading_sessions-history.cache`
 
-Disposable native reading-history checkpoint, format `RHISTC05`. All integers are
+Disposable native reading-history checkpoint, format `RHISTC07`. All integers are
 explicit little-endian; no compiler-dependent structures are serialized.
 
 | Offset | Size | Field |
 | ---: | ---: | --- |
-| 0 | 8 | ASCII magic/version RHISTC05 |
+| 0 | 8 | ASCII magic/version RHISTC07 |
 | 8 | 4 | Requested local Unix day anchor (0 = inferred) |
 | 12 | 4 | Flags: selected document bit 0, detailed book totals bit 1 |
 | 16 | 16 | Binary selected document ID (zero if absent) |
@@ -920,11 +920,15 @@ explicit little-endian; no compiler-dependent structures are serialized.
 | 256 | 32 | Source ID (16 bytes), tagged reader MAC (13 bytes, NUL terminated), conflict flag (1 byte), reserved (2 bytes) |
 | 288 | 7,420 | 371 ring records: u64 overall seconds, u64 selected-book seconds, u32 date |
 | 7,708 | 476 | Seven weekly ring records: four u64 overall periods, four u64 selected-book periods, u32 date |
-| 8,184 | 28 × book count | Sorted 16-byte document IDs, u32 latest valid JSONL line offsets and u64 detailed total seconds (zero unless requested) |
+| 8,184 | 432 bytes per book | Sorted document records, detailed below |
 | After index | 8 | FNV-1a 64-bit checksum of all preceding checkpoint bytes |
 
+Each book record stores the document ID (16 bytes), last valid JSONL offset
+(u32), detailed total seconds (u64, zero unless requested), progress basis
+points (u16), title length (u8), title (80 bytes), path (176 bytes), author
+(48 bytes), one reserved byte, and series display label (96 bytes).
 An offset of UINT32_MAX denotes unavailable book metadata. The maximum file
-length is 36,864 bytes for 1,024 books. The source JSONL remains authoritative;
+length is 450,560 bytes for 1,024 books. The source JSONL remains authoritative;
 the cache is replaced through the HAL only after closing a complete temp file.
 Reopen validates format, query key, length, cache checksum and the full source
 prefix. If the prefix is unchanged, append only from a complete newline

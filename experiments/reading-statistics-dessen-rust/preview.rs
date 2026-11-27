@@ -25,7 +25,7 @@ impl BookCarousel {
         if n<=0 || n>1100{return false;}
         if let Some(fields)=shelf_fields(&rec[..n as usize]){
             self.fields=fields;
-            self.percent=dsn_book_progress(self.field(rec,0));
+            self.percent=shelf_progress(self.field(rec,3),self.field(rec,0));
         }
         true
     }

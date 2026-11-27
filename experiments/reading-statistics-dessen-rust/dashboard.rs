@@ -139,7 +139,7 @@ impl Ui {
         let base = y + h - self.ls - 7;
         let chart_h = (base - top).max(1);
         let cw = (w - 18) / 7;
-        let week = &st.day[DAYS - 7..];
+        let week = &st.day[24..];
         let max = week.iter().copied().max().unwrap_or(0).max(1);
         let wd = (st.end + 4) % 7; // Sunday = 0
         for (i, &v) in week.iter().enumerate() {
@@ -208,8 +208,8 @@ impl Ui {
             let mut month_secs = 0u64;
             let mut active = 0u32;
             if clock_ok {
-                for ago in 0..month_day.min(DAYS as u32) {
-                    let v = st.day[DAYS - 1 - ago as usize];
+                for ago in 0..month_day.min(31) {
+                    let v = st.day[30 - ago as usize];
                     month_secs += v as u64;
                     if v > 0 { active += 1; }
                 }
@@ -225,7 +225,7 @@ impl Ui {
             let line = top + hero * 56 / 100;
             dsn_line(x + 9, line, x + w - 9, line, 1, DARK);
             for i in 1..3 { dsn_line(x + w * i / 3, line + 6, x + w * i / 3, top + hero - 8, 1, DARK); }
-            let streak = st.streaks().0;
+            let streak = st.streak;
             let vals = [if st.date_current { label!(n(streak)) } else { label!(s(b"--")) }, if clock_ok { label!(n(active)) } else { label!(s(b"--")) }, if st.books_limited { label!(n(st.book_count), s(b"+")) } else { label!(n(st.book_count)) }];
             let labels: [&[u8]; 3] = [b"Day Streak", b"Active Days", b"Books"];
             let bottom_space = (top + hero - 8 - line).max(self.lt + self.ls);

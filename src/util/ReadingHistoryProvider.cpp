@@ -13,9 +13,9 @@ constexpr char HISTORY_PATH[] = "/.crosspoint/reading_sessions.jsonl";
 // Derived and disposable; not in the legacy reading-stats directory.
 constexpr char CACHE_PATH[] = "/.crosspoint/reading_sessions-history.cache";
 constexpr char TEMP_PATH[] = "/.crosspoint/reading_sessions-history.cache.tmp";
-constexpr char MAGIC[] = "RHISTC05";
+constexpr char MAGIC[] = "RHISTC07";
 constexpr uint64_t HASH_INITIAL = 14695981039346656037ULL;
-constexpr size_t HEADER = 288, DAY_BYTES = 20, WEEK_BYTES = 68, BOOK_BYTES = 28;
+constexpr size_t HEADER = 288, DAY_BYTES = 20, WEEK_BYTES = 68, BOOK_BYTES = 432, BOOK_INDEX_BYTES = 28;
 constexpr size_t WEEK_START = HEADER + HISTORY_DAYS * DAY_BYTES;
 constexpr size_t BOOK_START = WEEK_START + 7 * WEEK_BYTES;
 
@@ -111,6 +111,59 @@ bool writeHashed(HalFile& f, uint64_t& hash, const void* p, size_t n) {
   if (f.write(p, n) != n) return false;
   hash = hashBytes(hash, p, n);
   return true;
+}
+Status readBookMetadata(HalFile& history, char* buffer, uint64_t expected, uint32_t offset, BookInfo& out,
+                        JsonDocument& filter, JsonDocument& parsed) {
+    if (offset == UINT32_MAX) return Status::Ready;
+    if (offset >= expected || !history.seek64(offset)) return Status::IoError;
+    const auto wanted = static_cast<size_t>(std::min<uint64_t>(MAX_LINE + 2, expected - offset));
+    const int got = history.read(buffer, wanted);
+    if (got <= 0 || static_cast<size_t>(got) > wanted) return Status::IoError;
+    const auto* end = static_cast<const char*>(memchr(buffer, '\n', got));
+    if (!end) return Status::IoError;
+    const auto error = deserializeJson(parsed, buffer, static_cast<size_t>(end - buffer),
+                                       DeserializationOption::Filter(filter), DeserializationOption::NestingLimit(8));
+    if (error == DeserializationError::NoMemory) return Status::NoMemory;
+    const JsonString doc = parsed["doc"].as<JsonString>();
+    DocumentId id{};
+    if (error || doc.isNull() || !decodeDocumentId({doc.c_str(), doc.size()}, id) || id != out.id)
+      return Status::IoError;
+    const auto progress = parsed["to"];
+    if (progress.is<uint16_t>() && progress.as<uint16_t>() <= 10000) out.progress = progress.as<uint16_t>();
+    {
+      const auto path = parsed["path"].as<JsonString>();
+      if (!path.isNull() && path.size() < sizeof(out.path) && path.size() && path.c_str()[0] == '/' &&
+          !memchr(path.c_str(), 0, path.size()))
+        std::memcpy(out.path, path.c_str(), path.size());
+      const auto author = parsed["author"].as<JsonString>();
+      if (!author.isNull()) {
+        const auto n = utf8SafeTruncateBuffer(author.c_str(),
+                                              static_cast<int>(std::min(author.size(), sizeof(out.author) - 1)));
+        std::memcpy(out.author, author.c_str(), n);
+      }
+    }
+    const auto series = parsed["series"].as<JsonString>();
+    const auto index = parsed["series_index"].as<JsonString>();
+    if (!series.isNull() && series.size()) {
+      size_t prefix = 0;
+      if (!index.isNull() && index.size() && index.size() <= 12 &&
+          strspn(index.c_str(), "0123456789.") == index.size()) {
+        prefix = snprintf(out.series, sizeof(out.series), "#%s - ", index.c_str());
+      }
+      const auto n = utf8SafeTruncateBuffer(series.c_str(),
+          static_cast<int>(std::min(series.size(), sizeof(out.series) - prefix - 1)));
+      memcpy(out.series + prefix, series.c_str(), n);
+    }
+    const JsonString title = parsed["title"].as<JsonString>();
+    if (!title.isNull()) {
+      const size_t n = std::min(title.size(), sizeof(out.title));
+      out.titleLength = static_cast<uint8_t>(utf8SafeTruncateBuffer(title.c_str(), static_cast<int>(n)));
+      for (size_t j = 0; j < out.titleLength; ++j) {
+        const auto c = static_cast<unsigned char>(title.c_str()[j]);
+        out.title[j] = c < 32 || c == 127 ? ' ' : static_cast<char>(c);
+      }
+    }
+  return Status::Ready;
 }
 }  // namespace
 
@@ -236,7 +289,12 @@ Status Provider::resumeCheckpoint() {
   char record[WEEK_BYTES];
   for (size_t i = 0; i < HISTORY_DAYS; ++i) {
     if (!readRecord(HEADER + i * DAY_BYTES, record, DAY_BYTES)) return fresh();
-    scan.daySlot(i) = {get(record, 8), get(record + 8, 8), static_cast<uint32_t>(get(record + 16, 4))};
+    const Day day{get(record, 8), get(record + 8, 8), static_cast<uint32_t>(get(record + 16, 4))};
+    if (day.date || day.seconds || day.bookSeconds) {
+      auto* slot = scan.writableDaySlot(i);
+      if (!slot) return fail(Status::NoMemory);
+      *slot = day;
+    }
   }
   for (size_t i = 0; i < scan.week.size(); ++i) {
     if (!readRecord(WEEK_START + i * WEEK_BYTES, record, WEEK_BYTES)) return fresh();
@@ -247,7 +305,7 @@ Status Provider::resumeCheckpoint() {
   }
   DocumentId previous{};
   for (size_t i = 0; i < cached.books; ++i) {
-    if (!readRecord(BOOK_START + i * BOOK_BYTES, record, BOOK_BYTES)) return fresh();
+    if (!readRecord(BOOK_START + i * BOOK_BYTES, record, BOOK_INDEX_BYTES)) return fresh();
     DocumentId id{};
     std::memcpy(id.data(), record, id.size());
     if (i && !(previous < id)) return fresh();
@@ -299,11 +357,38 @@ bool Provider::saveCheckpoint() {
     put(p + 64, d.date, 4);
     ok = writeHashed(temp, hash, p, WEEK_BYTES);
   }
+  // The calendar has been serialized. Release its blocks before metadata parsing.
+  for (auto& block : scan.days) block.reset();
+  JsonDocument filter;
+  JsonDocument parsed;
+  if (scan.result.books) {
+    filter["doc"] = true;
+    filter["title"] = true;
+    filter["to"] = true;
+    filter["path"] = true;
+    filter["author"] = true;
+    filter["series"] = true;
+    filter["series_index"] = true;
+    ok = ok && !filter.overflowed();
+  }
   for (size_t i = 0; ok && i < scan.result.books; ++i) {
     const auto& b = scan.entryAt(i);
-    std::memcpy(p, b.id.data(), b.id.size());
+    BookInfo info{};
+    info.id = b.id;
+    if (readBookMetadata(file, p, expected, b.offset, info, filter, parsed) != Status::Ready) {
+      ok = false;
+      break;
+    }
+    memset(p, 0, BOOK_BYTES);
+    memcpy(p, b.id.data(), b.id.size());
     put(p + 16, b.offset, 4);
     put(p + 20, detailedBooks ? scan.secondsAt(i) : 0, 8);
+    put(p + 28, info.progress, 2);
+    p[30] = static_cast<char>(info.titleLength);
+    memcpy(p + 31, info.title, sizeof(info.title));
+    memcpy(p + 111, info.path, sizeof(info.path));
+    memcpy(p + 287, info.author, sizeof(info.author));
+    memcpy(p + 336, info.series, sizeof(info.series));
     ok = writeHashed(temp, hash, p, BOOK_BYTES);
   }
   put(p, hash, 8);
@@ -315,10 +400,10 @@ bool Provider::saveCheckpoint() {
 }
 
 Status Provider::finish() {
-  if (file) file.close();
   const auto s = scan.finish();
   if (s != Status::Ready) return fail(s);
   const bool saved = saveCheckpoint();
+  if (file) file.close();
   // Free the day ring, book index and parser BEFORE the guest draws its UI.
   scan.stop(Status::Idle);
   if (!saved || !loadCheckpoint() || cached.bytes != expected || checkpointHash != sourceHash) {
@@ -368,7 +453,7 @@ bool Provider::readWeekDay(uint32_t date, uint64_t (&out)[4], bool selected) con
 
 bool Provider::readBook(size_t index, DocumentId& id, uint32_t& offset) const {
   if (!summary() || index >= cached.books) return false;
-  char p[BOOK_BYTES];
+  char p[20];
   if (!readRecord(BOOK_START + index * BOOK_BYTES, p, sizeof(p))) return false;
   std::memcpy(id.data(), p, id.size());
   offset = static_cast<uint32_t>(get(p + 16, 4));
@@ -379,72 +464,22 @@ Status Provider::readBooks(size_t first, BookInfo* out, size_t count) const {
   const auto* summary = this->summary();
   if (!summary || !out || count > 8 || first > summary->books || count > summary->books - first)
     return Status::InvalidQuery;
-  if (!count) return Status::Ready;
-  HalFile history;
-  if (!Storage.openFileForRead("RHIST", HISTORY_PATH, history) || history.isDirectory() ||
-      history.fileSize64() < expected)
-    return Status::IoError;
-  auto buffer = makeUniqueNoThrow<char[]>(MAX_LINE + 2);
-  if (!buffer) {
-    LOG_ERR("RHIST", "Cannot allocate %u-byte metadata buffer", static_cast<unsigned>(MAX_LINE + 2));
-    return Status::NoMemory;
-  }
-  JsonDocument filter;
-  filter["doc"] = true;
-  filter["title"] = true;
-  filter["to"] = true;
-  if (detailedBooks) {
-    filter["path"] = true;
-    filter["author"] = true;
-  }
-  if (filter.overflowed()) return Status::NoMemory;
-  JsonDocument parsed;
+  char record[BOOK_BYTES];
   for (size_t i = 0; i < count; ++i) {
-    out[i] = {};
-    uint32_t offset;
-    if (!readBook(first + i, out[i].id, offset)) return Status::IoError;
-    if (detailedBooks) {
-      char value[8];
-      if (!readRecord(BOOK_START + (first + i) * BOOK_BYTES + 20, value, sizeof(value))) return Status::IoError;
-      out[i].seconds = get(value, 8);
-    }
-    if (offset == UINT32_MAX) continue;
-    if (offset >= expected || !history.seek64(offset)) return Status::IoError;
-    const auto wanted = static_cast<size_t>(std::min<uint64_t>(MAX_LINE + 2, expected - offset));
-    const int got = history.read(buffer.get(), wanted);
-    if (got <= 0 || static_cast<size_t>(got) > wanted) return Status::IoError;
-    const auto* end = static_cast<const char*>(memchr(buffer.get(), '\n', got));
-    if (!end) return Status::IoError;
-    const auto error = deserializeJson(parsed, buffer.get(), static_cast<size_t>(end - buffer.get()),
-                                       DeserializationOption::Filter(filter), DeserializationOption::NestingLimit(8));
-    if (error == DeserializationError::NoMemory) return Status::NoMemory;
-    const JsonString doc = parsed["doc"].as<JsonString>();
-    DocumentId id{};
-    if (error || doc.isNull() || !decodeDocumentId({doc.c_str(), doc.size()}, id) || id != out[i].id)
-      return Status::IoError;
-    const auto progress = parsed["to"];
-    if (progress.is<uint16_t>() && progress.as<uint16_t>() <= 10000) out[i].progress = progress.as<uint16_t>();
-    if (detailedBooks) {
-      const auto path = parsed["path"].as<JsonString>();
-      if (!path.isNull() && path.size() < sizeof(out[i].path) && path.size() && path.c_str()[0] == '/' &&
-          !memchr(path.c_str(), 0, path.size()))
-        std::memcpy(out[i].path, path.c_str(), path.size());
-      const auto author = parsed["author"].as<JsonString>();
-      if (!author.isNull()) {
-        const auto n = utf8SafeTruncateBuffer(author.c_str(),
-                                              static_cast<int>(std::min(author.size(), sizeof(out[i].author) - 1)));
-        std::memcpy(out[i].author, author.c_str(), n);
-      }
-    }
-    const JsonString title = parsed["title"].as<JsonString>();
-    if (!title.isNull()) {
-      const size_t n = std::min(title.size(), sizeof(out[i].title));
-      out[i].titleLength = static_cast<uint8_t>(utf8SafeTruncateBuffer(title.c_str(), static_cast<int>(n)));
-      for (size_t j = 0; j < out[i].titleLength; ++j) {
-        const auto c = static_cast<unsigned char>(title.c_str()[j]);
-        out[i].title[j] = c < 32 || c == 127 ? ' ' : static_cast<char>(c);
-      }
-    }
+    if (!readRecord(BOOK_START + (first + i) * BOOK_BYTES, record, sizeof(record))) return Status::IoError;
+    auto& book = out[i];
+    book = {};
+    memcpy(book.id.data(), record, book.id.size());
+    book.seconds = get(record + 20, 8);
+    book.progress = static_cast<uint16_t>(get(record + 28, 2));
+    book.titleLength = static_cast<uint8_t>(record[30]);
+    if (book.titleLength > sizeof(book.title) ||
+        (book.progress != UINT16_MAX && book.progress > 10000) ||
+        record[286] || record[334] || record[335] || record[431]) return Status::IoError;
+    memcpy(book.title, record + 31, sizeof(book.title));
+    memcpy(book.path, record + 111, sizeof(book.path));
+    memcpy(book.author, record + 287, sizeof(book.author));
+    memcpy(book.series, record + 336, sizeof(book.series));
   }
   return Status::Ready;
 }

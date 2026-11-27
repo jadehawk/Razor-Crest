@@ -122,7 +122,7 @@ bool shelfPathValid(std::string_view path) {
 }
 
 int writeShelfRow(char* out, uint32_t cap, std::string_view path, std::string_view title, std::string_view author,
-                  std::string_view series = {}) {
+                  std::string_view series = {}, int progress = -1) {
   if (!shelfPathValid(path)) {
     if (!cap) return DSN_ERR_TOO_BIG;
     *out = '\n';
@@ -135,7 +135,11 @@ int writeShelfRow(char* out, uint32_t cap, std::string_view path, std::string_vi
   // Bound it to keep a complete row within the existing ABI's record limit.
   constexpr size_t SERIES_MAX = 100;
   if (series.size() > SERIES_MAX) series = series.substr(0, utf8SafeTruncateBuffer(series.data(), SERIES_MAX));
-  const size_t baseBytes = path.size() + title.size() + author.size() + 2 + 4;  // two separators + "\t-1\n"
+  char percent[5];
+  const auto percentBytes = static_cast<size_t>(snprintf(percent, sizeof(percent), "%d", progress >= 0 && progress <= 100 ? progress : -1));
+  const size_t baseBytes = path.size() + title.size() + author.size() + 4 + percentBytes;
+  if (baseBytes > DSN_SHELF_RECORD_MAX) return DSN_ERR_TOO_BIG;
+  if (baseBytes == DSN_SHELF_RECORD_MAX) series = {};
   if (!series.empty() && baseBytes + 1 + series.size() > DSN_SHELF_RECORD_MAX)
     series = series.substr(0, utf8SafeTruncateBuffer(series.data(), DSN_SHELF_RECORD_MAX - baseBytes - 1));
   const size_t bytes = baseBytes + (series.empty() ? 0 : 1 + series.size());
@@ -148,8 +152,9 @@ int writeShelfRow(char* out, uint32_t cap, std::string_view path, std::string_vi
     *pos++ = '\t';
     for (char c : field) *pos++ = shelfControl(c) ? ' ' : c;
   }
-  memcpy(pos, "\t-1", 3);
-  pos += 3;
+  *pos++ = '\t';
+  memcpy(pos, percent, percentBytes);
+  pos += percentBytes;
   if (!series.empty()) {
     *pos++ = '\t';
     for (char c : series) *pos++ = shelfControl(c) ? ' ' : c;
@@ -485,7 +490,8 @@ int CrosspointServices::recentShelf(uint32_t first, uint32_t count, char* out, u
       library::ClixRecord record{};
       if (ordinal != UINT16_MAX && index.readRecord(ordinal, record)) index.readSeries(record, series);
     }
-    const int bytes = writeShelfRow(out + used, cap - used, book.path, book.title, book.author, series);
+    const int progress = bookProgress(book.path.c_str());
+    const int bytes = writeShelfRow(out + used, cap - used, book.path, book.title, book.author, series, progress);
     if (bytes < 0) return used ? static_cast<int>(used) : bytes;
     used += bytes;
     --count;
@@ -623,9 +629,9 @@ bool CrosspointServices::serviceReadingStats() {
     request.started = true;
     if (request.key[0] == '/') {
       const auto document = syncEngine::documentId(request.key);
-      state = document.empty() ? Status::IoError : request.provider.begin(document, request.anchorDay);
+      state = document.empty() ? Status::IoError : request.provider.begin(document, request.anchorDay, true);
     } else {
-      state = request.provider.begin(request.key, request.anchorDay, false, request.prefixBytes);
+      state = request.provider.begin(request.key, request.anchorDay, request.prefixBytes == UINT64_MAX, request.prefixBytes);
     }
     request.lastProgressLog = millis();
     LOG_INF("RHIST", "start bytes=%llu cpu_mhz=%u free=%u max_block=%u",
@@ -685,6 +691,7 @@ int CrosspointServices::readingStatsRead(uint32_t kind, uint32_t first, uint8_t*
   if (!permissions_.allows("/.crosspoint/reading_sessions.jsonl", DessenPermissions::Access::Read))
     return DSN_ERR_DENIED;
   if (kind == DSN_STATS_CAPABILITY) return first ? DSN_ERR_INVALID : DSN_STATS_VERSION;
+  if (kind == 9 && first == 0 && cap == 0) return 1;
   if (kind == DSN_STATS_RELEASE) {
     if (first || pending_ != Op::None) return DSN_ERR_INVALID;
     readingStats_.reset();
@@ -698,6 +705,7 @@ int CrosspointServices::readingStatsRead(uint32_t kind, uint32_t first, uint8_t*
     if (first == 1 && result == 0) readingStats_.reset();
     return result;
   }
+  if (kind == 9) return dessenReadingStats::readDetailedBook(readingStats_->provider, first, out, cap);
   if (kind == DSN_STATS_BOOK_INFO) return dessenReadingStats::readBookInfo(readingStats_->provider, first, out, cap);
   return dessenReadingStats::read(readingStats_->provider, kind, first, out, cap);
 }

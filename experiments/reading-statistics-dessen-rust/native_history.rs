@@ -27,10 +27,12 @@ fn native_load(st: &mut Stats, book: &[u8], anchor: u32, scratch: &mut [u8]) -> 
         let _ = dsn_reading_stats_read(4, 0, &mut []);
         return None;
     }
+    let (days,scratch)=scratch.split_at_mut(DAY_BYTES);
+    days.fill(0);
     if end != 0 {
         let mut i = 0;
         while i < DAYS {
-            let n = (DAYS - i).min(64);
+            let n = (DAYS - i).min(scratch.len()/16);
             let first = end - (DAYS - 1 - i) as u32;
             if dsn_reading_stats_read(2, first, &mut scratch[..n*16]) != (n*16) as i32 {
                 st.err=ERR_UNAVAILABLE;
@@ -38,10 +40,11 @@ fn native_load(st: &mut Stats, book: &[u8], anchor: u32, scratch: &mut [u8]) -> 
                 let _ = dsn_reading_stats_read(4, 0, &mut []);
                 return None;
             }
-            for j in 0..n { st.day[i+j] = native_u32(scratch, j*16); }
+            for j in 0..n { days[(i+j)*4..(i+j+1)*4].copy_from_slice(&native_u32(scratch, j*16).to_le_bytes()); }
             i += n;
         }
     }
+    st.finish_days(days);
     st.end = end;
     st.book_count = le32(&summary, 24);
     st.books_limited = le32(&summary, 4) & 1 != 0;
@@ -52,6 +55,7 @@ fn native_load(st: &mut Stats, book: &[u8], anchor: u32, scratch: &mut [u8]) -> 
         st.week_hour[i] = native_u32(&summary, 160+i*8);
     }
     st.native_stats = true;
+    if let Ok(source)=history_source() {if source.owned {st.owner=source.id;}}
     let mut detail = Current { found: !book.is_empty() && native_u32(&summary,112)>0,
         secs: native_u32(&summary,104), sessions: native_u32(&summary,112),
         turns: 0, active: le32(&summary,20), periods: [0;4] };

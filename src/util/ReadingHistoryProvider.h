@@ -12,6 +12,7 @@ struct BookInfo {
   char title[80]{};
   char path[176]{};
   char author[48]{};
+  char series[96]{};  // Display label from the recorded series and index.
   uint64_t seconds = 0;
 };
 

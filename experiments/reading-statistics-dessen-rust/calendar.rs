@@ -2,7 +2,7 @@
 // The date grid is Monday-first, with a bounded four-level gray activity scale.
 impl Ui {
     #[inline(never)]
-    fn calendar_page(&self, st: &Stats, year: u32, month: u32, today: u32) {
+    fn calendar_page(&self, st: &Stats, year: u32, month: u32, today: u32, all:bool, data:&[u8],local_days:&[u8]) {
         let x = G;
         let w = self.w - 2 * G;
         let y = 13 + self.ls + self.lt;
@@ -21,12 +21,12 @@ impl Ui {
         let insights_h = (available - cal_h - gap).max(0);
         self.panel(x, y, w, cal_h);
 
-        let months: [&[u8]; 12] = [b"January", b"February", b"March", b"April",
+        static MONTHS: [&[u8]; 12] = [b"January", b"February", b"March", b"April",
             b"May", b"June", b"July", b"August", b"September", b"October",
             b"November", b"December"];
-        let short_months: [&[u8]; 12] = [b"Jan", b"Feb", b"Mar", b"Apr",
+        static SHORT_MONTHS: [&[u8]; 12] = [b"Jan", b"Feb", b"Mar", b"Apr",
             b"May", b"Jun", b"Jul", b"Aug", b"Sep", b"Oct", b"Nov", b"Dec"];
-        let month_title = label!(s(months[month as usize - 1]), s(b" "), n(year));
+        let month_title = label!(s(MONTHS[month as usize - 1]), s(b" "), n(year));
         let heading_h = self.lb;
         // Reserve measured width for navigation on narrow calendar cards.
         let nav_w = (((dsn_measure_text(b"Next >", SMALL, BOLD) >> 16) as i32) + 12)
@@ -37,7 +37,9 @@ impl Ui {
         text(x + 8, y + 7, nav_w, heading_h, b"< Prev", SMALL, LEFT, BOLD);
         text(x + w - nav_w - 8, y + 7, nav_w, heading_h,
             b"Next >", SMALL, RIGHT, BOLD);
-        let divider_y = y + heading_h + 11;
+        let source: &[u8]=if !data.is_empty(){if calendar_owned(st,data){b"All Devices".as_slice()}else{b"All Devices (server only)"}}else if all{b"This Device (not synced)"}else{b"This Device"};
+        text(x+8,y+heading_h+5,w-16,self.ls,source,SMALL,CENTER,0);
+        let divider_y = y + heading_h + self.ls + 11;
         dsn_line(x + 9, divider_y, x + w - 9, divider_y, 1, DARK);
         let weekday_top = divider_y + 5;
         let first = days_from_civil(year, month, 1);
@@ -53,11 +55,11 @@ impl Ui {
         let cell_h = cell_w.min(room / rows).max(self.ls);
         let grid_w = 7 * cell_w + 6 * cell_gap;
         let grid_x = x + (w - grid_w) / 2;
-        let labels: [&[u8]; 7] = [b"Mo", b"Tu", b"We", b"Th", b"Fr", b"Sa", b"Su"];
+        static LABELS: [&[u8]; 7] = [b"Mo", b"Tu", b"We", b"Th", b"Fr", b"Sa", b"Su"];
         for col in 0..7 {
             let xx = grid_x + col * (cell_w + cell_gap);
             text(xx, weekday_top, cell_w, self.ls,
-                labels[col as usize], SMALL, CENTER, BOLD);
+                LABELS[col as usize], SMALL, CENTER, BOLD);
         }
 
         let elapsed = if today != 0 { today.min(count) } else { count };
@@ -70,10 +72,8 @@ impl Ui {
             let xx = grid_x + (index % 7) as i32 * (cell_w + cell_gap);
             let yy = grid_top + (index / 7) as i32 * (cell_h + cell_gap);
             let ordinal = days_from_civil(year, month, date);
-            let seconds = if date <= elapsed && ordinal <= st.end &&
-                st.end - ordinal < DAYS as u32 {
-                st.day[DAYS - 1 - (st.end - ordinal) as usize]
-            } else { 0 };
+            let seconds=if date<=elapsed && !local_days.is_empty(){le32(local_days,(date-1) as usize*4)}else{0};
+            let seconds=if date<=elapsed {calendar_seconds(st,data,ordinal,seconds)}else{0};
             if seconds > 0 {
                 active += 1;
                 total += seconds as u64;
@@ -93,7 +93,7 @@ impl Ui {
                 cell_w - 2, self.ls, label!(n(date)).get(),
                 SMALL, CENTER, if intensity >= 2 { 2 } else { BOLD });
         }
-        let legend: [&[u8]; 4] = [b"None", b"<15m", b"15-44m", b"45m+"];
+        static LEGEND: [&[u8]; 4] = [b"None", b"<15m", b"15-44m", b"45m+"];
         let group_w = (w - 16) / 4;
         for i in 0..4 {
             let xx = x + 8 + i * group_w;
@@ -102,7 +102,7 @@ impl Ui {
                 match i { 1 => LIGHT, 2 => DARK, _ => BLACK }); }
             dsn_stroke(xx, box_y, 12, 12, BLACK, 1, 0, 0);
             text(xx + 15, legend_y, group_w - 16, self.ls,
-                legend[i as usize], SMALL, LEFT, 0);
+                LEGEND[i as usize], SMALL, LEFT, 0);
         }
 
         let top_h = (insights_h * 45 / 100).max(self.lb * 2 + self.lt + 12);
@@ -130,7 +130,7 @@ impl Ui {
         let caption_y = value_y + self.lt + 3;
         if caption_y + self.ls < insights_y + top_h - 4 {
             let date = if best_day != 0 {
-                label!(s(short_months[month as usize - 1]), s(b" "), n(best_day))
+                label!(s(SHORT_MONTHS[month as usize - 1]), s(b" "), n(best_day))
             } else { label!(s(b"No reading yet")) };
             text(x + 4, caption_y, left_w - 8, self.ls,
                 date.get(), SMALL, CENTER, 0);
@@ -157,4 +157,22 @@ impl Ui {
                 SMALL, CENTER, 0);
         }
     }
+}
+
+#[inline(never)]
+fn calendar_seconds(st:&Stats,data:&[u8],day:u32,local:u32)->u32 {
+    if data.is_empty(){return local;}
+    let anchor=le32(data,4);
+    let owned=calendar_owned(st,data);
+    if day>anchor {return if owned{local}else{0};}
+    if anchor-day>=DAYS as u32{return 0;}
+    let p=28+(anchor-day) as usize*6;
+    let others=le32(data,p)&0xffffff;
+    let own=le32(data,p+2)>>8;
+    others.saturating_add(if owned{own.max(local)}else{own})
+}
+#[inline(never)]
+fn calendar_owned(st:&Stats,data:&[u8])->bool {
+    st.owner!=[0;16] && le32(data,8)==1 &&
+        (data[12..28]==st.owner || data[12..28]==[0;16])
 }

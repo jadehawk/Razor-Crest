@@ -165,7 +165,7 @@ void fragmentedHistory() {
   // released, and a retry must recover the exact same history.
   p.cancel();
   Storage.files.erase("/.crosspoint/reading_sessions-history.cache");
-  arrayBudget = 4;
+  arrayBudget = 3;
   assert(finish(p.begin()) == Status::NoMemory);
   assert(!p.summary() && p.aggregationBuffersBytes() == 0);
   arrayBudget = SIZE_MAX;
@@ -349,7 +349,11 @@ void bookInfo() {
   assert(dessenReadingStats::readBookInfo(p, 0, out, 99) == DSN_ERR_INVALID);
   Storage.files[LOG] = a;
   std::memset(out, 0x5a, sizeof(out));
-  assert(dessenReadingStats::readBookInfo(p, 0, out, 100) == DSN_ERR_IO && out[0] == 0x5a);
+  // Ready is a verified snapshot; rendering no longer opens or parses the source.
+  assert(dessenReadingStats::readBookInfo(p, 0, out, 100) == 100 && out[0] == 0xaa);
+  assert(p.begin() == Status::Scanning);
+  while (p.step() == Status::Scanning) {}
+  assert(p.summary() && p.summary()->books == 1 && p.parsedBytes() == a.size());
 }
 
 void migrationFixture(const char* logPath, const char* reportPath) {
@@ -464,10 +468,10 @@ void extendedSessions() {
   Storage.files.clear();
   Storage.files[LOG] = std::string("{\"doc\":\"") + A +
                        "\",\"start\":1795564800,\"tz\":0,\"secs\":120,\"tracked_secs\":150,\"v\":2,\"turns\":7,"
-                       "\"title\":\"Book\",\"path\":\"/Books/a.epub\",\"author\":\"Author\"}\n";
+                       "\"title\":\"Book\",\"path\":\"/Books/a.epub\",\"author\":\"Author\",\"series\":\"Series\",\"series_index\":\"2.5\"}\n";
   Storage.files[LOG] += std::string("{\"doc\":\"") + A +
                         "\",\"start\":0,\"secs\":90,\"tracked_secs\":90,\"v\":2,\"turns\":3,\"title\":\"Book\","
-                        "\"path\":\"/Books/a.epub\",\"author\":\"Author\"}\n";
+                        "\"path\":\"/Books/a.epub\",\"author\":\"Author\",\"series\":\"Series\",\"series_index\":\"2.5\"}\n";
   Provider p;
   auto verify = [&]() {
     auto status = p.begin(A, 0, true);
@@ -481,6 +485,14 @@ void extendedSessions() {
     BookInfo info{};
     assert(p.readBooks(0, &info, 1) == Status::Ready && info.seconds == 240);
     assert(std::string(info.author) == "Author" && std::string(info.path) == "/Books/a.epub");
+    assert(std::string(info.series) == "#2.5 - Series");
+    uint8_t row[dessenReadingStats::DETAILED_BOOK_BYTES]{};
+    assert(dessenReadingStats::readDetailedBook(p, 0, row, sizeof(row)) == sizeof(row));
+    assert(row[0] == 240 && row[1] == 0);
+    assert(std::string(reinterpret_cast<const char*>(row + 92)) == "/Books/a.epub");
+    assert(std::string(reinterpret_cast<const char*>(row + 268)) == "#2.5 - Series");
+    assert(dessenReadingStats::readDetailedBook(p, 1, row, sizeof(row)) == 0);
+    assert(dessenReadingStats::readDetailedBook(p, 0, row, sizeof(row) - 1) == DSN_ERR_INVALID);
     uint8_t turns[24]{};
     assert(dessenReadingStats::read(p, 6, 0, turns, sizeof(turns)) == 24);
     assert(turns[0] == 1 && turns[4] == 3 && turns[8] == 10 && turns[16] == 10);

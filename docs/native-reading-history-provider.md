@@ -124,7 +124,7 @@ completed at 160 MHz with zero rejected records. Ten books: 60,883 ms, free
 errors (5,334–7,738 B requested). The retained index and calendar compete with
 rendering memory. The derived checkpoint now separates those lifetimes.
 
-## Derived checkpoint (RHISTC05)
+## Derived checkpoint (RHISTC07)
 
 `/.crosspoint/reading_sessions-history.cache` is disposable; no statistics are lost
 if it is removed. The only authoritative source remains reading_sessions.jsonl.
@@ -138,6 +138,8 @@ requires a cold rebuild if the file grows. Unchanged queries do not rewrite the
 cache. The cache is written to a temp file, closed, replaced through the HAL and
 reopened with length/checksum validation. Interrupted publication never makes the
 source dependent on the cache. Old temp/backup files are not accepted as results.
+Book metadata is materialized during checkpoint publication. Book list reads seek directly into the cache without parsing JSONL. Sparse calendar blocks are allocated only when needed. Dessen kind 9 probes support with an empty read and returns one 364-byte detailed book row (duration, progress, title, path, series); the original kind 5 contract is unchanged.
+
 One cache slot is retained: changed book/anchor, including a different explicit
 anchor after networking, can require a cold scan. SD write failure returns an I/O
 error, leaving source data intact. Hardware power-loss tests are still pending.

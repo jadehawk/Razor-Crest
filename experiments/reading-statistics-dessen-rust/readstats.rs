@@ -93,6 +93,15 @@ fn shelf_fields(rec: &[u8]) -> Option<[(usize,usize);5]> {
     None
 }
 
+fn shelf_progress(field: &[u8], path: &[u8]) -> i32 {
+    if !field.is_empty() && field.len() <= 3 && field.iter().all(u8::is_ascii_digit) {
+        let mut value=0;
+        for &b in field {value=value*10+(b-b'0') as i32;}
+        if value<=100{return value;}
+    }
+    dsn_book_progress(path)
+}
+
 impl Home {
     fn field(&self, i: usize) -> &[u8] {
         &self.rec[self.f[i].0..self.f[i].1]
@@ -110,7 +119,7 @@ impl Home {
             if n <= 0 { break; }
             if let Some(fields)=shelf_fields(&self.rec[..(n as usize).min(self.rec.len())]) {
                 self.f=fields;
-                let p = dsn_book_progress(self.field(0));
+                let p = shelf_progress(self.field(3), self.field(0));
                 if (0..100).contains(&p) { self.percent=p; self.shelf_index=index; return; }
             }
         }
@@ -129,7 +138,10 @@ impl Home {
 
 struct Stats {
     end: u32,         // local day number (days since 1970) of day[DAYS - 1]: today
-    day: [u32; DAYS], // seconds read per local day
+    day: [u32; 31], // current month and last week only; older days are read on demand
+    latest_secs:u32,
+    latest_ago:u32,
+    streak:u32,
     hour: [u32; 4],   // real native morning/afternoon/evening/night totals
     book_count: u32, // count of valid native per-book statistics records
     total: u32,
@@ -142,33 +154,30 @@ struct Stats {
     week_hour: [u32; 4],
     date_known: bool,
     date_current: bool,
+    owner: [u8;16],
 }
 
 #[inline(never)]
 fn le32(data: &[u8], off: usize) -> u32 {
     u32::from_le_bytes([data[off], data[off+1], data[off+2], data[off+3]])
 }
+const DAY_BYTES:usize=DAYS*4;
 impl Stats {
-    // (current, best) runs of consecutive days with reading. Today not having
-    // been read yet doesn't break the current streak.
-    fn streaks(&self) -> (u32, u32) {
-        let (mut best, mut run) = (0, 0);
-        for &d in self.day.iter() {
-            run = if d > 0 { run + 1 } else { 0 };
-            best = best.max(run);
+    #[inline(never)]
+    fn finish_days(&mut self,days:&[u8]) {
+        for i in 0..31 {self.day[i]=le32(days,(DAYS-31+i)*4);}
+        for ago in 0..DAYS {
+            let v=le32(days,(DAYS-1-ago)*4);
+            if v>0 {self.latest_secs=v;self.latest_ago=ago as u32;break;}
         }
-        let mut cur = 0;
-        let skip = (self.day[DAYS - 1] == 0) as usize;
-        for &d in self.day.iter().rev().skip(skip) {
-            if d == 0 {
-                break;
-            }
-            cur += 1;
+        let skip=usize::from(self.day[30]==0);
+        self.streak=0;
+        for ago in skip..DAYS {
+            if le32(days,(DAYS-1-ago)*4)==0{break;}
+            self.streak+=1;
         }
-        (cur, best) // best streak is limited to the retained 53-week history
     }
 }
-
 // Days since 1970-01-01 for a civil date (Howard Hinnant's algorithm), y >= 1970.
 fn days_from_civil(y: u32, m: u32, d: u32) -> u32 {
     let y = if m <= 2 { y - 1 } else { y };
@@ -281,6 +290,7 @@ struct Ui {
     touch: bool,
     buttons: bool,
     native_hint_height: i32,
+    rich_books: bool,
 }
 
 #[inline(never)]
@@ -300,14 +310,14 @@ pub extern "C" fn main() -> i32 {
     checkpoint(201);
     let mut st = Stats {
         end: 0,
-        day: [0; DAYS],
+        day: [0; 31], latest_secs:0, latest_ago:0, streak:0,
         hour: [0; 4],
         book_count: 0,
         total: 0,
         sessions: 0,
         progress_bp: 0,
         err: 0,
-        log_source: true, native_stats: false, books_limited: false, week_hour: [0;4], date_known: false, date_current: false,
+        log_source: true, native_stats: false, books_limited: false, week_hour: [0;4], date_known: false, date_current: false, owner:[0;16],
     };
     // dsn_clock_t: u16 year, month, day, ... in local time.
     let _ = dsn_timer_set(5000);
@@ -350,13 +360,14 @@ pub extern "C" fn main() -> i32 {
             have_clock=true; st.date_current=true;
         } else if valid_epoch(latest.0) {
             let (y,m,d)=civil_from_days(((latest.0+latest.1*60)/86400) as u32);
-            year=y; c[2]=m as u8; c[3]=d as u8; have_clock=true;
+            year=y;
+            c[2]=m as u8; c[3]=d as u8; have_clock=true;
         }
     }
     if have_clock { st.end=days_from_civil(year,c[2] as u32,c[3] as u32); }
     if !have_clock && st.end >= 10957 {
-        let (y,m,d)=civil_from_days(st.end);
-        year=y; c[2]=m as u8; c[3]=d as u8; have_clock=true;
+        let (_,m,d)=civil_from_days(st.end);
+        c[2]=m as u8; c[3]=d as u8; have_clock=true;
     }
     st.date_known=have_clock;
 
@@ -374,6 +385,7 @@ pub extern "C" fn main() -> i32 {
         touch,
         buttons,
         native_hint_height: (u16::from_le_bytes([device[22], device[23]]) as i32).min((scr & 0xffff) as i32),
+        rich_books: dsn_reading_stats_read(9, 0, &mut []) == 1,
     };
     // The cover buffer is shared by the two mutually exclusive hero pages.
     let mut current_cover_loaded = false;
@@ -392,7 +404,7 @@ pub extern "C" fn main() -> i32 {
     pairing.load_web_login();
     checkpoint(203);
     let mut server = ServerOverall::new();
-    if pairing.phase == PairPhase::Paired { server.load_cached(); }
+    if pairing.phase == PairPhase::Paired { server.load_cached(&mut home.cover); }
     let mut page = if pairing.phase == PairPhase::Paired { 0 } else { 1 };
     let mut disconnect_failed = false;
     checkpoint(204);
@@ -423,6 +435,7 @@ pub extern "C" fn main() -> i32 {
     let mut settings_focus = 0u8;
     let mut previous_page = -1;
     let mut book_offset = 0u32;
+    let mut calendar_all = true;
     let mut calendar_offset = 0u32; // months before the current month
     loop {
         let paired = pairing.phase == PairPhase::Paired;
@@ -499,15 +512,48 @@ pub extern "C" fn main() -> i32 {
             } else { true };
             dsn_clear();
             ui.header(page);
-            let month_number = if have_clock { year * 12 + c[2] as u32 - 1 - calendar_offset } else { 0 };
-            let shown_year = if have_clock { month_number / 12 } else { 0 };
-            let shown_month = if have_clock { month_number % 12 + 1 } else { 0 };
+            // With no reliable RTC, the validated offline server snapshot can
+            // supply the month for All Devices even if this reader has no dates.
+            let mut calendar_base=if have_clock {st.end}else{0};
+            if page==4 && paired && calendar_all && !st.date_current &&
+                cached_calendar(&pairing,&mut home.cover)!=0 {
+                calendar_base=calendar_base.max(le32(&home.cover,4));
+            }
+            let (cy,cm,_)=if calendar_base>0 {civil_from_days(calendar_base)}else{(0,0,0)};
+            let month_number=if cy>0 {cy*12+cm-1-calendar_offset}else{0};
+            let shown_year = if cy>0 { month_number / 12 } else { 0 };
+            let shown_month = if cy>0 { month_number % 12 + 1 } else { 0 };
             let shown_day = if calendar_offset == 0 && st.date_current { month_day } else { 0 };
-            ui.extra_page(&st, page - 1, shown_year, shown_month, shown_day, book_offset, books_ready, &mut home.cover);
+            if page==4 {
+                let mut local_days=[0u8;124];
+                if shown_month!=0 {
+                    let first=days_from_civil(shown_year,shown_month,1);
+                    let count=days_in_month(shown_year,shown_month);
+                    if st.native_stats {
+                        if native_ensure_books(st.end,&mut home.cover) && first<=st.end {
+                            let low=first.max(st.end.saturating_sub(DAYS as u32-1));
+                            let n=(first+count).min(st.end+1).saturating_sub(low) as usize;
+                            if n>0 && dsn_reading_stats_read(2,low,&mut home.cover[..n*16])==(n*16) as i32 {
+                                for i in 0..n {
+                                    let j=(low-first) as usize+i;
+                                    local_days[j*4..j*4+4].copy_from_slice(&native_u32(&home.cover,i*16).to_le_bytes());
+                                }
+                            }
+                        }
+                    }else if st.err!=ERR_UNAVAILABLE {
+                        stock_calendar(first,count,&mut local_days,&mut home.cover);
+                    }
+                }
+                let size=if paired && calendar_all {cached_calendar(&pairing,&mut home.cover)}else{0};
+                current_cover_loaded=false;
+                ui.calendar_page(&st,shown_year,shown_month,shown_day,paired && calendar_all,&home.cover[..size],&local_days);
+            }else{
+                ui.extra_page(&st, page - 1, book_offset, books_ready, &mut home.cover);
+            }
         }
         checkpoint(207);
         if !disconnecting && !generating_web_login && !generating_pairing && !syncing_month && !uploading_history {
-            ui.draw_footer(page, carousel.count, page == 6 && pairing.phase == PairPhase::Paired,
+            ui.draw_footer(page, carousel.count, paired, page == 6 && paired,
                            confirm_disconnect || confirm_web_login || confirm_month_sync || confirm_pairing || confirm_auto_sync || confirm_history_upload);
         }
         checkpoint(208);
@@ -520,7 +566,8 @@ pub extern "C" fn main() -> i32 {
             // inactive shelf record holds parser scratch. Reload the selected
             // shelf row before drawing or opening a book.
             let selection = carousel.selected;
-            history_message = upload_history(&pairing, &mut server, &mut home.cover, &mut home.rec, &mut history_refresh);
+            history_message = upload_history(&pairing, &mut server, &mut home.cover, &mut home.rec, &mut history_refresh,&mut st.owner);
+            if history_refresh==Some(true) {server.fetch_calendar(&pairing,&mut home.cover);}
             let _ = dsn_reading_stats_read(4,0,&mut []);
             carousel.select(selection,&mut home.rec);
             carousel_record=true;
@@ -559,6 +606,7 @@ pub extern "C" fn main() -> i32 {
             syncing_month = false;
             current_cover_loaded=false;
             let refreshed = server.fetch(&pairing,&mut home.cover);
+            if refreshed {server.fetch_calendar(&pairing,&mut home.cover);}
             if show_server_after_refresh {
                 show_server_after_refresh = false;
                 if refreshed { page = 0; }
@@ -606,6 +654,7 @@ pub extern "C" fn main() -> i32 {
                 break;
             }
             match e & 0xff {
+                1 if page == 4 && paired => {calendar_all=!calendar_all;calendar_offset=0;break;}
                 1 if page == 7 => {
                     if settings_focus == 0 {
                         if settings.auto_fetch { settings.toggle_flag(false); } else { confirm_auto_sync = true; }
@@ -658,6 +707,8 @@ pub extern "C" fn main() -> i32 {
                     let front = matches!(kind,3|4) && e & SIDE_KEY == 0;
                     if front && page == 7 {
                         settings_focus = settings_step(settings_focus, forward, sleep_capture_supported, upload_supported && paired);
+                    } else if front && page == 4 && (have_clock || (paired && calendar_all)) {
+                        calendar_offset=if forward{calendar_offset.saturating_sub(1)}else{(calendar_offset+1).min(11)};
                     } else if front && page == 6 && paired {
                         sync_focus = (sync_focus + if forward {1} else {2}) % 3;
                     } else if page == 0 && carousel.count > 1 &&
@@ -698,11 +749,15 @@ pub extern "C" fn main() -> i32 {
                             page = 1;
                             break;
                         }
-                    } else if page == 4 && have_clock && y >= 13 + ui.ls + ui.lt &&
+                    } else if page == 4 && paired && y >= 13+ui.ls+ui.lt &&
+                              y < 13+ui.ls+ui.lt*2+20 && x>=ui.w/4 && x<=ui.w*3/4 {
+                        calendar_all=!calendar_all;calendar_offset=0;
+                        break;
+                    } else if page == 4 && (have_clock || (paired && calendar_all)) && y >= 13 + ui.ls + ui.lt &&
                               y < 13 + ui.ls + ui.lt * 2 + 20 && x < ui.w / 4 {
                         calendar_offset = (calendar_offset + 1).min(11);
                         break;
-                    } else if page == 4 && have_clock && y >= 13 + ui.ls + ui.lt &&
+                    } else if page == 4 && (have_clock || (paired && calendar_all)) && y >= 13 + ui.ls + ui.lt &&
                               y < 13 + ui.ls + ui.lt * 2 + 20 && x > ui.w * 3 / 4 {
                         calendar_offset = calendar_offset.saturating_sub(1);
                         break;

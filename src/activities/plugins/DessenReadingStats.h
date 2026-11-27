@@ -153,17 +153,13 @@ inline int readBookInfo(const readingHistory::Provider& provider, uint32_t first
     return DSN_ERR_INVALID;
   if (first >= summary->books) return 0;
   const size_t n = std::min<size_t>(cap / DSN_STATS_BOOK_INFO_BYTES, summary->books - first);
-  auto page = makeUniqueNoThrow<readingHistory::BookInfo[]>(n);
-  if (!page) {
-    LOG_ERR("RHIST", "Cannot allocate %u-byte metadata page",
-            static_cast<unsigned>(n * sizeof(readingHistory::BookInfo)));
-    return DSN_STATS_NO_MEMORY;
-  }
-  const auto state = provider.readBooks(first, page.get(), n);
-  if (state != readingHistory::Status::Ready) return resultCode(state);
+  auto page = makeUniqueNoThrow<uint8_t[]>(n * DSN_STATS_BOOK_INFO_BYTES);
+  if (!page) return DSN_STATS_NO_MEMORY;
+  readingHistory::BookInfo book{};
   for (size_t i = 0; i < n; ++i) {
-    auto* record = out + i * DSN_STATS_BOOK_INFO_BYTES;
-    const auto& book = page[i];
+    const auto state = provider.readBooks(first + i, &book, 1);
+    if (state != readingHistory::Status::Ready) return resultCode(state);
+    auto* record = page.get() + i * DSN_STATS_BOOK_INFO_BYTES;
     std::memcpy(record, book.id.data(), book.id.size());
     record[16] = static_cast<uint8_t>(book.progress);
     record[17] = static_cast<uint8_t>(book.progress >> 8);
@@ -171,6 +167,25 @@ inline int readBookInfo(const readingHistory::Provider& provider, uint32_t first
     record[19] = 0;
     std::memcpy(record + 20, book.title, sizeof(book.title));
   }
+  std::memcpy(out, page.get(), n * DSN_STATS_BOOK_INFO_BYTES);
   return static_cast<int>(n * DSN_STATS_BOOK_INFO_BYTES);
+}
+inline constexpr uint32_t DETAILED_BOOK_BYTES = 364;
+// One bounded row, with cached metadata and a full-width duration.
+inline int readDetailedBook(const readingHistory::Provider& provider, uint32_t first, uint8_t* out, uint32_t cap) {
+  if (!provider.summary() || !out || cap != DETAILED_BOOK_BYTES) return DSN_ERR_INVALID;
+  if (first >= provider.summary()->books) return 0;
+  readingHistory::BookInfo book{};
+  const auto state = provider.readBooks(first, &book, 1);
+  if (state != readingHistory::Status::Ready) return resultCode(state);
+  memset(out, 0, cap);
+  put64(out, book.seconds);
+  out[8] = static_cast<uint8_t>(book.progress);
+  out[9] = static_cast<uint8_t>(book.progress >> 8);
+  out[10] = book.titleLength;
+  memcpy(out + 12, book.title, sizeof(book.title));
+  memcpy(out + 92, book.path, sizeof(book.path));
+  memcpy(out + 268, book.series, sizeof(book.series));
+  return DETAILED_BOOK_BYTES;
 }
 }  // namespace dessenReadingStats

@@ -76,15 +76,7 @@ Status Query::begin(std::string_view document, uint32_t anchorDay, bool details)
     return state;
   }
   result.anchorDay = anchorDay;
-  for (size_t i = 0; i < days.size(); ++i) {
-    days[i] = makeUniqueNoThrow<Day[]>(dayBlockSize(i));
-    if (!days[i]) {
-      LOG_ERR("RHIST", "Cannot allocate day block %u (%u bytes)", static_cast<unsigned>(i),
-              static_cast<unsigned>(dayBlockSize(i) * sizeof(Day)));
-      stop(Status::NoMemory);
-      return state;
-    }
-  }
+  // Allocate day blocks only when a session contributes to them.
   line = makeUniqueNoThrow<char[]>(MAX_LINE + 1);
   filter["doc"] = true;
   filter["secs"] = true;
@@ -103,6 +95,20 @@ Status Query::begin(std::string_view document, uint32_t anchorDay, bool details)
   }
   state = Status::Scanning;
   return state;
+}
+
+Day* Query::writableDaySlot(size_t i) {
+  const auto blockIndex = i / DAY_BLOCK;
+  auto& block = days[blockIndex];
+  if (!block) {
+    block = makeUniqueNoThrow<Day[]>(dayBlockSize(blockIndex));
+    if (!block) {
+      LOG_ERR("RHIST", "Cannot allocate day block %u", static_cast<unsigned>(blockIndex));
+      stop(Status::NoMemory);
+      return nullptr;
+    }
+  }
+  return &block[i % DAY_BLOCK];
 }
 
 void Query::releaseParser() {
@@ -218,7 +224,7 @@ void Query::processBaseline() {
     result.bytes = bytes;
     result.rejected = rejected;
     result.anchorDay = anchor;
-    for (size_t i = 0; i < days.size(); ++i) std::fill_n(days[i].get(), dayBlockSize(i), Day{});
+    for (auto& block : days) block.reset();
     week = {};
     for (auto& block : ids) block.reset();
     for (auto& block : bookSeconds) block.reset();
@@ -323,7 +329,9 @@ void Query::processBaseline() {
     const auto seconds = parsed["seconds"].as<uint32_t>();
     const auto anchor = result.anchorDay ? result.anchorDay : std::max(day, result.latestDay);
     if (!inWindow(day, anchor)) return;
-    auto& d = daySlot(day % HISTORY_DAYS);
+    auto* slot = writableDaySlot(day % HISTORY_DAYS);
+    if (!slot) return;
+    auto& d = *slot;
     if (d.date != day) {
       if (d.date > day) return;
       d = {0, 0, day};
@@ -442,7 +450,9 @@ void Query::processLine() {
   if (state != Status::Scanning) return;
   const uint32_t anchor = result.anchorDay ? result.anchorDay : result.latestDay;
   if (inWindow(day, anchor)) {
-    auto& bucket = daySlot(day % HISTORY_DAYS);
+    auto* slot = writableDaySlot(day % HISTORY_DAYS);
+    if (!slot) return;
+    auto& bucket = *slot;
     if (bucket.date != day) bucket = {0, 0, day};
     bucket.seconds += seconds;
     if (isBook) bucket.bookSeconds += seconds;

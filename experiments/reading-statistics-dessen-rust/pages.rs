@@ -3,13 +3,7 @@
 
 fn weekly_periods(st: &Stats) -> [u32; 4] { st.week_hour }
 
-fn latest_day_seconds(st: &Stats) -> (u32, u32) {
-    for ago in 0..DAYS {
-        let secs = st.day[DAYS - 1 - ago];
-        if secs > 0 { return (secs, ago as u32); }
-    }
-    (0, 0)
-}
+fn latest_day_seconds(st: &Stats) -> (u32, u32) { (st.latest_secs,st.latest_ago) }
 
 // Calendar arithmetic uses the same local-day ordinal as the native records.
 fn days_in_month(year: u32, month: u32) -> u32 {
@@ -27,7 +21,49 @@ impl Ui {
         let y=13+self.ls+self.lt;
         let available=(self.content_bottom()-y-13).max(1);
         // Page capacity is independent of the bounded two-book read batches.
-        ((available-self.lb-self.ls-38)/(self.lb+12)).max(1) as u32
+        ((available-self.lb-self.ls-38)/self.book_row_height()).max(1) as u32
+    }
+
+    #[inline(never)]
+    fn book_row_height(&self) -> i32 {
+        if self.rich_books { (self.lb * 2 + self.ls * 3 + 12).max(76) } else { self.lb + 12 }
+    }
+
+    #[inline(never)]
+    fn detailed_book_row(&self, x:i32,y:i32,w:i32,h:i32, first:u32, scratch:&mut [u8]) -> i32 {
+        let (r,cover)=scratch.split_at_mut(364);
+        let n=dsn_reading_stats_read(9,first,r);
+        if n != 364 {return n;}
+        let title=&r[12..12+(r[10] as usize).min(80)];
+        let path=&r[92..268]; let path=&path[..path.iter().position(|&b| b==0).unwrap_or(path.len())];
+        let series=&r[268..364]; let series=&series[..series.iter().position(|&b| b==0).unwrap_or(series.len())];
+        let old=u16::from_le_bytes([r[8],r[9]]) as i32;
+        let live=if path.is_empty(){-1}else{dsn_book_progress(path)};
+        let p=if live>=0 {live} else if old<=10000 {(old+50)/100} else {-1};
+        let ch=(h-8).min(72); let cw=ch*2/3;
+        let bytes=if path.is_empty(){0}else{dsn_book_cover(path,ch,cover)};
+        if bytes>4 && bytes as usize<=cover.len() {
+            let bw=u16::from_le_bytes([cover[0],cover[1]]) as i32;
+            let bh=u16::from_le_bytes([cover[2],cover[3]]) as i32;
+            if bw>0 && bh>0 && bw<=cw && bh<=ch && ((bw+7)/8*bh) as usize <= bytes as usize-4 {
+                dsn_bitmap(x+8+(cw-bw)/2,y+3,bw,bh,&cover[4..bytes as usize],bw,bh,1,0,BLACK,0);
+            } else {dsn_stroke(x+8,y+3,cw,ch,DARK,1,0,0);}
+        } else {dsn_stroke(x+8,y+3,cw,ch,DARK,1,0,0);}
+        let tx=x+cw+16; let tw=(w-cw-26).max(1);
+        dsn_text_box(tx,y+2,tw,self.lb*2,if title.is_empty(){b"Untitled"}else{title},BODY,LEFT,2,BOLD);
+        let sy=y+2+self.lb*2;
+        if !series.is_empty(){dsn_text_box(tx,sy,tw,self.ls*2,series,SMALL,LEFT,2,0);}
+        let ty=sy+if series.is_empty(){0}else{self.ls*2};
+        let minutes=native_u32(r,0)/60;
+        let (hours,m)=(minutes/60,minutes%60);
+        let time=label!(s(b"Time: "),s(if hours<10{b"0"}else{b""}),n(hours),s(b"h "),s(if m<10{b"0"}else{b""}),n(m),s(b"m"));
+        let val=if p>=0{label!(n(p as u32),s(b"%"))}else{label!(s(b"--"))};
+        let pw=((dsn_measure_text(b"100%",SMALL,0)>>16) as i32)+8;
+        text(tx,ty,tw-pw-4,self.ls,time.get(),SMALL,LEFT,0);
+        dsn_line(tx+tw-pw-2,ty,tx+tw-pw-2,ty+self.ls,1,LIGHT);
+        text(tx+tw-pw,ty,pw,self.ls,val.get(),SMALL,RIGHT,0);
+        dsn_line(x+8,y+h-2,x+w-8,y+h-2,1,LIGHT);
+        1
     }
 
     #[inline(never)]
@@ -39,7 +75,7 @@ impl Ui {
         dsn_line(x+12,y+h-3,x+w-12,y+h-3,1,LIGHT);
     }
     #[inline(never)]
-    fn extra_page(&self, st: &Stats, page: i32, year: u32, month: u32, day: u32, book_offset: u32, books_ready: bool, scratch: &mut [u8]) {
+    fn extra_page(&self, st: &Stats, page: i32, book_offset: u32, books_ready: bool, scratch: &mut [u8]) {
         let x = G;
         let w = self.w - G * 2;
         let y = 13 + self.ls + self.lt;
@@ -67,18 +103,24 @@ impl Ui {
                     text(x + w / 2, by + last_h / 2, w / 2 - 12, self.lb, label.get(), SMALL, RIGHT, 0);
                 }
             }
-            3 => self.calendar_page(st, year, month, day),
+            3 => {},
             4 => {
                 self.panel(x, y, w, available);
                 let title = label!(s(b"Books tracked: "), n(st.book_count), s(if st.books_limited { b"+" } else { b"" }));
                 text(x + 12, y + 8, w - 24, self.lb, title.get(), BODY, LEFT, BOLD);
                 dsn_line(x + 10, y + self.lb + 14, x + w - 10, y + self.lb + 14, 1, DARK);
                 let top = y + self.lb + 20;
-                let row_h = self.lb + 12;
+                let row_h = self.book_row_height();
                 let capacity = self.books_capacity();
                 let mut shown = 0u32;
                 let mut failed = !books_ready;
-                if st.err != ERR_UNAVAILABLE {
+                if st.err != ERR_UNAVAILABLE && self.rich_books && st.native_stats {
+                    while shown < capacity && !failed {
+                        let n=self.detailed_book_row(x,top+shown as i32*row_h,w,row_h,book_offset+shown,scratch);
+                        if n<=0 {failed=n<0;break;}
+                        shown+=1;
+                    }
+                } else if st.err != ERR_UNAVAILABLE {
                     let mut batch=[EMPTY_LOG_BOOK;2];
                     while shown < capacity && !failed {
                     let count=if st.native_stats {

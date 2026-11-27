@@ -274,7 +274,7 @@ impl Pairing {
             for suffix in [b"/server-overview.json".as_slice(), b"/web-login.json",
                            b"/server-overview.json.bak", b"/web-login.json.bak",
                            b"/server-overview.json.part", b"/web-login.json.part",
-                           b"/history-upload-v1", b"/history-upload-v1.bak", b"/history-upload-v1.part"] {
+                           b"/history-upload-v1", b"/history-upload-v1.bak", b"/history-upload-v1.part", CALENDAR_CACHE_FILE, b"/server-calendar.bin.bak", b"/server-calendar.bin.part"] {
                 if end + suffix.len() <= path.len() {
                     path[end..end + suffix.len()].copy_from_slice(suffix);
                     let _ = dsn_fs_delete(&path[..end + suffix.len()]);

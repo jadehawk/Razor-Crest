@@ -70,7 +70,7 @@ PSRAM devices keep the parked guest loaded.
 A held Back cancels the worker and closes the app. A socket operation may take
 its timeout to acknowledge cancellation; no new guest executes concurrently.
 
-Standalone build and all six regression suites, from this directory in WSL:
+Standalone build and all seven regression suites, from this directory in WSL:
 
 ```sh
 source ~/.cargo/env
@@ -86,6 +86,17 @@ make test RUST=no
 make rust
 ```
 
+Paired calendar snapshots are cached with the current pairing scope; local
+history is merged only when ownership and source identity are compatible.
+Otherwise the label explicitly says server only. Physical front keys navigate
+months, Confirm switches source, and side keys navigate pages. All Books uses
+the detailed native record if supported, with cached covers, saved progress
+and a historical fallback. Old hosts retain the original compact list.
+
+The size-optimized RV32IM build has been verified with Rust 1.100.0.
+It uses call relaxation without GP relaxation, machine outlining and omits
+unused panic source-location strings. These Rust compiler switches are
+unstable; re-run the full stack-gated suite after toolchain upgrades.
 The test package includes the app and its manifest/device metadata. The authoritative source is this worktree. Earlier versioned folders remain unchanged.
 
 Firmware compilation and hardware verification are performed by the user.

@@ -11,7 +11,7 @@ const EMPTY_LOG_BOOK: LogBook = LogBook { id: [0;32], title: [0;80], len: 0, pro
 fn session_lines(chunk: &mut [u8], visit: &mut dyn FnMut(&[u8])) {
     // Larger reads amortize the native open/seek/close syscall. Only records
     // crossing a chunk boundary need copying into the carry buffer.
-    let mut line = [0u8; 512];
+    let (line, chunk) = chunk.split_at_mut(512);
     let (mut offset, mut len, mut overflow) = (0u32, 0usize, false);
     loop {
         let n = dsn_fs_read_at(SESSION_LOG, offset, chunk);
@@ -215,7 +215,9 @@ fn log_period(local: i64) -> usize {
 #[inline(never)]
 fn load_sessions(st: &mut Stats, path: &[u8], current_id: &[u8;32], chunk: &mut [u8]) -> Current {
     let mut current=Current {found:false,secs:0,sessions:0,turns:0,active:0,periods:[0;4]};
-    let mut current_days=[false; DAYS];
+    let mut current_days=[0u8; (DAYS+7)/8];
+    let (days,chunk)=chunk.split_at_mut(DAY_BYTES);
+    days.fill(0);
 
     session_lines(chunk, &mut |line| {
         let Some((id,secs,start,tz))=session_meta(line) else {return;};
@@ -233,11 +235,29 @@ fn load_sessions(st: &mut Stats, path: &[u8], current_id: &[u8;32], chunk: &mut 
         if is_current {current.periods[period]=current.periods[period].saturating_add(secs);}
         if day<=st.end && st.end-day<DAYS as u32 {
             let pos=DAYS-1-(st.end-day) as usize;
-            st.day[pos]=st.day[pos].saturating_add(secs);
+            add_day(days,pos,secs);
             if st.end-day<7 {st.week_hour[period]=st.week_hour[period].saturating_add(secs);}
-            if is_current {current_days[pos]=true;}
+            if is_current {current_days[pos/8]|=1<<(pos%8);}
         }
     });
-    current.active=current_days.iter().filter(|&&v|v).count() as u32;
+    st.finish_days(days);
+    current.active=current_days.iter().map(|v|v.count_ones()).sum();
     current
+}
+#[inline(never)]
+fn add_day(days:&mut [u8],pos:usize,seconds:u32) {
+    let n=pos*4;
+    let value=le32(days,n).saturating_add(seconds);
+    days[n..n+4].copy_from_slice(&value.to_le_bytes());
+}
+
+// Stock hosts have no native checkpoint. Scan only the requested calendar month.
+#[inline(never)]
+fn stock_calendar(first:u32,count:u32,days:&mut [u8],scratch:&mut [u8]) {
+    session_lines(scratch,&mut |line| {
+        let Some((_,seconds,start,tz))=session_meta(line) else{return;};
+        if !valid_epoch(start){return;}
+        let date=((start+tz*60)/86400) as u32;
+        if date>=first && date-first<count {add_day(days,(date-first) as usize,seconds);}
+    });
 }
