@@ -126,7 +126,7 @@ impl Ui {
                 dsn_fill(bar_x, mid_y - 3, fill.max(2).min(bar_w), 6, BLACK);
             }
             let pct = if total > 0 { (values[i] as u64 * 100 + total / 2) / total } else { 0 };
-            let label = S::new().n(pct as u32).s(b"%");
+            let label = label!(n(pct as u32), s(b"%"));
             text(pct_x, text_y, pct_w, self.ls, label.get(), SMALL, RIGHT, 0);
         }
     }
@@ -158,13 +158,13 @@ impl Ui {
         let mut c = [0u8; 8];
         if dsn_clock(&mut c) >= 0 && (c[0] | c[1]) != 0 {
             let hour = if c[4] % 12 == 0 { 12 } else { c[4] % 12 };
-            let s = S::new().n(hour as u32).s(b":").n(c[5] as u32 / 10).n(c[5] as u32 % 10);
+            let s = label!(n(hour as u32), s(b":"), n(c[5] as u32 / 10), n(c[5] as u32 % 10));
             text(g, 5, self.w / 3, self.ls, s.get(), SMALL, LEFT, 0);
         }
         let battery = dsn_battery();
         if battery >= 0 {
             text(self.w - g - self.w / 4, 5, self.w / 4, self.ls,
-                S::new().n(battery as u32 & 255).s(b"%").get(), SMALL, RIGHT, 0);
+                label!(n(battery as u32 & 255), s(b"%")).get(), SMALL, RIGHT, 0);
         }
         let title: &[u8] = match page {
             0 => b"Server Statistics",
@@ -214,7 +214,7 @@ impl Ui {
                     if v > 0 { active += 1; }
                 }
             }
-            let value = if clock_ok { dur(month_secs.min(u32::MAX as u64) as u32) } else if st.log_source { dur(st.total) } else { S::new().s(b"--") };
+            let value = if clock_ok { dur(month_secs.min(u32::MAX as u64) as u32) } else if st.log_source { dur(st.total) } else { label!(s(b"--")) };
             // Use Dessen's native FreeInk font. The hand-drawn 5x7 digits
             // became pixelated at the enlargement used on X3/Picco.
             let headline_top = top + self.lb + 13;
@@ -226,7 +226,7 @@ impl Ui {
             dsn_line(x + 9, line, x + w - 9, line, 1, DARK);
             for i in 1..3 { dsn_line(x + w * i / 3, line + 6, x + w * i / 3, top + hero - 8, 1, DARK); }
             let streak = st.streaks().0;
-            let vals = [if st.date_current { S::new().n(streak) } else { S::new().s(b"--") }, if clock_ok { S::new().n(active) } else { S::new().s(b"--") }, if st.books_limited { S::new().n(st.book_count).s(b"+") } else { S::new().n(st.book_count) }];
+            let vals = [if st.date_current { label!(n(streak)) } else { label!(s(b"--")) }, if clock_ok { label!(n(active)) } else { label!(s(b"--")) }, if st.books_limited { label!(n(st.book_count), s(b"+")) } else { label!(n(st.book_count)) }];
             let labels: [&[u8]; 3] = [b"Day Streak", b"Active Days", b"Books"];
             let bottom_space = (top + hero - 8 - line).max(self.lt + self.ls);
             let values_top = line + ((bottom_space - self.lt - self.ls) / 2).max(4);
@@ -241,7 +241,7 @@ impl Ui {
             }
             let my = top + hero + gap;
             let mw = (w - gap) / 2;
-            self.metric(x, my, mw, metric_h, b"Sessions", S::new().n(st.sessions).get(), 0);
+            self.metric(x, my, mw, metric_h, b"Sessions", label!(n(st.sessions)).get(), 0);
             let avg = average_session(st.total, st.sessions);
             self.metric(x + mw + gap, my, w - mw - gap, metric_h, b"Avg. Session", avg.get(), 3);
             let py = my + metric_h + gap;
@@ -270,10 +270,10 @@ impl Ui {
             let my = top + hero + gap;
             let mw = (w - gap) / 2;
             let mh = (metrics - gap) / 2;
-            let sessions = if detail.found { S::new().n(detail.sessions) } else { S::new().s(b"--") };
-            let reading = if detail.found { dur(detail.secs) } else { S::new().s(b"--") };
-            let active = if detail.found && st.date_known { S::new().n(detail.active) } else { S::new().s(b"--") };
-            let avg = if detail.found { average_session(detail.secs, detail.sessions) } else { S::new().s(b"--") };
+            let sessions = if detail.found { label!(n(detail.sessions)) } else { label!(s(b"--")) };
+            let reading = if detail.found { dur(detail.secs) } else { label!(s(b"--")) };
+            let active = if detail.found && st.date_known { label!(n(detail.active)) } else { label!(s(b"--")) };
+            let avg = if detail.found { average_session(detail.secs, detail.sessions) } else { label!(s(b"--")) };
             self.metric(x, my, mw, mh, b"Sessions", sessions.get(), 0);
             self.metric(x + mw + gap, my, w - mw - gap, mh, b"Reading Time", reading.get(), 4);
             self.metric(x, my + mh + gap, mw, mh, b"Active Days", active.get(), 2);

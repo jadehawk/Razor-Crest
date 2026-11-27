@@ -162,7 +162,7 @@ bool DessenPermissions::addRule(std::string_view path, uint8_t access, bool cred
 }
 
 bool DessenPermissions::parse(std::string_view manifest, std::string_view appDirectory) {
-  valid = authorized = handoff = deviceIdentity = library = false;
+  valid = authorized = handoff = deviceIdentity = historyIdentity = library = false;
   ruleCount = originCount = 0;
   if (manifest.empty() || manifest.size() > MAX_MANIFEST || !canonical(appDirectory, appDir) || appDir == "/")
     return false;
@@ -253,6 +253,10 @@ bool DessenPermissions::parse(std::string_view manifest, std::string_view appDir
     const auto optional = document["optional_permissions"];
     if (!optional.is<JsonObjectConst>()) return false;
     const auto grants = optional.as<JsonObjectConst>();
+    if (!grants["history_identity"].isUnbound()) {
+      if (!grants["history_identity"].is<bool>()) return false;
+      historyIdentity = grants["history_identity"].as<bool>();
+    }
     if (!grants["device_identity"].isUnbound()) {
       if (!grants["device_identity"].is<bool>() || !permissions["network"]["device_identity"].isUnbound()) return false;
       deviceIdentity = grants["device_identity"].as<bool>();

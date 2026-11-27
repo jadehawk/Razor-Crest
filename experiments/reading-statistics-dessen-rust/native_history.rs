@@ -74,9 +74,9 @@ fn native_ensure_books(anchor: u32, scratch: &mut [u8]) -> bool {
 }
 
 #[inline(never)]
-fn native_book_batch(first: u32, books: &mut [LogBook;5], scratch: &mut [u8]) -> Option<usize> {
-    let n = dsn_reading_stats_read(5,first,&mut scratch[..500]);
-    if n < 0 || n > 500 || n % 100 != 0 { return None; }
+fn native_book_batch(first: u32, books: &mut [LogBook;2], scratch: &mut [u8]) -> Option<usize> {
+    let n = dsn_reading_stats_read(5,first,&mut scratch[..200]);
+    if n < 0 || n > 200 || n % 100 != 0 { return None; }
     for i in 0..(n as usize/100) {
         let r=&scratch[i*100..(i+1)*100];
         let mut b=EMPTY_LOG_BOOK;

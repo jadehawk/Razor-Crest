@@ -83,6 +83,7 @@ def main(host, app):
         assert json.loads((sd / "app" / "server-overview.json").read_text())["month_seconds"] == 7200
         assert target.exists(), ("Completed pairing did not persist shared credential", trace[-3500:])
         assert json.loads(target.read_text())["token"] == TOKEN, "Saved token mismatch"
+        assert "Server Statistics" in trace.split("\nrefresh\n")[-2], trace[-1800:]
         # A capability file stands in for the firmware's virtual capture endpoint.
         capture = sd / "app" / "sleep-frame.capture"
         capture.write_bytes(b"\x01")
@@ -107,7 +108,7 @@ def main(host, app):
         # must poll approval without another press of Confirm/touch.
         target.unlink()
         timer_trace = run(host, app, sd, network, keys=b"ucczbb")
-        assert "Reader paired successfully" in timer_trace, "Timer did not complete the pairing flow"
+        assert "Server Statistics" in timer_trace.split("\nrefresh\n")[-2], "Successful timed pairing must open Server Statistics"
         assert "Checking pairing..." not in timer_trace, "Background polling should not flash a progress frame"
         assert json.loads(target.read_text())["token"] == TOKEN, "Timed poll did not save token"
         # Picco touch UI must draw a real button, not a hardware-key instruction.

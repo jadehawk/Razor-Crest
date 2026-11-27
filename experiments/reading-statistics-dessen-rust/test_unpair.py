@@ -16,13 +16,16 @@ def main(host, app):
             app_dir = root / "app"
             app_dir.mkdir()
             caches = [app_dir / name for name in ("server-overview.json", "web-login.json",
-                      "server-overview.json.bak", "web-login.json.part")]
+                      "server-overview.json.bak", "web-login.json.part",
+                      "history-upload-v1", "history-upload-v1.bak", "history-upload-v1.part")]
             for cache in caches:
                 cache.write_text("{}")
             local = secret.parent / "reading-stats"
             local.mkdir()
             stats = local / "global_v2.bin"
             stats.write_bytes(b"local reading statistics")
+            history=secret.parent/"reading_sessions.jsonl"
+            history.write_bytes(b"local history")
             prefix = b"uT" if touch else b"upc"
             prompt = run(host, app, root, keys=prefix, touch=touch, portrait=portrait)
             assert "Disconnect this reader?" in prompt
@@ -34,6 +37,7 @@ def main(host, app):
             assert confirmed.index("Disconnecting reader...") < confirmed.index("NOT PAIRED")
             assert not secret.exists() and not any(c.exists() for c in caches)
             assert stats.read_bytes() == b"local reading statistics"
+            assert history.read_bytes()==b"local history"
             restarted = run(host, app, root, keys=b"u", touch=touch, portrait=portrait)
             assert "READER PAIRED" not in restarted
     print("Generic unpair confirmation, cancellation and offline local cleanup: PASS")

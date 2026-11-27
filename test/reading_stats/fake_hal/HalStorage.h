@@ -9,6 +9,7 @@
 
 constexpr int O_RDWR = 0x02;
 constexpr int O_CREAT = 0x40;
+constexpr int O_APPEND = 0x400;
 
 struct FakeHalStorage;
 struct HalFile {
@@ -103,6 +104,7 @@ struct FakeHalStorage {
     file.directory = directories.count(p) != 0;
     if (!file.directory) file.content = files[p];
     file.writable = (flags & O_RDWR) != 0;
+    if (flags & O_APPEND) file.position = file.content.size();
     file.opened = true;
     return file;
   }

@@ -1,102 +1,66 @@
-#[derive(Clone, Copy)]
-struct CarouselBook {
-    path: [u8; 512],
-    path_n: usize,
-    title: [u8; 192],
-    title_n: usize,
-    author: [u8; 128],
-    author_n: usize,
-    series: [u8; 112],
-    series_n: usize,
-    percent: i32,
-}
-
-impl CarouselBook {
-    const EMPTY: Self = Self {
-        path: [0; 512], path_n: 0,
-        title: [0; 192], title_n: 0,
-        author: [0; 128], author_n: 0,
-        series: [0; 112], series_n: 0, percent: 0,
-    };
-    fn path(&self) -> &[u8] { &self.path[..self.path_n] }
-    fn title(&self) -> &[u8] { &self.title[..self.title_n] }
-    fn author(&self) -> &[u8] { &self.author[..self.author_n] }
-    fn series(&self) -> &[u8] { &self.series[..self.series_n] }
-}
-
 struct BookCarousel {
-    books: [CarouselBook; 5],
+    // Five shelf indices; the selected record shares Home's shelf buffer.
+    fields: [(usize, usize); 5],
+    indices: [u32; 5],
     count: usize,
     selected: usize,
+    percent: i32,
 }
 
 impl BookCarousel {
     const fn new() -> Self {
-        Self { books: [CarouselBook::EMPTY; 5], count: 0, selected: 0 }
+        Self { fields: [(0,0);5], indices: [0;5],
+               count: 0, selected: 0, percent: 0 }
+    }
+    fn field<'a>(&self, rec:&'a [u8], n: usize) -> &'a [u8] {
+        let (a,b)=self.fields[n];
+        &rec[a..b]
     }
 
     #[inline(never)]
-    fn load(&mut self) {
-        // One bounded scan during startup. Never reopen the index on redraw.
-        let mut shelf = [0u8; 1100];
-        let mut index = 0u32;
-        while index < 40 && self.count < self.books.len() {
-            let bytes = dsn_recent_shelf(index, 8, &mut shelf);
-            if bytes <= 0 { break; }
-            let bytes = (bytes as usize).min(shelf.len());
-            let mut pos = 0usize;
-            let mut scanned = 0u32;
-            while pos < bytes && self.count < self.books.len() {
-                let Some(rel_end) = shelf[pos..bytes].iter().position(|&b| b == b'\n') else { break };
-                let end = pos + rel_end;
-                let record = &shelf[pos..end];
-                pos = end + 1;
-                scanned += 1;
-                let Some(path_end) = record.iter().position(|&b| b == b'\t') else { continue };
-                let title_start = path_end + 1;
-                let Some(title_end_rel) = record[title_start..].iter().position(|&b| b == b'\t') else { continue };
-                let title_end = title_start + title_end_rel;
-                let author_start = title_end + 1;
-                let author_end = record[author_start..].iter()
-                    .position(|&b| b == b'\t').map(|p| author_start + p).unwrap_or(record.len());
-                let path = &record[..path_end];
-                if !path.starts_with(b"/") || path.len() > 512 { continue; }
-                let pct = dsn_book_progress(path);
-                if !(1..100).contains(&pct) { continue; }
-                let book = &mut self.books[self.count];
-                book.path[..path.len()].copy_from_slice(path);
-                book.path_n = path.len();
-                let title = &record[title_start..title_end];
-                book.title_n = title.len().min(book.title.len());
-                book.title[..book.title_n].copy_from_slice(&title[..book.title_n]);
-                let author = &record[author_start..author_end];
-                book.author_n = author.len().min(book.author.len());
-                book.author[..book.author_n].copy_from_slice(&author[..book.author_n]);
-                // Shelf rows include a progress field followed by an optional
-                // fifth field containing the formatted series name and index.
-                if author_end < record.len() {
-                    let progress_end = record[author_end + 1..].iter()
-                        .position(|&b| b == b'\t').map(|p| author_end + 1 + p);
-                    if let Some(series_sep) = progress_end {
-                        let series = &record[series_sep + 1..];
-                        book.series_n = series.len().min(book.series.len());
-                        book.series[..book.series_n].copy_from_slice(&series[..book.series_n]);
-                    }
-                }
-                book.percent = pct;
-                self.count += 1;
+    fn row(&mut self, index: u32, rec:&mut [u8]) -> bool {
+        self.fields=[(0,0);5];
+        self.percent=-1;
+        let n=dsn_recent_shelf(index,1,rec);
+        if n<=0 || n>1100{return false;}
+        if let Some(fields)=shelf_fields(&rec[..n as usize]){
+            self.fields=fields;
+            self.percent=dsn_book_progress(self.field(rec,0));
+        }
+        true
+    }
+
+    #[inline(never)]
+    fn load(&mut self, rec:&mut [u8]) {
+        self.count=0;
+        self.selected=0;
+        for index in 0..40 {
+            if !self.row(index,rec){break;}
+            if self.field(rec,0).starts_with(b"/") && (1..100).contains(&self.percent){
+                self.indices[self.count]=index;
+                self.count+=1;
+                if self.count==self.indices.len(){break;}
             }
-            if scanned == 0 { break; }
-            index += scanned;
+        }
+        self.select(0,rec);
+    }
+    #[inline(never)]
+    fn select(&mut self, index: usize, rec:&mut [u8]) {
+        self.selected=index.min(self.count.saturating_sub(1));
+        if self.count!=0 {
+            self.row(self.indices[self.selected],rec);
+        } else {
+            self.fields=[(0,0);5];
+            self.percent=-1;
         }
     }
-    fn step(&mut self, delta: i32) {
-        if self.count < 2 { return; }
-        self.selected = ((self.selected as i32 + delta)
-            .rem_euclid(self.count as i32)) as usize;
+    fn step(&mut self, delta: i32, rec:&mut [u8]) {
+        if self.count > 1 {
+            self.select(((self.selected as i32 + delta).rem_euclid(self.count as i32)) as usize,rec);
+        }
     }
-    fn current(&self) -> Option<&CarouselBook> {
-        if self.count == 0 { None } else { Some(&self.books[self.selected]) }
+    fn current(&self,rec:&[u8]) -> Option<&Self> {
+        (self.count!=0 && self.field(rec,0).starts_with(b"/") && (1..100).contains(&self.percent)).then_some(self)
     }
 }
 
@@ -179,8 +143,8 @@ impl Ui {
     }
 
     #[inline(never)]
-    fn overall_preview(&self, carousel: &BookCarousel,
-                       server: &ServerOverall, paired: bool, syncing: bool, cover_scratch: &mut [u8; 4096]) {
+    fn overall_preview(&self, carousel: &BookCarousel, rec:&[u8],
+                       server: &ServerOverall, paired: bool, syncing: bool, cover_scratch: &mut [u8; 2304]) {
         dsn_clear();
         self.header(0);
         checkpoint(210);
@@ -225,13 +189,13 @@ impl Ui {
         }
         checkpoint(211);
         let metric = |value: S| {
-            if server.available { value } else { S::new().s(b"N/A") }
+            if server.available { value } else { label!(s(b"N/A")) }
         };
-        let month = if syncing { S::new().s(b"Syncing...") }
+        let month = if syncing { label!(s(b"Syncing...")) }
                     else { metric(dur(server.month_seconds)) };
         let big_h = dsn_line_height(LARGE);
         let total = server.total_seconds;
-        let all_time = metric(S::new().n(total / 3600).s(b"h ").n(total / 60 % 60).s(b"m"));
+        let all_time = metric(label!(n(total / 3600), s(b"h "), n(total / 60 % 60), s(b"m")));
         let value_y = y + self.ls + 12;
         let value_w = half - 16;
         let month_font = metric_font(month.get(), LARGE, TITLE, value_w);
@@ -243,9 +207,9 @@ impl Ui {
         dsn_line(x + 8, line_y, x + w - 8, line_y, 1, DARK);
         checkpoint(212);
         let values = [
-            metric(S::new().n(server.current_streak)),
-            metric(S::new().n(server.month_active_days)),
-            metric(S::new().n(server.books)),
+            metric(label!(n(server.current_streak))),
+            metric(label!(n(server.month_active_days))),
+            metric(label!(n(server.books))),
         ];
         let labels: [&[u8]; 3] = [b"Day Streak", b"Active Days", b"Books"];
         for i in 0..3 {
@@ -263,7 +227,7 @@ impl Ui {
         let mw = (w - gap) / 2;
         let mh = (metrics_h - gap) / 2;
         self.metric(x, y + hero_h + gap, mw, mh, b"Sessions",
-            metric(S::new().n(server.sessions)).get(), 0);
+            metric(label!(n(server.sessions))).get(), 0);
         self.metric(x + mw + gap, y + hero_h + gap, w - mw - gap, mh,
             b"Avg. Session", metric(average_session(server.total_seconds, server.sessions)).get(), 3);
         let best_label = metric(dur(server.best_day_seconds));
@@ -278,8 +242,7 @@ impl Ui {
         let counter_w = if carousel.count > 1 { 56 } else { 0 };
         text(x + 9, recent_y + 7, w - 18, self.lb, b"Continue Reading", BODY, CENTER, BOLD);
         if carousel.count > 1 {
-            let indicator = S::new().n((carousel.selected + 1) as u32)
-                .s(b"/").n(carousel.count as u32);
+            let indicator = label!(n((carousel.selected + 1) as u32), s(b"/"), n(carousel.count as u32));
             text(x + w - counter_w - 11, recent_y + 7, counter_w, self.lb,
                 indicator.get(), SMALL, RIGHT, 0);
         }
@@ -287,7 +250,7 @@ impl Ui {
         let cards_y = recent_y + self.lb + 16;
         let cards_h = (recent_h - self.lb - 23).max(1);
         checkpoint(215);
-        if let Some(book) = carousel.current() {
+        if let Some(book) = carousel.current(rec) {
             // The counter is in the header, leaving the full card height for
             // the portrait cover and two-line book metadata.
             let content_h = cards_h;
@@ -296,12 +259,14 @@ impl Ui {
             // scratch buffer instead of another 4 KiB stack allocation.
             let cover = cover_scratch;
             checkpoint(216);
-            let bytes = dsn_book_cover(book.path(), cover_limit, cover);
+            let mut bytes = dsn_book_cover(book.field(rec,0), cover_limit, cover);
+            // PSRAM hosts may reject oversize images rather than rescale.
+            if bytes == -3 { bytes = dsn_book_cover(book.field(rec,0), cover_limit.min(155), cover); }
             checkpoint(217);
             let cover_len = if bytes > 4 { (bytes as usize).min(cover.len()) } else { 0 };
             checkpoint(218);
             self.book_hero(x, cards_y, w, content_h, &cover[..cover_len],
-                book.title(), book.author(), book.series(), book.percent);
+                book.field(rec,1), book.field(rec,2), book.field(rec,4), book.percent);
         } else {
             text(x + 12, cards_y + cards_h / 2, w - 24, self.ls,
                 b"No unfinished recent books", SMALL, CENTER, 0);

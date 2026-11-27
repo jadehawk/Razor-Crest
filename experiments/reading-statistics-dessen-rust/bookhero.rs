@@ -105,7 +105,7 @@ impl Ui {
             dsn_line(divider_x, progress_y - 9, divider_x, (progress_y + 15).min(y + h - 8), 1, DARK);
             let pct_h = dsn_line_height(TITLE);
             text(pct_x, progress_y + 3 - pct_h / 2, pct_w, pct_h,
-                S::new().n(percent as u32).s(b"%").get(), TITLE, RIGHT, BOLD);
+                label!(n(percent as u32), s(b"%")).get(), TITLE, RIGHT, BOLD);
         }
     }
 }

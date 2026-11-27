@@ -8,7 +8,7 @@ The Dessen adapter and Rust Reading Statistics UI are integrated. The SD script 
 - `src/util/ReadingHistory.h/.cpp`: host-testable incremental query.
 - `src/util/ReadingHistoryProvider.h/.cpp`: one-task HAL reader. `begin(document, anchorDay)`
   opens the standard history and captures its length. Call `step()` cooperatively; each
-  step consumes at most 4096 bytes, and `cancel()` releases resources. A completed query
+  step consumes at most 2048 bytes, and `cancel()` releases resources. A completed query
   exposes its summary, calendar buckets and sorted document IDs until reset or cancellation.
 - Pass the same 32-hex document identifier used by the session recorder to select a book.
   Omit the ID for an overall-only query. The anchor is a local Unix day number (not the
@@ -33,12 +33,12 @@ The Dessen adapter and Rust Reading Statistics UI are integrated. The SD script 
   Concurrent in-place source modification and USB mass-storage coordination during
   an active query remain unsupported.
 - Allocation is lazy and fallible. A document block is 1280 bytes (64 IDs and offsets), up to
-  sixteen blocks; a separate 371-entry day ring, 512-byte line, 4096-byte read buffer,
+  sixteen blocks; a separate 371-entry day ring split into blocks of at most 32 days (768 bytes), 512-byte line, 2048-byte read buffer,
   and ArduinoJson's filtered parser allocations coexist while scanning. Parser and read
   buffers, day ring and all index blocks are released before reporting Ready.
   Result pages are then read from the verified SD checkpoint. A bounded wire page
   uses up to 1024 transient bytes; metadata pages have their existing bounded scratch.
-  Cache publication and restoration of at most 36,832 bytes are synchronous; the
+  Cache publication and restoration of at most 36,864 bytes are synchronous; the
   time they hold the activity lock still needs hardware measurement.
   The Dessen VM is parked while the activity services the scan on its loop task,
   in slices of at most four chunks with a 12 ms soft time budget. A single SD operation
@@ -124,7 +124,7 @@ completed at 160 MHz with zero rejected records. Ten books: 60,883 ms, free
 errors (5,334–7,738 B requested). The retained index and calendar compete with
 rendering memory. The derived checkpoint now separates those lifetimes.
 
-## Derived checkpoint (RHISTC04)
+## Derived checkpoint (RHISTC05)
 
 `/.crosspoint/reading_sessions-history.cache` is disposable; no statistics are lost
 if it is removed. The only authoritative source remains reading_sessions.jsonl.
@@ -229,9 +229,54 @@ cover real Picco automatic migration, transaction recovery, extended durations
 and turns, and cache consistency. Automatic cutover itself still requires
 testing on the copied source SD data before deploying to a live reader.
 
+## Server-independent source identity and bounded queries
+
+Firmware does not implement the extended server protocol. The ordinary
+CrossPoint sync engine and KOReader settings are unchanged. A generic provider
+supports pinned byte-prefix queries and source provenance through the existing
+Dessen syscall pair. An optional manifest grant, `history_identity: true`, plus
+read access to the log is required for source descriptor or binding operations.
+The grant is independent of networking. No physical MAC is exposed by this
+descriptor. The same app can use other servers without firmware changes.
+
+For an exact prefix, pass `@<16 lowercase hexadecimal byte count>:<optional
+32-hex document ID>` as the book argument of reading_stats_start, with anchor
+0 for the latest dated reading in that prefix. Normal path and document ID
+queries remain unchanged. read kind 8 returns 20 bytes (binary book ID followed
+by a little-endian u32 latest line offset) for one inventory index. Unknown
+offset is UINT32_MAX.
+
+read kind 7, first=2 with empty output probes the optional capability. first=0
+returns a 40-byte descriptor: u32 version 1, u32 owned flag, 16-byte source ID
+(zero when unbound), u64 byte length, u64 FNV-1a source hash. Mixed tagged MACs,
+foreign owner, post-binding untagged records, rejected or incomplete rows
+prevent source export, but do not discard otherwise valid local totals.
+first=1 with empty output binds a verified unowned source by appending one
+`rc-history-owner` record containing a random 128-bit ID and the local factory
+MAC. A successful binding invalidates the query; reopen it. The application
+must explicitly confirm that older untagged history belongs to this reader
+before binding. The host performs no automatic binding on launch.
+
+The app owns capability discovery, bearer authentication, per-account
+acknowledgment state, cumulative JSON payloads and retries. It retains the same
+pairing and read-only refresh options on hosts without the new source capability.
+The extended history action is manual and separate from refreshing account
+totals. At most four PUTs and three scopes are attempted per action. Each
+checkpoint is pinned to an exact prefix and only changed book offsets are
+selected after a completed cycle. Days are paged in groups of 20 within the
+371-day native window. Unrecognized/conflicting histories are not uploaded.
+After network handoff, a released native query is re-created; large histories
+can still require repeated full scans and multiple manual actions.
+
+Log 20 and subsequent user testing confirmed automatic migration, cleanup and
+new undated reading on X4. Host tests cover source binding, foreign source
+rejection, pinned snapshots, cold/warm cache and the four stress datasets.
+The new app consumes the generic ABI using offline request/acknowledgment
+fixtures; live end-to-end upload and the increased 92 KiB guest allocation
+still require hardware testing, including the 1,000-book stress case.
+
 ## Remaining integration
 
-Real-device automatic migration, power-loss and append tests, extended server
-synchronization, and upstream separation of the Razor-Crest migration extension.
-The 1024 distinct-book display limit remains accepted; larger histories still
-contribute to lifetime totals.
+Real-device paired upload, power-loss tests, and upstream separation of the
+Razor-Crest migration extension. The 1024 distinct-book display limit remains
+accepted; larger histories still contribute to local lifetime totals.

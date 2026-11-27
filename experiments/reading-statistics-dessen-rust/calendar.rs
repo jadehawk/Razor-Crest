@@ -1,6 +1,7 @@
 // Calendar visual parity with the native Razor-Crest Reading Statistics plugin.
 // The date grid is Monday-first, with a bounded four-level gray activity scale.
 impl Ui {
+    #[inline(never)]
     fn calendar_page(&self, st: &Stats, year: u32, month: u32, today: u32) {
         let x = G;
         let w = self.w - 2 * G;
@@ -25,7 +26,7 @@ impl Ui {
             b"November", b"December"];
         let short_months: [&[u8]; 12] = [b"Jan", b"Feb", b"Mar", b"Apr",
             b"May", b"Jun", b"Jul", b"Aug", b"Sep", b"Oct", b"Nov", b"Dec"];
-        let month_title = S::new().s(months[month as usize - 1]).s(b" ").n(year);
+        let month_title = label!(s(months[month as usize - 1]), s(b" "), n(year));
         let heading_h = self.lb;
         // Reserve measured width for navigation on narrow calendar cards.
         let nav_w = (((dsn_measure_text(b"Next >", SMALL, BOLD) >> 16) as i32) + 12)
@@ -78,7 +79,7 @@ impl Ui {
                 total += seconds as u64;
                 if seconds > best_seconds { best_seconds = seconds; best_day = date; }
             }
-            // Native thresholds: none, <15 minutes, 15–44 minutes, 45+ minutes.
+            // Native thresholds: none, <15 minutes, 15â€“44 minutes, 45+ minutes.
             let intensity = if seconds >= 2700 { 3 } else if seconds >= 900 { 2 }
                 else if seconds > 0 { 1 } else { 0 };
             let shade = match intensity { 1 => LIGHT, 2 => DARK, 3 => BLACK, _ => 0 };
@@ -89,7 +90,7 @@ impl Ui {
             dsn_stroke(xx, yy, cell_w, cell_h, BLACK,
                 if date == today { 2 } else { 1 }, 0, 0);
             text(xx + 1, yy + (cell_h - self.ls) / 2,
-                cell_w - 2, self.ls, S::new().n(date).get(),
+                cell_w - 2, self.ls, label!(n(date)).get(),
                 SMALL, CENTER, if intensity >= 2 { 2 } else { BOLD });
         }
         let legend: [&[u8]; 4] = [b"None", b"<15m", b"15-44m", b"45m+"];
@@ -117,9 +118,9 @@ impl Ui {
         text(right_x + 4, insights_y + 7, right_w - 8, self.lb,
             b"Daily Average", BODY, CENTER, BOLD);
         let value_y = insights_y + 10 + self.lb;
-        let best_value = if best_day != 0 { dur(best_seconds) } else { S::new().s(b"--") };
+        let best_value = if best_day != 0 { dur(best_seconds) } else { label!(s(b"--")) };
         let avg_value = if active != 0 { dur((total / active as u64).min(u32::MAX as u64) as u32) }
-            else { S::new().s(b"--") };
+            else { label!(s(b"--")) };
         let best_font = metric_font(best_value.get(), TITLE, BODY, left_w - 8);
         let avg_font = metric_font(avg_value.get(), TITLE, BODY, right_w - 8);
         text(x + 4, value_y, left_w - 8, self.lt,
@@ -129,8 +130,8 @@ impl Ui {
         let caption_y = value_y + self.lt + 3;
         if caption_y + self.ls < insights_y + top_h - 4 {
             let date = if best_day != 0 {
-                S::new().s(short_months[month as usize - 1]).s(b" ").n(best_day)
-            } else { S::new().s(b"No reading yet") };
+                label!(s(short_months[month as usize - 1]), s(b" "), n(best_day))
+            } else { label!(s(b"No reading yet")) };
             text(x + 4, caption_y, left_w - 8, self.ls,
                 date.get(), SMALL, CENTER, 0);
             text(right_x + 4, caption_y, right_w - 8, self.ls,
@@ -143,7 +144,7 @@ impl Ui {
             text(x + 12, bottom_y + 9, w * 3 / 4, self.lb,
                 b"Reading Consistency", BODY, LEFT, BOLD);
             text(x + w * 3 / 4, bottom_y + 9, w / 4 - 12, self.lt,
-                S::new().n(consistency).s(b"%").get(), TITLE, RIGHT, BOLD);
+                label!(n(consistency), s(b"%")).get(), TITLE, RIGHT, BOLD);
             let bar_y = bottom_y + self.lb + 17;
             let bar_w = w - 24;
             dsn_stroke(x + 12, bar_y, bar_w, 10, BLACK, 1, 0, 0);
@@ -152,7 +153,7 @@ impl Ui {
                     (bar_w - 4) * consistency as i32 / 100, 6, BLACK);
             }
             text(x + 10, bar_y + 14, w - 20, self.ls,
-                S::new().n(active).s(b" of ").n(elapsed).s(b" days read").get(),
+                label!(n(active), s(b" of "), n(elapsed), s(b" days read")).get(),
                 SMALL, CENTER, 0);
         }
     }

@@ -80,6 +80,18 @@ int main(int argc, char** argv) {
       "/plugins/reader"));
   optionalIdentity.authorize();
   assert(!optionalIdentity.allowsDeviceIdentity("https://example.com/a"));
+  DessenPermissions localHistory;
+  assert(localHistory.parse(
+      R"({"permissions":{"filesystem":{"read":["/.crosspoint/reading_sessions.jsonl"]}},"optional_permissions":{"history_identity":true}})",
+      "/plugins/reader"));
+  assert(!localHistory.allowsHistoryIdentity());
+  localHistory.authorize();
+  assert(localHistory.allowsHistoryIdentity() && !localHistory.allowsNetwork());
+  assert(!localHistory.allows("/.crosspoint/reading_sessions.jsonl", Access::Write));
+  assert(
+      localHistory.parse(R"({"permissions":{},"optional_permissions":{"history_identity":false}})", "/plugins/reader"));
+  localHistory.authorize();
+  assert(!localHistory.allowsHistoryIdentity());
   assert(p.allowsUrl("https://EXAMPLE.COM:443/a"));
   for (auto url :
        {"http://example.com/", "https://example.com.evil/", "https://example.com@evil/", "https://evil@example.com/",
@@ -112,6 +124,8 @@ int main(int argc, char** argv) {
   bad(R"({"permissions":{"network":{"origins":["https://example.com"]}},"optional_permissions":{"device_identity":"yes"}})");
   bad(R"({"permissions":{"network":{"origins":["https://example.com"]}},"optional_permissions":{"device_identity":null}})");
   bad(R"({"permissions":{},"optional_permissions":[]})");
+  bad(R"({"permissions":{},"optional_permissions":{"history_identity":"yes"}})");
+  bad(R"({"permissions":{},"optional_permissions":{"history_identity":null}})");
   bad(R"({"permissions":{"network":{"origins":["https://example.com"],"device_identity":true}},"optional_permissions":{"device_identity":false}})");
   bad(R"({"permissions":{"network":{"origins":["https://example.com"],"handoff":"yes"}}})");
   bad(std::string(4097, ' '));
@@ -149,6 +163,7 @@ int main(int argc, char** argv) {
     assert(!installed.allowsUrl("http://sync.techy-notes.com/api/device/code"));
     assert(installed.allowsLibrary() && installed.allowsHandoff());
     assert(installed.allowsDeviceIdentity("https://sync.techy-notes.com/api/device/code"));
+    assert(installed.allowsHistoryIdentity());
     assert(!installed.allowsDeviceIdentity("https://other.example/api/device/code"));
   }
 }

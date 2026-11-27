@@ -122,6 +122,15 @@ inline int read(const readingHistory::Query& query, uint32_t kind, uint32_t firs
 }
 
 inline int read(const readingHistory::Provider& provider, uint32_t kind, uint32_t first, uint8_t* out, uint32_t cap) {
+  if (kind == 8) {
+    if (!out || cap != 20) return DSN_ERR_INVALID;
+    readingHistory::DocumentId id;
+    uint32_t offset;
+    if (!provider.readBook(first, id, offset)) return DSN_ERR_INVALID;
+    memcpy(out, id.data(), 16);
+    put32(out + 16, offset);
+    return 20;
+  }
   // Disk reads can fail partway through a page. Do not partially modify the
   // guest buffer on failure; stage at most 64 fixed-size records.
   if ((kind != DSN_STATS_DAYS && kind != DSN_STATS_BOOKS) || !out || cap < 16 || cap % 16 ||

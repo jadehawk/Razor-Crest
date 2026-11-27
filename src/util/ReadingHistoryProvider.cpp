@@ -13,9 +13,9 @@ constexpr char HISTORY_PATH[] = "/.crosspoint/reading_sessions.jsonl";
 // Derived and disposable; not in the legacy reading-stats directory.
 constexpr char CACHE_PATH[] = "/.crosspoint/reading_sessions-history.cache";
 constexpr char TEMP_PATH[] = "/.crosspoint/reading_sessions-history.cache.tmp";
-constexpr char MAGIC[] = "RHISTC04";
+constexpr char MAGIC[] = "RHISTC05";
 constexpr uint64_t HASH_INITIAL = 14695981039346656037ULL;
-constexpr size_t HEADER = 256, DAY_BYTES = 20, WEEK_BYTES = 68, BOOK_BYTES = 28;
+constexpr size_t HEADER = 288, DAY_BYTES = 20, WEEK_BYTES = 68, BOOK_BYTES = 28;
 constexpr size_t WEEK_START = HEADER + HISTORY_DAYS * DAY_BYTES;
 constexpr size_t BOOK_START = WEEK_START + 7 * WEEK_BYTES;
 
@@ -67,6 +67,9 @@ void encodeSummary(char* p, const Summary& s) {
   put(p + 200, s.book.turns, 8);
   put(p + 208, (s.overall.turnsComplete ? 1 : 0) | (s.book.turnsComplete ? 2 : 0), 4);
   put(p + 212, 0, 4);
+  memcpy(p + 216, s.sourceId.data(), 16);
+  memcpy(p + 232, s.sourceMac.data(), 13);
+  put(p + 245, s.sourceConflict ? 1 : 0, 1);
 }
 
 bool decodeSummary(const char* p, Summary& s) {
@@ -91,6 +94,10 @@ bool decodeSummary(const char* p, Summary& s) {
   if (coverage > 3 || get(p + 212, 4)) return false;
   s.overall.turnsComplete = coverage & 1;
   s.book.turnsComplete = coverage & 2;
+  memcpy(s.sourceId.data(), p + 216, 16);
+  memcpy(s.sourceMac.data(), p + 232, 13);
+  if (s.sourceMac[12] || get(p + 245, 1) > 1) return false;
+  s.sourceConflict = get(p + 245, 1) != 0;
   return s.books <= MAX_BOOKS && (!s.booksLimited || s.books == MAX_BOOKS) && s.anchorDay <= 47482 &&
          s.latestDay <= 47482 && s.activeDays <= HISTORY_DAYS && s.bookActiveDays <= HISTORY_DAYS &&
          (s.baselineApplied || (s.bookActiveDays <= s.activeDays && s.book.sessions <= s.overall.sessions &&
@@ -122,8 +129,9 @@ Status Provider::fail(Status reason) {
 }
 
 size_t Provider::aggregationBuffersBytes() const {
-  size_t bytes =
-      (chunk ? READ_BYTES : 0) + (scan.line ? MAX_LINE + 1 : 0) + (scan.days ? HISTORY_DAYS * sizeof(Day) : 0);
+  size_t bytes = (chunk ? READ_BYTES : 0) + (scan.line ? MAX_LINE + 1 : 0);
+  for (size_t i = 0; i < scan.days.size(); ++i)
+    if (scan.days[i]) bytes += Query::dayBlockSize(i) * sizeof(Day);
   for (const auto& block : scan.ids)
     if (block) bytes += Query::BOOK_BLOCK * sizeof(Query::BookEntry);
   for (const auto& block : scan.bookSeconds)
@@ -174,7 +182,7 @@ Status Provider::fresh() {
   return expected ? state : finish();
 }
 
-Status Provider::begin(std::string_view document, uint32_t anchorDay, bool details) {
+Status Provider::begin(std::string_view document, uint32_t anchorDay, bool details, uint64_t prefixBytes) {
   detailedBooks = details;
   close();
   scan.stop(Status::Idle);
@@ -191,6 +199,10 @@ Status Provider::begin(std::string_view document, uint32_t anchorDay, bool detai
   if (!Storage.exists(HISTORY_PATH)) return fail(Status::Missing);
   if (!Storage.openFileForRead("RHIST", HISTORY_PATH, file) || file.isDirectory()) return fail(Status::IoError);
   expected = file.fileSize64();
+  if (prefixBytes != UINT64_MAX) {
+    if (prefixBytes > expected) return fail(Status::IoError);
+    expected = prefixBytes;
+  }
   chunk = makeUniqueNoThrow<char[]>(READ_BYTES);
   if (!chunk) {
     LOG_ERR("RHIST", "Cannot allocate %u-byte read buffer", static_cast<unsigned>(READ_BYTES));
@@ -224,7 +236,7 @@ Status Provider::resumeCheckpoint() {
   char record[WEEK_BYTES];
   for (size_t i = 0; i < HISTORY_DAYS; ++i) {
     if (!readRecord(HEADER + i * DAY_BYTES, record, DAY_BYTES)) return fresh();
-    scan.days[i] = {get(record, 8), get(record + 8, 8), static_cast<uint32_t>(get(record + 16, 4))};
+    scan.daySlot(i) = {get(record, 8), get(record + 8, 8), static_cast<uint32_t>(get(record + 16, 4))};
   }
   for (size_t i = 0; i < scan.week.size(); ++i) {
     if (!readRecord(WEEK_START + i * WEEK_BYTES, record, WEEK_BYTES)) return fresh();
@@ -274,7 +286,7 @@ bool Provider::saveCheckpoint() {
   uint64_t hash = HASH_INITIAL;
   bool ok = writeHashed(temp, hash, p, HEADER);
   for (size_t i = 0; ok && i < HISTORY_DAYS; ++i) {
-    const auto& d = scan.days[i];
+    const auto& d = scan.daySlot(i);
     put(p, d.seconds, 8);
     put(p + 8, d.bookSeconds, 8);
     put(p + 16, d.date, 4);

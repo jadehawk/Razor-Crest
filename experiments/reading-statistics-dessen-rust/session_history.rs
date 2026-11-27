@@ -101,7 +101,7 @@ fn session_meta(line: &[u8]) -> Option<(&[u8], u32, i64, i64)> {
 fn valid_epoch(t: i64) -> bool { (946684800..=4102444799).contains(&t) }
 // Count exact document IDs using bounded sorted batches. Most libraries
 // finish in the first scan; very large libraries retain exact counts.
-const ID_BATCH: usize = 32;
+const ID_BATCH: usize = 8;
 struct SessionIds {
     ids: [[u8; 32]; ID_BATCH],
     len: usize,
@@ -116,7 +116,7 @@ impl SessionIds {
         if self.len == ID_BATCH { self.overflow = true; }
         if pos == ID_BATCH { return; }
         if self.len < ID_BATCH { self.len += 1; }
-        self.ids.copy_within(pos..self.len-1, pos+1);
+        for i in (pos+1..self.len).rev(){self.ids[i]=self.ids[i-1];}
         self.ids[pos].copy_from_slice(id);
     }
 }
@@ -163,12 +163,11 @@ fn log_period(local: i64) -> usize {
     match (local%86400)/3600 {6..=11=>0,12..=16=>1,17..=20=>2,_=>3}
 }
  // Count distinct documents in bounded sorted batches. Each pass retains the
- // smallest five IDs after the previous boundary, with latest recorded progress.
+ // smallest two IDs after the previous boundary, with latest recorded progress.
  #[inline(never)]
- fn log_book_batch(after: &[u8;32], out: &mut [LogBook;5]) -> usize {
+ fn log_book_batch(after: &[u8;32], out: &mut [LogBook;2], chunk: &mut [u8]) -> usize {
      let mut count=0usize;
-     let mut chunk=[0u8;1024];
-     session_lines(&mut chunk, &mut |line| {
+     session_lines(chunk, &mut |line| {
          let Some((id,_,_,_))=session_meta(line) else {return;};
          if id <= after.as_slice() {return;}
          let pos=out[..count].iter().position(|b| b.id.as_slice()>=id).unwrap_or(count);
@@ -198,15 +197,15 @@ fn log_period(local: i64) -> usize {
      count
  }
  #[inline(never)]
- fn log_books_page(offset: u32, out: &mut [LogBook;5]) -> usize {
+ fn log_books_page(offset: u32, out: &mut [LogBook;2], chunk: &mut [u8]) -> usize {
      let mut after=[0u8;32];
      let mut skipped=0;
      loop {
-         let n=log_book_batch(&after,out);
+         let n=log_book_batch(&after,out,chunk);
          if n==0 {return 0;}
          if skipped+n as u32>offset {
              let first=(offset-skipped) as usize;
-             out.copy_within(first..n,0);
+             for i in 0..n-first {out[i]=out[first+i];}
              return n-first;
          }
          after=out[n-1].id;

@@ -2,30 +2,10 @@
 // The cache belongs to the Dessen app, independent of legacy SD plugins.
 const STATS_CACHE_FILE: &[u8] = b"/server-overview.json";
 // A failed request leaves the last account snapshot available.
+#[inline(never)]
 fn json_u32(json: &[u8], name: &[u8]) -> Option<u32> {
-    let mut i = 0;
-    while i + name.len() + 3 <= json.len() {
-        if json[i] == b'"' && json.get(i + 1..i + 1 + name.len()) == Some(name)
-            && json.get(i + 1 + name.len()) == Some(&b'"') {
-            let mut j = i + name.len() + 2;
-            while j < json.len() && matches!(json[j], b' ' | b'\t' | b'\n' | b'\r') { j += 1; }
-            if json.get(j) != Some(&b':') { i += 1; continue; }
-            j += 1;
-            while j < json.len() && matches!(json[j], b' ' | b'\t' | b'\n' | b'\r') { j += 1; }
-            let mut number = 0u32;
-            let start = j;
-            while j < json.len() && json[j].is_ascii_digit() {
-                number = number.checked_mul(10)?.checked_add((json[j] - b'0') as u32)?;
-                j += 1;
-            }
-            if j == start || (j < json.len() && !matches!(json[j], b',' | b'}' | b' ' | b'\r' | b'\n')) {
-                return None;
-            }
-            return Some(number);
-        }
-        i += 1;
-    }
-    None
+    let n = session_num(json, name)?;
+    if n < 0 || n > u32::MAX as i64 { None } else { Some(n as u32) }
 }
 
 struct ServerOverall {
@@ -93,11 +73,10 @@ impl ServerOverall {
     }
 
     #[inline(never)]
-    fn save_cache(&self) {
-        let mut output = [0u8; 640];
-        let prefix = b"{\"source\":\"server\"";
-        output[..prefix.len()].copy_from_slice(prefix);
-        let mut used = prefix.len();
+    fn save_cache(&self, output: &mut [u8]) {
+
+        let mut writer=HistoryJson::new(output);
+        writer.raw(b"{\"source\":\"server\"");
         let fields: [(&[u8], u32); 11] = [
             (b"total_seconds",self.total_seconds),(b"month_seconds",self.month_seconds),
             (b"month_active_days",self.month_active_days),(b"current_streak",self.current_streak),
@@ -105,38 +84,38 @@ impl ServerOverall {
             (b"best_day_seconds",self.best_day_seconds),(b"daily_average_seconds",self.daily_average_seconds),
             (b"synced_at",self.last_synced),(b"fetched_at",self.last_synced)];
         for (name,value) in fields {
-            let digits = S::new().n(value);
-            let digits = digits.get();
-            if used + name.len() + digits.len() + 5 >= output.len() { return; }
-            output[used..used+2].copy_from_slice(b",\""); used += 2;
-            output[used..used+name.len()].copy_from_slice(name); used += name.len();
-            output[used..used+2].copy_from_slice(b"\":"); used += 2;
-            output[used..used+digits.len()].copy_from_slice(digits); used += digits.len();
+            writer.field(name,value as u64);
         }
-        output[used] = b'}'; used += 1;
-        let mut path = [0u8; 192];
-        let base = dsn_fs_app_dir(&mut path);
-        if base > 0 && base as usize + STATS_CACHE_FILE.len() <= path.len() {
-            let base = base as usize;
-            path[base..base+STATS_CACHE_FILE.len()].copy_from_slice(STATS_CACHE_FILE);
-            let _ = dsn_fs_write(&path[..base+STATS_CACHE_FILE.len()], &output[..used]);
-        }
+        writer.raw(b"}");
+        let Some(used)=writer.finish() else{return;};
+        let mut path=[0u8;192];
+        let n=StatsSettings::path(&mut path,STATS_CACHE_FILE);
+        if n!=0 {let _=dsn_fs_write(&path[..n],&output[..used]);}
     }
 
     #[inline(never)]
-    fn fetch(&mut self, pairing: &Pairing) {
+    fn accept_overview(&mut self, payload: &mut [u8], size: usize) -> bool {
+        self.attempted = true;
+        // Both the standalone overview and the batch receipt contain the
+        // same fixed overview fields. Retain a good cache on invalid input.
+        let previous = self.available;
+        self.available = false;
+        self.parse_overview(&payload[..size]);
+        if !self.available { self.available = previous; return false; }
+        let now = dsn_time();
+        if now >= 946_684_800 { self.last_synced = now; }
+        self.save_cache(payload);
+        true
+    }
+
+    #[inline(never)]
+    fn fetch(&mut self, pairing: &Pairing, response: &mut [u8]) -> bool {
         self.attempted = true;
         self.attempts = self.attempts.saturating_add(1);
-        if pairing.phase != PairPhase::Paired { return; }
-        let mut response = [0u8; 640];
-        if let Ok(n) = pairing.authorized(OVERVIEW_HEAD, &mut response, false) {
-            let previous = self.available;
-            self.available = false;
-            self.parse_overview(&response[..n]);
-            if !self.available { self.available = previous; return; }
-            let now = dsn_time();
-            if now >= 946_684_800 { self.last_synced = now; }
-            self.save_cache();
+        if pairing.phase != PairPhase::Paired { return false; }
+        if let Ok(n) = pairing.authorized(OVERVIEW_HEAD, response, false) {
+            return self.accept_overview(response,n);
         }
+        false
     }
 }

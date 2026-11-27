@@ -113,12 +113,22 @@ void refreshSubscriptions() {
     }
     std::string raw;
     if (!Storage.readFileToString("PEVT", entry.dir + "/device.json", MAX_MANIFEST_SIZE, raw)) continue;
-    // Filtered parse: only the events section, so a big manifest costs a few
-    // hundred bytes here instead of a full document.
+    // Filtered parse: only subscription metadata, not the whole manifest.
     JsonDocument filter;
     filter["events"] = true;
+#if CROSSPOINT_DESSEN_APPS
+    filter["events_fallback_only"] = true;
+#endif
     JsonDocument doc;
     if (deserializeJson(doc, raw, DeserializationOption::Filter(filter)) != DeserializationError::Ok) continue;
+#if CROSSPOINT_DESSEN_APPS
+    // Match the app.bin dispatch rule in the plugin picker. Explicit opt-in
+    // keeps existing mixed app/event plugins unchanged. Do not drain or
+    // delete the fallback outbox while the app owns synchronization.
+    if (doc["events_fallback_only"].is<bool>() && doc["events_fallback_only"].as<bool>() &&
+        Storage.exists((entry.dir + "/app.bin").c_str()))
+      continue;
+#endif
     uint8_t mask = 0;
     uint8_t connectMask = 0;
     uint8_t sleepImageMask = 0;

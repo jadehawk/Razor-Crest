@@ -6,28 +6,10 @@ const TOKEN_HEAD: &[u8] = b"POST https://sync.techy-notes.com/api/device/token\n
 const LOGIN_HEAD: &[u8] = b"POST https://sync.techy-notes.com/api/device/login-code\nAuthorization: Bearer ";
 const OVERVIEW_HEAD: &[u8] = b"GET https://sync.techy-notes.com/api/device/overview\nAuthorization: Bearer ";
 
+#[inline(never)]
 fn json_string<'a>(json: &'a [u8], name: &[u8]) -> Option<&'a [u8]> {
-    let mut i = 0;
-    while i + name.len() + 3 <= json.len() {
-        if json[i] == b'"' && json.get(i+1..i+1+name.len()) == Some(name)
-            && json[i+1+name.len()] == b'"' {
-            let mut j = i+name.len()+2;
-            while j < json.len() && matches!(json[j], b' ' | b'\t' | b'\r' | b'\n') { j += 1; }
-            if json.get(j) != Some(&b':') { i += 1; continue; }
-            j += 1;
-            while j < json.len() && matches!(json[j], b' ' | b'\t' | b'\r' | b'\n') { j += 1; }
-            if json.get(j) != Some(&b'"') { return None; }
-            let start = j + 1;
-            let mut end = start;
-            while end < json.len() && json[end] != b'"' {
-                if json[end] == b'\\' { return None; } // secrets and codes are plain ASCII
-                end += 1;
-            }
-            return (end < json.len()).then_some(&json[start..end]);
-        }
-        i += 1;
-    }
-    None
+    let value = session_string(json, name)?;
+    (!value.contains(&92)).then_some(value)
 }
 
 fn valid_token(t: &[u8]) -> bool {
@@ -45,6 +27,10 @@ fn valid_user_code(t: &[u8]) -> bool {
 #[derive(Clone, Copy, PartialEq)]
 enum PairPhase { Ready, Code, Paired, Expired, NetworkError, ServerError }
 
+#[inline(never)]
+fn move_response(buffer:&mut [u8],offset:usize,n:usize){
+    for i in 0..n {buffer[i]=buffer[offset+i];}
+}
 struct Pairing {
     phase: PairPhase,
     secret: [u8; 64],
@@ -103,7 +89,7 @@ impl Pairing {
             }
             return Err(PairPhase::ServerError);
         }
-        buffer.copy_within(4 + header_len..4 + header_len + n, 0);
+        move_response(buffer,4+header_len,n);
         Ok(n)
     }
 
@@ -167,23 +153,15 @@ impl Pairing {
             Ok(n) => {
                 if self.parse_web_login(&response[..n]) {
                     let mut path = [0u8; 192];
-                    let base = dsn_fs_app_dir(&mut path);
-                    let suffix = b"/web-login.json";
-                    if base > 0 && base as usize + suffix.len() <= path.len() {
-                        let base = base as usize;
-                        path[base..base + suffix.len()].copy_from_slice(suffix);
-                        let mut saved = [0u8; 64];
-                        let prefix = b"{\"user_code\":\"";
-                        saved[..prefix.len()].copy_from_slice(prefix);
-                        let mut used = prefix.len();
-                        saved[used..used+9].copy_from_slice(&self.web_code); used += 9;
-                        let middle = b"\",\"expires_at\":";
-                        saved[used..used+middle.len()].copy_from_slice(middle); used += middle.len();
-                        let digits = S::new().n(self.web_expires);
-                        let digits = digits.get();
-                        saved[used..used+digits.len()].copy_from_slice(digits); used += digits.len();
-                        saved[used] = b'}'; used += 1;
-                        let _ = dsn_fs_write(&path[..base + suffix.len()], &saved[..used]);
+                    let n=StatsSettings::path(&mut path,b"/web-login.json");
+                    if n!=0 {
+                        let mut saved=[0u8;64];
+                        let mut writer=HistoryJson::new(&mut saved);
+                        writer.raw(b"{\"user_code\":\"");
+                        writer.raw(&self.web_code);writer.raw(b"\"");
+                        writer.field(b"expires_at",self.web_expires as u64);
+                        writer.raw(b"}");
+                        if let Some(used)=writer.finish(){let _=dsn_fs_write(&path[..n],&saved[..used]);}
                     }
                     self.message = b"Scan to open private statistics";
                     return;
@@ -295,7 +273,8 @@ impl Pairing {
             let end = n as usize;
             for suffix in [b"/server-overview.json".as_slice(), b"/web-login.json",
                            b"/server-overview.json.bak", b"/web-login.json.bak",
-                           b"/server-overview.json.part", b"/web-login.json.part"] {
+                           b"/server-overview.json.part", b"/web-login.json.part",
+                           b"/history-upload-v1", b"/history-upload-v1.bak", b"/history-upload-v1.part"] {
                 if end + suffix.len() <= path.len() {
                     path[end..end + suffix.len()].copy_from_slice(suffix);
                     let _ = dsn_fs_delete(&path[..end + suffix.len()]);

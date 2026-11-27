@@ -19,7 +19,9 @@ struct BookInfo {
 // disposable. A completed query retains only its summary and an SD file handle.
 class Provider {
  public:
-  Status begin(std::string_view document = {}, uint32_t anchorDay = 0, bool detailedBooks = false);
+  Status begin(std::string_view document = {}, uint32_t anchorDay = 0, bool detailedBooks = false,
+               uint64_t prefixBytes = UINT64_MAX);
+  uint64_t verifiedSourceHash() const { return summary() ? sourceHash : 0; }
   Status step();
   void cancel();
   const Summary* summary() const { return state == Status::Ready ? &cached : nullptr; }
@@ -43,7 +45,7 @@ class Provider {
   }
 
  private:
-  static constexpr size_t READ_BYTES = 4096;
+  static constexpr size_t READ_BYTES = 2048;
   void close();
   Status fail(Status reason);
   Status fresh();

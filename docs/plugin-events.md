@@ -39,6 +39,16 @@ Delivery is split around painting the sleep screen: downloads that write a
 sleep-screen source run first, and everything else runs after the screen is on
 the panel. See "sleep.enter delivery" below.
 
+## Dual-mode fallback events
+
+A dual-mode plugin may declare the top-level boolean
+`"events_fallback_only": true` in `device.json`. Firmware with Dessen enabled
+and an installed `app.bin` skips its declarative event subscriptions, including
+background delivery, so the app can own synchronization. The existing event
+outbox is left untouched. Without Dessen support or without the app binary, the
+declarative events run normally. Omitted, false and non-boolean values leave
+ordinary mixed-mode subscriptions unchanged. Older firmware ignores the field.
+
 ## The event whitelist
 
 Event names are a compatibility promise: they are semantic ("a reading session

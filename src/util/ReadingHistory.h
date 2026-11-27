@@ -45,6 +45,10 @@ struct Summary {
   size_t books = 0;
   bool booksLimited = false;
   bool incompleteTail = false;
+  // Source provenance is independent of statistics and survives an absolute baseline.
+  DocumentId sourceId{};
+  std::array<char, 13> sourceMac{};
+  bool sourceConflict = false;
   bool baselineApplied = false;  // Razor-Crest historical checkpoint, not individual sessions.
 };
 
@@ -89,7 +93,16 @@ class Query {
   DocumentId selected{};
   bool hasSelected = false;
   std::array<std::unique_ptr<BookEntry[]>, BOOK_BLOCKS> ids;
-  std::unique_ptr<Day[]> days;
+  // The X3/X4 heap can be fragmented even when total free bytes suffice.
+  // Keep the ring's logical layout, but never require one 8904-byte block.
+  static constexpr size_t DAY_BLOCK = 32;
+  static constexpr size_t DAY_BLOCKS = (HISTORY_DAYS + DAY_BLOCK - 1) / DAY_BLOCK;
+  static constexpr size_t dayBlockSize(size_t i) {
+    return i + 1 == DAY_BLOCKS ? HISTORY_DAYS - i * DAY_BLOCK : DAY_BLOCK;
+  }
+  std::array<std::unique_ptr<Day[]>, DAY_BLOCKS> days;
+  Day& daySlot(size_t i) { return days[i / DAY_BLOCK][i % DAY_BLOCK]; }
+  const Day& daySlot(size_t i) const { return days[i / DAY_BLOCK][i % DAY_BLOCK]; }
   struct WeekDay {
     uint64_t periods[4]{};
     uint64_t bookPeriods[4]{};

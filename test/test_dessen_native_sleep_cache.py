@@ -1,4 +1,4 @@
-﻿"""Firmware storage and memory contracts retained after generic Dessen migration.
+"""Firmware storage and memory contracts retained after generic Dessen migration.
 
 These fast checks do not compile firmware or replace device memory tests.
 """
@@ -44,6 +44,18 @@ class DessenNativeSleepCacheTests(unittest.TestCase):
                         shortcut.index("makeUniqueNoThrow<DessenAppActivity>"))
         self.assertLess(shortcut.index("makeUniqueNoThrow<DessenAppActivity>"),
                         shortcut.index("StatsDashboardActivity::supportsManifest"))
+
+    def test_explicit_dual_mode_fallback_skips_only_installed_dessen_apps(self):
+        src = self.text("src/util/PluginEvents.cpp")
+        scan = src.split("void refreshSubscriptions()", 1)[1].split("bool anySubscriber", 1)[0]
+        self.assertIn('filter["events_fallback_only"] = true;', scan)
+        gate = scan.split('if (doc["events_fallback_only"].is<bool>()', 1)[1]
+        self.assertIn('doc["events_fallback_only"].as<bool>()', gate)
+        self.assertIn('Storage.exists((entry.dir + "/app.bin").c_str())', gate)
+        self.assertLess(gate.index("continue;"), gate.index("uint8_t mask = 0;"))
+        self.assertIn("#if CROSSPOINT_DESSEN_APPS", scan)
+        self.assertRegex(gate, r"continue;\s*#endif")
+        self.assertNotIn("Storage.remove", scan)
 
     def test_empty_wifi_scans_retry_before_hidden_network(self):
         header = self.text("src/activities/network/WifiSelectionActivity.h")
@@ -119,7 +131,8 @@ class DessenNativeSleepCacheTests(unittest.TestCase):
         self.assertIn("let (mx, my, mw, mh) = ui.overall_month_bounds();", rust)
         self.assertIn("confirm_month_sync = true;", rust)
         self.assertIn("if syncing_month {", rust)
-        self.assertIn("server.fetch(&pairing);", rust)
+        self.assertIn("let refreshed = server.fetch(&pairing,&mut home.cover);", rust)
+        self.assertIn("if refreshed { page = 0; }", rust)
         self.assertIn("ui.overall_sync_confirmation();", rust)
         self.assertIn("b\"Syncing...\"", ui)
         self.assertNotIn("THIS MONTH - LOCAL FALLBACK", ui)

@@ -53,6 +53,7 @@
 #include "util/PluginHttp.h"
 #include "util/PluginLocations.h"
 #include "util/ReadingHistoryMigration.h"
+#include "util/ReadingHistorySource.h"
 #include "util/ReadingStatsSleepSource.h"
 #include "util/ScreenshotUtil.h"
 
@@ -63,6 +64,12 @@ using freeink::content::RsaKeyPairDer;
 using freeink::content::WolfsslCrypto;
 
 namespace {
+bool tlsHeapAvailable() {
+  const uint32_t minBlock = HalMemory::getPsramHeap().totalBytes > 0 ? HttpDownloader::MIN_TLS_MAX_ALLOC_PSRAM
+                                                                   : HttpDownloader::MIN_TLS_MAX_ALLOC;
+  return ESP.getFreeHeap() >= HttpDownloader::MIN_TLS_FREE_HEAP && ESP.getMaxAllocHeap() >= minBlock;
+}
+
 // Preserve the guest buffer on failure and stop staging at its capacity.
 class BoundedOutput {
  public:
@@ -216,6 +223,7 @@ struct CrosspointServices::ReadingStatsRequest {
   readingHistory::Provider provider;
   char key[DSN_BOOK_PATH_MAX + 1]{};
   uint32_t anchorDay = 0;
+  uint64_t prefixBytes = UINT64_MAX;
   unsigned long began = 0;
   unsigned long lastProgressLog = 0;
   bool started = false;
@@ -541,6 +549,21 @@ int CrosspointServices::readingStatsStart(const uint8_t* book, uint32_t length, 
   if (pending_ != Op::None || length > DSN_BOOK_PATH_MAX || (length && (!book || memchr(book, 0, length))) ||
       anchorDay > 47482)  // last supported local day, including UTC offset
     return DSN_ERR_INVALID;
+  // A bounded prefix query is server-independent and has the same read grant.
+  uint64_t prefixBytes = UINT64_MAX;
+  if (length && book[0] == '@') {
+    if (length != 18 && length != 50) return DSN_ERR_INVALID;
+    if (book[17] != ':') return DSN_ERR_INVALID;
+    prefixBytes = 0;
+    for (unsigned i = 1; i < 17; ++i) {
+      const auto c = book[i];
+      if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return DSN_ERR_INVALID;
+      prefixBytes = (prefixBytes << 4) | (c <= '9' ? c - '0' : c - 'a' + 10);
+    }
+    if (prefixBytes == UINT64_MAX) return DSN_ERR_INVALID;
+    book += 18;
+    length -= 18;
+  }
   const bool path = length && book[0] == '/';
   if (length && !path && length != 32) return DSN_ERR_INVALID;
   if (length && !path) {
@@ -557,6 +580,7 @@ int CrosspointServices::readingStatsStart(const uint8_t* book, uint32_t length, 
   if (path && (resolve(request->key, DSN_BOOK_PATH_MAX) || !permissions_.allowsBook(request->key)))
     return DSN_ERR_DENIED;
   request->anchorDay = anchorDay;
+  request->prefixBytes = prefixBytes;
   request->began = millis();
   readingStats_ = std::move(request);
   pending_ = Op::ReadingStats;
@@ -601,7 +625,7 @@ bool CrosspointServices::serviceReadingStats() {
       const auto document = syncEngine::documentId(request.key);
       state = document.empty() ? Status::IoError : request.provider.begin(document, request.anchorDay);
     } else {
-      state = request.provider.begin(request.key, request.anchorDay);
+      state = request.provider.begin(request.key, request.anchorDay, false, request.prefixBytes);
     }
     request.lastProgressLog = millis();
     LOG_INF("RHIST", "start bytes=%llu cpu_mhz=%u free=%u max_block=%u",
@@ -666,7 +690,14 @@ int CrosspointServices::readingStatsRead(uint32_t kind, uint32_t first, uint8_t*
     readingStats_.reset();
     return 0;
   }
+  if (kind == 7 && first == 2) return permissions_.allowsHistoryIdentity() ? 1 : DSN_ERR_DENIED;
   if (!readingStats_) return DSN_ERR_INVALID;
+  if (kind == 7) {
+    if (!permissions_.allowsHistoryIdentity() || pending_ != Op::None) return DSN_ERR_DENIED;
+    const int result = readingHistory::readSourceIdentity(readingStats_->provider, first, out, cap);
+    if (first == 1 && result == 0) readingStats_.reset();
+    return result;
+  }
   if (kind == DSN_STATS_BOOK_INFO) return dessenReadingStats::readBookInfo(readingStats_->provider, first, out, cap);
   return dessenReadingStats::read(readingStats_->provider, kind, first, out, cap);
 }
@@ -1412,11 +1443,8 @@ bool CrosspointServices::serviceAsyncWork() {
         }
       }
 
-      // TLS needs a healthy heap; refuse up front rather than OOM mid-handshake
-      // (same thresholds as CatalogActivity / FontDownloadActivity).
-      if (url.size() >= 6 && strncasecmp(url.data(), "https:", 6) == 0 &&
-          (ESP.getFreeHeap() < HttpDownloader::MIN_TLS_FREE_HEAP ||
-           ESP.getMaxAllocHeap() < HttpDownloader::MIN_TLS_MAX_ALLOC)) {
+      // Use the same PSRAM-aware TLS reserve as CatalogActivity.
+      if (url.size() >= 6 && strncasecmp(url.data(), "https:", 6) == 0 && !tlsHeapAvailable()) {
         LOG_ERR("DSN", "HTTP TLS heap guard: free=%u max_block=%u", static_cast<unsigned>(ESP.getFreeHeap()),
                 static_cast<unsigned>(ESP.getMaxAllocHeap()));
         result_ = DSN_ERR_IO;
@@ -1460,8 +1488,9 @@ bool CrosspointServices::serviceAsyncWork() {
     }
     case Op::Fetch: {
       size_t bytes = 0;
-      if (strncasecmp(url_.c_str(), "https:", 6) == 0 && (ESP.getFreeHeap() < HttpDownloader::MIN_TLS_FREE_HEAP ||
-                                                          ESP.getMaxAllocHeap() < HttpDownloader::MIN_TLS_MAX_ALLOC)) {
+      if (strncasecmp(url_.c_str(), "https:", 6) == 0 && !tlsHeapAvailable()) {
+        LOG_ERR("DSN", "Fetch TLS heap guard: free=%u max_block=%u", static_cast<unsigned>(ESP.getFreeHeap()),
+                static_cast<unsigned>(ESP.getMaxAllocHeap()));
         result_ = DSN_ERR_IO;
         break;
       }

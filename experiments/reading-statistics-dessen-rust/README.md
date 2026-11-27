@@ -1,10 +1,9 @@
-# Reading Statistics 0.1.16
+# Reading Statistics 0.1.14
 
 Full Rust Dessen application: Overall, Device Statistics, Current Book, Your Week,
 Reading Calendar, All Books, Server Sync and Settings.
 
-The application uses an 85 KiB guest allocation (4 KiB above 0.1.14) to retain
-stack headroom. It probes the optional native reading-history API rather than
+The application uses an 83 KiB guest allocation (84,992 bytes) with a tested minimum 1 KiB stack margin. The shared shelf and 2,304-byte cover/network workspace reduce memory demand; larger history requests continue in smaller resumable batches. It probes the optional native reading-history API rather than
 checking firmware identity. Unsupported hosts use the streaming JSONL parser.
 
 Install the `reading-statistics` directory at:
@@ -27,9 +26,19 @@ reading-statistics records and session history, library metadata/covers/progress
 the shared session-sync token and the exact HTTPS origin. A one-use continuation
 retains these scopes across networking reboots only if the manifest digest matches.
 
-The Rust application owns device-code pairing, Web PIN requests and persistence,
+After successful pairing or a completed history upload and overview refresh, the app opens Server Statistics. Failed or incomplete operations retain their origin page. The Rust application owns device-code pairing, Web PIN requests and persistence,
 server-overview validation and caching, manual refresh confirmation, optional
-daily refresh and disconnect confirmation. Disconnect clears the shared reader
+daily refresh and disconnect confirmation. When the optional native source API
+is available and the reader is paired, Settings offers Upload & refresh as
+the default non-touch selection on every entry. Up/Down follows the displayed
+row order, skipping unsupported options; side keys still change pages.
+The confirmed action uploads pending history, releases the native query and
+refreshes account statistics using the existing Wi-Fi connection. Upload and
+refresh results are independent; even partial or already-uploaded checkpoints
+refresh the dashboard. Refresh only remains available. Explicit source ownership
+confirmation is required. The app owns the Techy-Notes protocol and its checksummed
+per-account cursor; firmware provides generic local data only. Never upload
+copied reader history as your own. Disconnect clears the shared reader
 token and cached server data locally. Local reading records remain.
 
 When session history exists, the application uses the native provider when
@@ -61,7 +70,7 @@ PSRAM devices keep the parked guest loaded.
 A held Back cancels the worker and closes the app. A socket operation may take
 its timeout to acknowledge cancellation; no new guest executes concurrently.
 
-Standalone build and all five regression suites, from this directory in WSL:
+Standalone build and all six regression suites, from this directory in WSL:
 
 ```sh
 source ~/.cargo/env

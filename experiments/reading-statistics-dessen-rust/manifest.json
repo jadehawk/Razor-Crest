@@ -2,7 +2,7 @@
   "id": "reading-statistics",
   "title": "Reading Statistics",
   "description": "Reading statistics, device-code pairing and optional server refresh",
-  "version": "0.1.16",
+  "version": "0.1.14",
   "permissions": {
     "filesystem": {
       "app_directory": [
@@ -30,6 +30,7 @@
     }
   },
   "optional_permissions": {
-    "device_identity": true
+    "device_identity": true,
+    "history_identity": true
   }
 }

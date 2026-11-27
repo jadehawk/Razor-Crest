@@ -26,14 +26,14 @@ impl Ui {
     fn books_capacity(&self) -> u32 {
         let y=13+self.ls+self.lt;
         let available=(self.content_bottom()-y-13).max(1);
-        // Round down to a multiple of five to reuse the bounded log batches.
+        // Page capacity is independent of the bounded two-book read batches.
         ((available-self.lb-self.ls-38)/(self.lb+12)).max(1) as u32
     }
 
     #[inline(never)]
     fn book_row(&self, x:i32,y:i32,w:i32,h:i32,title:&[u8],progress:i32) {
         let pw=((dsn_measure_text(b"100%",SMALL,0)>>16) as i32)+10;
-        let p=if (0..=100).contains(&progress) { S::new().n(progress as u32).s(b"%") } else { S::new().s(b"--") };
+        let p=if (0..=100).contains(&progress) { label!(n(progress as u32), s(b"%")) } else { label!(s(b"--")) };
         text(x+12,y+2,w-pw-24,self.lb,title,BODY,LEFT,BOLD);
         text(x+w-pw-12,y+2,pw,self.ls,p.get(),SMALL,RIGHT,0);
         dsn_line(x+12,y+h-3,x+w-12,y+h-3,1,LIGHT);
@@ -58,19 +58,19 @@ impl Ui {
                 self.panel(x, by, w, last_h);
                 let (seconds, ago) = latest_day_seconds(st);
                 text(x + 12, by + 7, w - 24, self.lb, b"Last Read Day", BODY, LEFT, BOLD);
-                let value = if seconds > 0 { dur(seconds) } else { S::new().s(b"--") };
+                let value = if seconds > 0 { dur(seconds) } else { label!(s(b"--")) };
                 text(x + 12, by + last_h / 2, w / 2, self.lt, value.get(), TITLE, LEFT, BOLD);
                 if seconds > 0 {
-                    let label = if !st.date_current { let (y,m,d)=civil_from_days(st.end-ago); S::new().n(y).s(b"-").n(m).s(b"-").n(d) } else if ago == 0 { S::new().s(b"Today") } else if ago == 1 {
-                        S::new().s(b"Yesterday")
-                    } else { S::new().n(ago).s(b" days ago") };
+                    let label = if !st.date_current { let (y,m,d)=civil_from_days(st.end-ago); label!(n(y), s(b"-"), n(m), s(b"-"), n(d)) } else if ago == 0 { label!(s(b"Today")) } else if ago == 1 {
+                        label!(s(b"Yesterday"))
+                    } else { label!(n(ago), s(b" days ago")) };
                     text(x + w / 2, by + last_h / 2, w / 2 - 12, self.lb, label.get(), SMALL, RIGHT, 0);
                 }
             }
             3 => self.calendar_page(st, year, month, day),
             4 => {
                 self.panel(x, y, w, available);
-                let title = S::new().s(b"Books tracked: ").n(st.book_count).s(if st.books_limited { b"+" } else { b"" });
+                let title = label!(s(b"Books tracked: "), n(st.book_count), s(if st.books_limited { b"+" } else { b"" }));
                 text(x + 12, y + 8, w - 24, self.lb, title.get(), BODY, LEFT, BOLD);
                 dsn_line(x + 10, y + self.lb + 14, x + w - 10, y + self.lb + 14, 1, DARK);
                 let top = y + self.lb + 20;
@@ -79,14 +79,14 @@ impl Ui {
                 let mut shown = 0u32;
                 let mut failed = !books_ready;
                 if st.err != ERR_UNAVAILABLE {
-                    let mut batch=[EMPTY_LOG_BOOK;5];
+                    let mut batch=[EMPTY_LOG_BOOK;2];
                     while shown < capacity && !failed {
                     let count=if st.native_stats {
                         match native_book_batch(book_offset+shown,&mut batch,scratch) {
                             Some(n) => n,
                             None => { failed=true; break; }
                         }
-                    } else { log_books_page(book_offset+shown,&mut batch) };
+                    } else { log_books_page(book_offset+shown,&mut batch,scratch) };
                     if count==0 {break;}
                     for book in &batch[..count.min((capacity-shown) as usize)] {
                         let yy=top+shown as i32*row_h;
@@ -105,8 +105,7 @@ impl Ui {
                 if st.book_count > capacity {
                     let first = book_offset + 1;
                     let last = (book_offset + shown).min(st.book_count);
-                    let end = S::new().s(b"Showing ").n(first).s(b"-").n(last)
-                        .s(b" of ").n(st.book_count).s(b" books");
+                    let end = label!(s(b"Showing "), n(first), s(b"-"), n(last), s(b" of "), n(st.book_count), s(b" books"));
                     text(x + 12, y + available - self.ls - 5, w - 24, self.ls,
                          end.get(), SMALL, CENTER, 0);
                 }

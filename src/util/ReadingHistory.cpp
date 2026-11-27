@@ -76,7 +76,15 @@ Status Query::begin(std::string_view document, uint32_t anchorDay, bool details)
     return state;
   }
   result.anchorDay = anchorDay;
-  days = makeUniqueNoThrow<Day[]>(HISTORY_DAYS);
+  for (size_t i = 0; i < days.size(); ++i) {
+    days[i] = makeUniqueNoThrow<Day[]>(dayBlockSize(i));
+    if (!days[i]) {
+      LOG_ERR("RHIST", "Cannot allocate day block %u (%u bytes)", static_cast<unsigned>(i),
+              static_cast<unsigned>(dayBlockSize(i) * sizeof(Day)));
+      stop(Status::NoMemory);
+      return state;
+    }
+  }
   line = makeUniqueNoThrow<char[]>(MAX_LINE + 1);
   filter["doc"] = true;
   filter["secs"] = true;
@@ -86,9 +94,10 @@ Status Query::begin(std::string_view document, uint32_t anchorDay, bool details)
   filter["v"] = true;
   filter["tracked_secs"] = true;
   filter["turns"] = true;
-  if (!days || !line || filter.overflowed()) {
-    LOG_ERR("RHIST", "Cannot allocate %u-byte day history, %u-byte line or JSON filter",
-            static_cast<unsigned>(HISTORY_DAYS * sizeof(Day)), static_cast<unsigned>(MAX_LINE + 1));
+  filter["device"] = true;
+  filter["history_id"] = true;
+  if (!line || filter.overflowed()) {
+    LOG_ERR("RHIST", "Cannot allocate %u-byte line or JSON filter", static_cast<unsigned>(MAX_LINE + 1));
     stop(Status::NoMemory);
     return state;
   }
@@ -108,7 +117,7 @@ void Query::stop(Status reason) {
   releaseParser();
   for (auto& block : ids) block.reset();
   for (auto& block : bookSeconds) block.reset();
-  days.reset();
+  for (auto& block : days) block.reset();
   state = reason == Status::Ready || reason == Status::Scanning ? Status::Idle : reason;
 }
 
@@ -199,11 +208,17 @@ void Query::processBaseline() {
     // their local aggregate contribution rather than counting them twice.
     const auto bytes = result.bytes, rejected = result.rejected;
     const auto anchor = result.anchorDay;
+    const auto sourceId = result.sourceId;
+    const auto sourceMac = result.sourceMac;
+    const bool conflict = result.sourceConflict || sourceId != DocumentId{};
     result = {};
+    result.sourceId = sourceId;
+    result.sourceMac = sourceMac;
+    result.sourceConflict = conflict;
     result.bytes = bytes;
     result.rejected = rejected;
     result.anchorDay = anchor;
-    std::fill_n(days.get(), HISTORY_DAYS, Day{});
+    for (size_t i = 0; i < days.size(); ++i) std::fill_n(days[i].get(), dayBlockSize(i), Day{});
     week = {};
     for (auto& block : ids) block.reset();
     for (auto& block : bookSeconds) block.reset();
@@ -308,7 +323,7 @@ void Query::processBaseline() {
     const auto seconds = parsed["seconds"].as<uint32_t>();
     const auto anchor = result.anchorDay ? result.anchorDay : std::max(day, result.latestDay);
     if (!inWindow(day, anchor)) return;
-    auto& d = days[day % HISTORY_DAYS];
+    auto& d = daySlot(day % HISTORY_DAYS);
     if (d.date != day) {
       if (d.date > day) return;
       d = {0, 0, day};
@@ -361,7 +376,32 @@ void Query::processLine() {
     rejectLine();
     return;
   }
-  if (!type.isNull() && kind != "session") return;  // Other extension records are not sessions.
+  const bool owned = result.sourceId != DocumentId{};
+  if (kind == "rc-history-owner" || type.isNull() || kind == "session") {
+    const auto mac = parsed["device"].as<JsonString>();
+    if (!mac.isNull() && mac.size() == 12 &&
+        std::string_view(mac.c_str(), mac.size()).find_first_not_of("0123456789abcdef") == std::string_view::npos &&
+        std::string_view(mac.c_str(), mac.size()) != "000000000000") {
+      if (result.sourceMac[0] && memcmp(result.sourceMac.data(), mac.c_str(), 12)) result.sourceConflict = true;
+      memcpy(result.sourceMac.data(), mac.c_str(), 12);
+    } else if (!parsed["device"].isNull() || owned || kind == "rc-history-owner") {
+      result.sourceConflict = true;
+    }
+    if (kind == "rc-history-owner") {
+      const auto id = parsed["history_id"].as<JsonString>();
+      DocumentId value{};
+      if (owned || parsed["v"] != 1 || id.isNull() || !decodeDocumentId({id.c_str(), id.size()}, value) ||
+          value == DocumentId{})
+        result.sourceConflict = true;
+      else
+        result.sourceId = value;
+      return;
+    }
+    if (!parsed["v"].isNull() && parsed["v"] != 1 && parsed["v"] != 2) result.sourceConflict = true;
+  } else {
+    result.sourceConflict = true;
+    return;
+  }
   const JsonString doc = parsed["doc"].as<JsonString>();
   DocumentId id{};
   const auto secs = parsed["secs"];
@@ -402,7 +442,7 @@ void Query::processLine() {
   if (state != Status::Scanning) return;
   const uint32_t anchor = result.anchorDay ? result.anchorDay : result.latestDay;
   if (inWindow(day, anchor)) {
-    auto& bucket = days[day % HISTORY_DAYS];
+    auto& bucket = daySlot(day % HISTORY_DAYS);
     if (bucket.date != day) bucket = {0, 0, day};
     bucket.seconds += seconds;
     if (isBook) bucket.bookSeconds += seconds;
@@ -456,7 +496,7 @@ Status Query::finish() {
   result.incompleteTail = length != 0 || overflow;
   if (!result.anchorDay) result.anchorDay = result.latestDay;
   for (size_t i = 0; i < HISTORY_DAYS; ++i) {
-    const auto& day = days[i];
+    const auto& day = daySlot(i);
     if (!inWindow(day.date, result.anchorDay)) continue;
     if (day.seconds) ++result.activeDays;
     if (day.bookSeconds) ++result.bookActiveDays;
@@ -478,7 +518,7 @@ uint32_t Query::bookOffsetAt(size_t index) const { return bookAt(index) ? entryA
 
 Day Query::dayAt(uint32_t date) const {
   if (state != Status::Ready || !inWindow(date, result.anchorDay)) return {};
-  const auto& day = days[date % HISTORY_DAYS];
+  const auto& day = daySlot(date % HISTORY_DAYS);
   return day.date == date ? day : Day{};
 }
 }  // namespace readingHistory

@@ -2,14 +2,26 @@
 #include <cstdio>
 #include <fstream>
 #include <iterator>
+#include <new>
 #include <string>
 
 #include "ReadingHistory.h"
 #include "ReadingHistoryProvider.h"
+#include "ReadingHistorySource.h"
 #include "activities/plugins/DessenReadingStats.h"
 
 using namespace readingHistory;
 
+// Fault injection for the explicit fallible array allocations used by the
+// provider. A per-allocation ceiling models a fragmented heap; the countdown
+// exercises rollback after partially allocating the day ring.
+static size_t arrayLimit = SIZE_MAX;
+static size_t arrayBudget = SIZE_MAX;
+void* operator new[](size_t size, const std::nothrow_t&) noexcept {
+  if (size > arrayLimit || arrayBudget == 0) return nullptr;
+  if (arrayBudget != SIZE_MAX) --arrayBudget;
+  return ::operator new[](size);
+}
 FakeHalStorage Storage;
 namespace {
 constexpr char LOG[] = "/.crosspoint/reading_sessions.jsonl";
@@ -128,6 +140,43 @@ void capacity() {
   assert((*q.bookAt(MAX_BOOKS - 1))[14] == 3 && q.bookAt(MAX_BOOKS - 1)->back() == 255);
 }
 
+void fragmentedHistory() {
+  Storage.files.clear();
+  Storage.files[LOG] = session(A, START, 120) + session(B, START + 86400, 60);
+  Provider p;
+  auto finish = [&](Status status) {
+    while (status == Status::Scanning) status = p.step();
+    return status;
+  };
+  // The previous 8904-byte contiguous ring and 4096-byte input buffer
+  // cannot be allocated under this ceiling. The new ring and buffer can.
+  arrayLimit = 2048;
+  assert(finish(p.begin(A)) == Status::Ready);
+  assert(p.summary()->overall.seconds == 180 && p.summary()->book.seconds == 120);
+  const auto prefix = p.expectedBytes(), hash = p.verifiedSourceHash();
+  Storage.files[LOG] += session(A, START + 2 * 86400, 60);
+  assert(finish(p.begin(A)) == Status::Ready);
+  assert(p.summary()->overall.sessions == 3 && p.summary()->overall.seconds == 240);
+  Day day{};
+  assert(p.readDay(DAY + 2, day) && day.seconds == 60 && day.bookSeconds == 60);
+  assert(finish(p.begin(A, 0, false, prefix)) == Status::Ready);
+  assert(p.verifiedSourceHash() == hash && p.summary()->overall.sessions == 2);
+  // Fail after some blocks have been allocated. All allocations must be
+  // released, and a retry must recover the exact same history.
+  p.cancel();
+  Storage.files.erase("/.crosspoint/reading_sessions-history.cache");
+  arrayBudget = 4;
+  assert(finish(p.begin()) == Status::NoMemory);
+  assert(!p.summary() && p.aggregationBuffersBytes() == 0);
+  arrayBudget = SIZE_MAX;
+  assert(finish(p.begin()) == Status::Ready);
+  assert(p.summary()->overall.seconds == 240 && p.aggregationBuffersBytes() == 0);
+  p.cancel();
+  arrayLimit = SIZE_MAX;
+  Storage.files.clear();
+  puts("PASS fragmented heap allocation ceiling, rollback, append and pinned prefix");
+}
+
 void provider() {
   Provider p;
   assert(p.begin() == Status::Missing && p.progressPercent() == 0);
@@ -139,8 +188,8 @@ void provider() {
   const auto original = Storage.files[LOG];
   assert(p.begin(A) == Status::Scanning && p.expectedBytes() == original.size());
   assert(p.progressPercent() == 0 && p.processedSessions() == 0);
-  assert(p.step() == Status::Scanning && p.processedBytes() == 4096);
-  assert(p.progressPercent() == 4096 * 100 / original.size());
+  assert(p.step() == Status::Scanning && p.processedBytes() == 2048);
+  assert(p.progressPercent() == 2048 * 100 / original.size());
   assert(p.processedSessions() > 0 && p.processedSessions() < 101);
   p.cancel();
   assert(p.step() == Status::Cancelled && !p.summary() && p.progressPercent() == 0);
@@ -159,9 +208,11 @@ void provider() {
   assert(Storage.files[LOG] == original + session(A));
   Storage.readLimit = 4100;
   assert(p.begin() == Status::Scanning);
-  assert(p.step() == Status::Scanning);
-  assert(p.step() == Status::Scanning);
-  assert(p.step() == Status::IoError && !p.summary() && p.progressPercent() == 0);
+  Status shortRead;
+  do {
+    shortRead = p.step();
+  } while (shortRead == Status::Scanning);
+  assert(shortRead == Status::IoError && !p.summary() && p.progressPercent() == 0);
   Storage.readLimit = SIZE_MAX;
   assert(p.begin() == Status::Scanning);
   while (p.step() == Status::Scanning) {
@@ -497,14 +548,68 @@ void fixture(const char* path, uint64_t sessions, size_t books) {
 }
 }  // namespace
 
+void sourceProvenance() {
+  using namespace readingHistory;
+  Storage.files.clear();
+  const auto initial = session(A);
+  Storage.files[LOG] = initial;
+  Provider p;
+  auto load = [&](uint64_t prefix = UINT64_MAX) {
+    auto status = p.begin({}, 0, false, prefix);
+    while (status == Status::Scanning) status = p.step();
+    assert(status == Status::Ready);
+  };
+  uint8_t identity[40]{};
+  load();
+  assert(readSourceIdentity(p, 0, identity, sizeof(identity)) == 40 && identity[4] == 0);
+  assert(readSourceIdentity(p, 1, nullptr, 0) == 0);
+  const auto owned = Storage.files[LOG];
+  assert(owned.starts_with(initial) && owned.find("rc-history-owner") != std::string::npos);
+  load();
+  assert(readSourceIdentity(p, 0, identity, sizeof(identity)) == 40 && identity[4] == 1);
+  assert(p.summary()->overall.sessions == 1);
+  const auto hash = p.verifiedSourceHash();
+  const auto id = p.summary()->sourceId;
+  assert(id != DocumentId{});
+  assert(readSourceIdentity(p, 1, nullptr, 0) < 0);
+  load();
+  assert(p.parsedBytes() == 0 && p.summary()->sourceId == id && p.verifiedSourceHash() == hash);
+  // Pinned prefix remains queryable after new reading is appended.
+  auto tagged = session(B);
+  tagged.insert(tagged.size() - 2, ",\"device\":\"a0a1a2a3a4a5\"");
+  Storage.files[LOG] += tagged;
+  load();
+  assert(p.summary()->overall.sessions == 2 && p.summary()->sourceId == id);
+  assert(readSourceIdentity(p, 0, identity, sizeof(identity)) == 40);
+  load(owned.size());
+  assert(p.summary()->overall.sessions == 1 && p.verifiedSourceHash() == hash);
+  // Foreign events and untagged post-ownership events do not affect local
+  // availability but prohibit exporting a claimed single-reader source.
+  Storage.files[LOG] += initial;
+  load();
+  assert(p.summary()->sourceConflict && readSourceIdentity(p, 0, identity, sizeof(identity)) == DSN_ERR_DENIED);
+  Storage.files[LOG] = owned;
+  const auto macAt = Storage.files[LOG].find("a0a1a2a3a4a5");
+  assert(macAt != std::string::npos);
+  Storage.files[LOG].replace(macAt, 12, "b0b1b2b3b4b5");
+  load();
+  assert(readSourceIdentity(p, 0, identity, sizeof(identity)) == DSN_ERR_DENIED);
+  assert(readSourceIdentity(p, 1, nullptr, 0) < 0);
+  p.cancel();
+  Storage.files.clear();
+  puts("PASS generic ownership, foreign source rejection and pinned snapshots");
+}
+
 int main(int argc, char** argv) {
   edgeCases();
   wire();
   capacity();
   provider();
+  fragmentedHistory();
   cacheCases();
   bookInfo();
   extendedSessions();
+  sourceProvenance();
   std::puts("PASS query and provider regressions");
   if (argc == 5 || argc == 7) {
     fixture(argv[1], 1000, 10);

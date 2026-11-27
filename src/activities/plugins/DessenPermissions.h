@@ -22,6 +22,7 @@ class DessenPermissions {
   bool allowsNetwork() const { return ready() && originCount != 0; }
   bool allowsHandoff() const { return allowsNetwork() && handoff; }
   bool allowsDeviceIdentity(std::string_view url) const;
+  bool allowsHistoryIdentity() const { return ready() && historyIdentity; }
   static bool canonical(std::string_view path, std::string& out);
 
  private:
@@ -38,5 +39,6 @@ class DessenPermissions {
   std::array<std::string, MAX_ORIGINS> origins;
   std::string appDir;
   size_t ruleCount = 0, originCount = 0;
-  bool handoff = false, deviceIdentity = false, library = false, valid = false, authorized = false;
+  bool handoff = false, deviceIdentity = false, historyIdentity = false, library = false, valid = false,
+       authorized = false;
 };
