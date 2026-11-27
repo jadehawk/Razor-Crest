@@ -70,7 +70,7 @@ bool Epub::findContentOpfFile(std::string* contentOpfFile, ZipFile* sharedZip) c
 }
 
 bool Epub::parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, const bool writeSpineEntries,
-                           const bool metadataOnly, ZipFile* sharedZip) {
+                           const bool metadataOnly, ZipFile* sharedZip, const bool normalizeLookup) {
   std::string contentOpfFilePath;
   if (!findContentOpfFile(&contentOpfFilePath, sharedZip)) {
     LOG_ERR("EBP", "Could not find content.opf in zip");
@@ -81,8 +81,11 @@ bool Epub::parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, const 
 
   LOG_DBG("EBP", "Parsing content.opf: %s", contentOpfFilePath.c_str());
 
+  if (sharedZip && normalizeLookup) sharedZip->restartMemberSearch();
+  const auto normalizedPath = normalizeLookup ? FsHelpers::normalisePath(contentOpfFilePath) : std::string();
+  const auto& lookupPath = normalizeLookup ? normalizedPath : contentOpfFilePath;
   size_t contentOpfSize;
-  const bool sizeFound = sharedZip ? sharedZip->getInflatedFileSize(contentOpfFilePath.c_str(), &contentOpfSize)
+  const bool sizeFound = sharedZip ? sharedZip->getInflatedFileSize(lookupPath.c_str(), &contentOpfSize)
                                    : getItemSize(contentOpfFilePath, &contentOpfSize);
   if (!sizeFound) {
     LOG_ERR("EBP", "Could not get size of content.opf");
@@ -96,7 +99,7 @@ bool Epub::parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, const 
     return false;
   }
 
-  const bool read = sharedZip ? sharedZip->readFileToStream(contentOpfFilePath.c_str(), opfParser, 1024, metadataOnly)
+  const bool read = sharedZip ? sharedZip->readFileToStream(lookupPath.c_str(), opfParser, 1024, metadataOnly)
                               : readItemContentsToStream(contentOpfFilePath, opfParser, 1024, metadataOnly);
   if (!read) {
     LOG_ERR("EBP", "Could not read content.opf");
@@ -179,7 +182,7 @@ bool Epub::parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, const 
   return true;
 }
 
-bool Epub::parseTocNcxFile() const {
+bool Epub::parseTocNcxFile(ZipFile* sharedZip) const {
   // the ncx file should have been specified in the content.opf file
   if (tocNcxItem.empty()) {
     LOG_DBG("EBP", "No ncx file specified");
@@ -189,7 +192,11 @@ bool Epub::parseTocNcxFile() const {
   LOG_DBG("EBP", "Parsing toc ncx file: %s", tocNcxItem.c_str());
 
   size_t ncxSize;
-  if (!getItemSize(tocNcxItem, &ncxSize)) {
+  if (sharedZip) sharedZip->restartMemberSearch();
+  const auto path = sharedZip ? FsHelpers::normalisePath(tocNcxItem) : std::string();
+  const bool sizeFound =
+      sharedZip ? sharedZip->getInflatedFileSize(path.c_str(), &ncxSize) : getItemSize(tocNcxItem, &ncxSize);
+  if (!sizeFound) {
     LOG_ERR("EBP", "Could not get size of toc ncx file");
     return false;
   }
@@ -203,7 +210,9 @@ bool Epub::parseTocNcxFile() const {
 
   // Stream the decompressed NCX straight into the parser instead of round-tripping
   // through a temp file on the SD card (decompress -> write -> reopen -> reread -> delete).
-  if (!readItemContentsToStream(tocNcxItem, ncxParser, 1024)) {
+  const bool read = sharedZip ? sharedZip->readFileToStream(path.c_str(), ncxParser, 1024)
+                              : readItemContentsToStream(tocNcxItem, ncxParser, 1024);
+  if (!read) {
     LOG_ERR("EBP", "Could not read toc ncx file");
     return false;
   }
@@ -212,7 +221,7 @@ bool Epub::parseTocNcxFile() const {
   return true;
 }
 
-bool Epub::parseTocNavFile() const {
+bool Epub::parseTocNavFile(ZipFile* sharedZip) const {
   // the nav file should have been specified in the content.opf file (EPUB 3)
   if (tocNavItem.empty()) {
     LOG_DBG("EBP", "No nav file specified");
@@ -222,7 +231,11 @@ bool Epub::parseTocNavFile() const {
   LOG_DBG("EBP", "Parsing toc nav file: %s", tocNavItem.c_str());
 
   size_t navSize;
-  if (!getItemSize(tocNavItem, &navSize)) {
+  if (sharedZip) sharedZip->restartMemberSearch();
+  const auto path = sharedZip ? FsHelpers::normalisePath(tocNavItem) : std::string();
+  const bool sizeFound =
+      sharedZip ? sharedZip->getInflatedFileSize(path.c_str(), &navSize) : getItemSize(tocNavItem, &navSize);
+  if (!sizeFound) {
     LOG_ERR("EBP", "Could not get size of toc nav file");
     return false;
   }
@@ -239,7 +252,9 @@ bool Epub::parseTocNavFile() const {
 
   // Stream the decompressed nav document straight into the parser instead of round-tripping
   // through a temp file on the SD card (decompress -> write -> reopen -> reread -> delete).
-  if (!readItemContentsToStream(tocNavItem, navParser, 1024)) {
+  const bool read = sharedZip ? sharedZip->readFileToStream(path.c_str(), navParser, 1024)
+                              : readItemContentsToStream(tocNavItem, navParser, 1024);
+  if (!read) {
     LOG_ERR("EBP", "Could not read toc nav file");
     return false;
   }
@@ -248,9 +263,10 @@ bool Epub::parseTocNavFile() const {
   return true;
 }
 
-void Epub::discoverCssFilesFromZip() {
+void Epub::discoverCssFilesFromZip(ZipFile* sharedZip) {
   const std::string& opfDir = contentBasePath;
-  ZipFile zf(filepath);
+  ZipFile localZip(filepath);
+  auto& zf = sharedZip ? *sharedZip : localZip;
 
   if (!zf.enumerateFilePaths([&](std::string_view filePath) {
         if (!opfDir.empty() && filePath.find(opfDir) != 0) {
@@ -573,6 +589,11 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
     return false;
   }
 
+  // Keep size lookups and reads on the same open archive. Protected
+  // entries still go through the content decryptor.
+  ZipFile zip(filepath);
+  ZipFile* sharedZip = !decryptor && zip.open() ? &zip : nullptr;
+
   // OPF Pass
   const uint32_t opfStart = millis();
   BookMetadataCache::BookMetadata bookMetadata;
@@ -580,11 +601,11 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
     LOG_ERR("EBP", "Could not begin writing content.opf pass");
     return false;
   }
-  if (!parseContentOpf(bookMetadata)) {
+  if (!parseContentOpf(bookMetadata, true, false, sharedZip, /*normalizeLookup=*/sharedZip != nullptr)) {
     LOG_ERR("EBP", "Could not parse content.opf");
     return false;
   }
-  discoverCssFilesFromZip();
+  discoverCssFilesFromZip(sharedZip);
   if (!bookMetadataCache->endContentOpfPass()) {
     LOG_ERR("EBP", "Could not end writing content.opf pass");
     return false;
@@ -603,13 +624,13 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
   // Try EPUB 3 nav document first (preferred)
   if (!tocNavItem.empty()) {
     LOG_DBG("EBP", "Attempting to parse EPUB 3 nav document");
-    tocParsed = parseTocNavFile();
+    tocParsed = parseTocNavFile(sharedZip);
   }
 
   // Fall back to NCX if nav parsing failed or wasn't available
   if (!tocParsed && !tocNcxItem.empty()) {
     LOG_DBG("EBP", "Falling back to NCX TOC");
-    tocParsed = parseTocNcxFile();
+    tocParsed = parseTocNcxFile(sharedZip);
   }
 
   if (!tocParsed) {
@@ -621,6 +642,7 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
     LOG_ERR("EBP", "Could not end writing toc pass");
     return false;
   }
+  if (sharedZip) zip.close();
   LOG_DBG("EBP", "TOC pass completed in %lu ms", millis() - tocStart);
 
   // Close the cache files
