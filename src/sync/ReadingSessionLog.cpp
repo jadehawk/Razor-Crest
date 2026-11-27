@@ -19,7 +19,7 @@
 #include "SyncRequest.h"
 
 namespace {
-constexpr char LOG_PATH[] = "/.crosspoint/reading_sessions.jsonl";
+using readingSessionLog::LOG_PATH;
 // Upload position in the log, kept per account so a new account receives the whole history.
 constexpr char STATE_PATH[] = "/.crosspoint/reading_sessions_sync.json";
 

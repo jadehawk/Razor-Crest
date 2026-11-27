@@ -3,6 +3,7 @@
 
 #include <freeink/DessenServices.h>
 
+class DessenReadingHistory;
 class GfxRenderer;
 class MappedInputManager;
 
@@ -54,6 +55,8 @@ class CrosspointServices : public dessen::Services {
   int bookProgress(const char* path) override;
   int bookCover(const char* path, uint32_t height, uint8_t* out, uint32_t cap) override;
   int wifiConnectStart() override;
+  int readingStatsStart(const uint8_t* book, uint32_t length, uint32_t anchor) override;
+  int readingStatsRead(uint32_t kind, uint32_t first, uint8_t* out, uint32_t cap) override;
 
   // ---- crypto (all wrap freeink::content::Crypto) ----
   int hash(int algo, const uint8_t* data, uint32_t n, uint8_t* out, uint32_t cap) override;
@@ -99,7 +102,7 @@ class CrosspointServices : public dessen::Services {
                        const char* const labels[4]) override;
 
  private:
-  enum class Op : uint8_t { None, Net, Fetch, Keygen, TextInput, WifiStart, WifiConnecting };
+  enum class Op : uint8_t { None, Net, Fetch, Keygen, TextInput, WifiStart, WifiConnecting, ReadingHistory };
 
   static int resolve(const char* path, uint32_t maxLen = 255);  // validates an app path (already the SD path)
 
@@ -109,6 +112,7 @@ class CrosspointServices : public dessen::Services {
   std::unique_ptr<freeink::content::Crypto> crypto_;
   struct ShelfOverlap;
   std::unique_ptr<ShelfOverlap> shelfOverlap_;
+  std::unique_ptr<DessenReadingHistory> readingHistory_;
 
   // Single outstanding async op. Buffers point into guest memory (valid while
   // the VM is parked). Request strings from the syscall stack are copied.

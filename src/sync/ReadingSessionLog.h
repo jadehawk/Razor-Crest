@@ -14,6 +14,7 @@ class SyncRequest;
 // path and title make the file readable on its own; they are never uploaded.
 // The file is never trimmed, so the full history can be uploaded to a new account.
 namespace readingSessionLog {
+inline constexpr char LOG_PATH[] = "/.crosspoint/reading_sessions.jsonl";
 
 bool append(const std::string& document, const std::string& bookPath, const std::string& title, int64_t startTime,
             uint32_t seconds, uint16_t startProgressBp, uint16_t endProgressBp);

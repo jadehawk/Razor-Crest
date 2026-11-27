@@ -35,6 +35,7 @@
 #include <ctime>
 #include <string_view>
 
+#include "DessenReadingHistory.h"
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
@@ -638,13 +639,42 @@ int CrosspointServices::accel(uint8_t*) {
 }
 
 // ---- async: queue on the render task, execute on the loop task ----
+int CrosspointServices::readingStatsStart(const uint8_t* book, uint32_t length, uint32_t anchor) {
+  if (pending_ != Op::None || length > DSN_BOOK_PATH_MAX || (length && !book)) return DSN_ERR_INVALID;
+  readingHistory_.reset();
+  readingHistory_ = makeUniqueNoThrow<DessenReadingHistory>();
+  if (!readingHistory_) return DSN_STATS_NO_MEMORY;
+  const int result = readingHistory_->begin(
+      length ? std::string_view(reinterpret_cast<const char*>(book), length) : std::string_view{}, anchor);
+  if (result != dessen::kPending) {
+    readingHistory_.reset();
+    return result;
+  }
+  pending_ = Op::ReadingHistory;
+  done_ = false;
+  return dessen::kPending;
+}
+
+int CrosspointServices::readingStatsRead(uint32_t kind, uint32_t first, uint8_t* out, uint32_t cap) {
+  if (kind == DSN_STATS_CAPABILITY) return !first && !cap ? DSN_STATS_VERSION : DSN_ERR_INVALID;
+  if (pending_ != Op::None) return DSN_ERR_INVALID;
+  if (kind == DSN_STATS_RELEASE) {
+    if (first || cap) return DSN_ERR_INVALID;
+    readingHistory_.reset();
+    return 0;
+  }
+  return readingHistory_ ? readingHistory_->read(kind, first, out, cap) : DSN_ERR_UNAVAILABLE;
+}
+
 int CrosspointServices::wifiConnectStart() {
+  readingHistory_.reset();
   pending_ = Op::WifiStart;
   done_ = false;
   return dessen::kPending;
 }
 
 int CrosspointServices::netStart(const char* head, const uint8_t* body, uint32_t bn, uint8_t* resp, uint32_t cap) {
+  readingHistory_.reset();
   pending_ = Op::Net;
   done_ = false;
   head_ = head;
@@ -656,6 +686,7 @@ int CrosspointServices::netStart(const char* head, const uint8_t* body, uint32_t
 }
 
 int CrosspointServices::fetchStart(const char* url, const char* dest) {
+  readingHistory_.reset();
   pending_ = Op::Fetch;
   done_ = false;
   url_ = url;
@@ -832,6 +863,11 @@ bool CrosspointServices::serviceAsyncWork() {
       } else {
         return false;
       }
+      break;
+    case Op::ReadingHistory:
+      result_ = readingHistory_ ? readingHistory_->step() : DSN_ERR_IO;
+      if (result_ == dessen::kPending) return false;
+      if (result_ != 0) readingHistory_.reset();
       break;
     case Op::None:
     case Op::TextInput:
