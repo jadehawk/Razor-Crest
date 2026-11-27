@@ -4,7 +4,7 @@ use core::convert::TryInto;
 const HISTORY_PUT: &[u8] = b"PUT https://sync.techy-notes.com/api/device/reader-history\nContent-Type: application/json\nAuthorization: Bearer ";
 const HISTORY_STATE: &[u8] = b"/history-upload-v1";
 const HISTORY_OK: &[u8] = b"Reading history uploaded";
-const HISTORY_ALREADY_UPLOADED: &[u8] = b"Reading history already uploaded";
+const HISTORY_ALREADY_UPLOADED: &[u8] = b"No new reading history to upload";
 const HISTORY_ERROR: &[u8] = b"History upload failed. Retry safely.";
 const HISTORY_FOREIGN: &[u8] = b"History belongs to another reader.";
 const HISTORY_INVALID: &[u8] = b"Invalid or changed reading history.";
@@ -195,7 +195,7 @@ fn history_metadata(w:&mut HistoryJson, record:&[u8], doc:&[u8]) {
         if key==b"series" {have_series=true;}
     }
 }
-fn history_ack(payload:&[u8], id:&[u8], work:&[(u32,[u8;32],u32)], target:u64)->bool {
+fn history_ack(payload:&[u8], id:&[u8], work:&[u8], target:u64)->bool {
     if session_num(payload,b"v")!=Some(2) || session_string(payload,b"history_id")!=Some(id){return false;}
     let Some(device)=session_string(payload,b"device_id") else{return false;};
     if device.len()!=23 || !device.starts_with(b"crosspoint-") ||
@@ -204,23 +204,23 @@ fn history_ack(payload:&[u8], id:&[u8], work:&[(u32,[u8;32],u32)], target:u64)->
     let mut row=accepted.trim_ascii_start();
     if row.first()!=Some(&b'['){return false;}
     row=&row[1..];
-    for (i,(scope,doc,_)) in work.iter().enumerate(){
+    for (i,entry) in work.chunks_exact(40).enumerate(){
+        let scope=le32(entry,0);let doc=&entry[4..36];
         row=row.trim_ascii_start();
         if row.first()!=Some(&b'{'){return false;}
         let Some(end)=row.iter().position(|b|*b==b'}') else{return false;};
         let item=&row[..=end];
-        let document_ok=if *scope==0{session_field(item,b"document").map_or(false,|v|v.starts_with(b"null") &&
+        let document_ok=if scope==0{session_field(item,b"document").map_or(false,|v|v.starts_with(b"null") &&
             matches!(v.get(4),Some(b','|b'}'|b' '|b'\r'|b'\n'|b'\t')))}
             else{session_string(item,b"document")==Some(doc)};
         if !document_ok || session_num(item,b"checkpoint")!=Some(target as i64){return false;}
         row=row[end+1..].trim_ascii_start();
-        if i+1<work.len(){if row.first()!=Some(&b','){return false;}row=&row[1..];}
+        if (i+1)*40<work.len(){if row.first()!=Some(&b','){return false;}row=&row[1..];}
     }
     row.first()==Some(&b']')
 }
 #[inline(never)]
-fn history_put(pairing:&Pairing, buffer:&mut [u8], used:usize)->HistoryResult<usize>{
-    let mut head=[0u8;224];
+fn history_put(pairing:&Pairing, buffer:&mut [u8], used:usize,head:&mut [u8])->HistoryResult<usize>{
     let n=HISTORY_PUT.len();
     head[..n].copy_from_slice(HISTORY_PUT);
     head[n..n+72].copy_from_slice(&pairing.access_token);
@@ -250,10 +250,10 @@ fn history_build_item(c:&mut HistoryCursor,doc:&[u8],offset:u32,
                      body:&mut [u8],temp:&mut [u8])->HistoryResult<usize> {
     let source=history_query(c.target,doc)?;
     if !history_matches(source,c){return Err(-1);}
-    let mut summary=[0u8;192];let mut turns=[0u8;24];
-    if dsn_reading_stats_read(1,0,&mut summary)!=192 || le32(&summary,0)!=1 || le32(&summary,4)!=0 ||
+    let (summary,rest)=temp.split_at_mut(192);let turns=&mut rest[..24];
+    if dsn_reading_stats_read(1,0,summary)!=192 || le32(&summary,0)!=1 || le32(&summary,4)!=0 ||
         hist_u64(&summary,32)!=c.target || hist_u64(&summary,40)!=0 ||
-        dsn_reading_stats_read(6,0,&mut turns)!=24 || le32(&turns,0)!=1{return Err(-1);}
+        dsn_reading_stats_read(6,0,turns)!=24 || le32(&turns,0)!=1{return Err(-1);}
     let book=!doc.is_empty();
     let base=if book{104}else{48};
     let mut w=HistoryJson::new(body);
@@ -303,15 +303,31 @@ fn history_build_item(c:&mut HistoryCursor,doc:&[u8],offset:u32,
 }
 
 #[inline(never)]
+fn history_refresh_only(pairing:&Pairing,server:&mut ServerOverall,body:&mut [u8],refreshed:&mut Option<bool>)->&'static [u8]{
+    let _=dsn_reading_stats_read(4,0,&mut []);
+    *refreshed=Some(server.fetch(pairing,body));
+    HISTORY_ALREADY_UPLOADED
+}
+
+#[inline(never)]
 fn upload_history(pairing:&Pairing,server:&mut ServerOverall,body:&mut [u8],scratch:&mut [u8],
                   refreshed:&mut Option<bool>,owner:&mut [u8;16])->&'static [u8] {
     *refreshed=None;
-    if !history_supported() || pairing.phase!=PairPhase::Paired || scratch.len()<513{return HISTORY_ERROR;}
+    if !history_supported() || pairing.phase!=PairPhase::Paired || scratch.len()<793{return HISTORY_ERROR;}
     // Token rotation starts a safe cumulative replay. The server derives the
     // physical ID from the authenticated hardware header, without a probe.
     let account=hist_hash(&pairing.access_token);
-    let mut source=match history_query(u64::MAX,b""){Ok(s)=>s,Err(e)=>return history_native_error(e)};
+        let mut source=match history_query(u64::MAX,b""){
+        Ok(s)=>s,Err(1)=>{
+            return history_refresh_only(pairing,server,body,refreshed);
+        },Err(e)=>return history_native_error(e)
+    };
     if !source.owned {
+        let summary=&mut scratch[..192];
+        if dsn_reading_stats_read(1,0,summary)!=192 || le32(summary,4)!=0 || hist_u64(summary,40)!=0{return HISTORY_INVALID;}
+        if hist_u64(summary,56)==0 && hist_u64(summary,48)==0 {
+            return history_refresh_only(pairing,server,body,refreshed);
+        }
         let rc=dsn_reading_stats_read(7,1,&mut []);
         if rc!=0{return history_native_error(rc);}
         source=match history_query(u64::MAX,b""){Ok(s)=>s,Err(e)=>return history_native_error(e)};
@@ -324,9 +340,7 @@ fn upload_history(pairing:&Pairing,server:&mut ServerOverall,body:&mut [u8],scra
         if cursor.completed!=0 {
             if cursor.completed==source.bytes {
                 if cursor.completed_hash!=source.hash{return HISTORY_INVALID;}
-                let _=dsn_reading_stats_read(4,0,&mut []);
-                *refreshed=Some(server.fetch(pairing,body));
-                return HISTORY_ALREADY_UPLOADED;
+                return history_refresh_only(pairing,server,body,refreshed);
             }
             let old=match history_query(cursor.completed,b""){Ok(s)=>s,Err(e)=>return history_native_error(e)};
             if !old.owned || old.id!=source.id || old.hash!=cursor.completed_hash || old.bytes!=cursor.completed{return HISTORY_INVALID;}
@@ -334,20 +348,20 @@ fn upload_history(pairing:&Pairing,server:&mut ServerOverall,body:&mut [u8],scra
         cursor.target=source.bytes;cursor.target_hash=source.hash;cursor.scope=0;cursor.day=0;
         if !cursor.save(){return HISTORY_ERROR;}
     }
+    let (work,scratch)=scratch.split_at_mut(280);
     let mut id=[0u8;32];hist_hex(&cursor.id,&mut id);
     // Preparation and receipt parsing never overlap in time.
     // Share the same bounded buffer for both.
     loop {
         let pinned=match history_query(cursor.target,b""){Ok(s)=>s,Err(e)=>return history_native_error(e)};
         if !history_matches(pinned,&cursor){return HISTORY_INVALID;}
-        let mut summary=[0u8;192];
-        if dsn_reading_stats_read(1,0,&mut summary)!=192 || le32(&summary,4)!=0 || hist_u64(&summary,40)!=0{return HISTORY_INVALID;}
+        let summary=&mut scratch[..192];
+        if dsn_reading_stats_read(1,0,summary)!=192 || le32(&summary,4)!=0 || hist_u64(&summary,40)!=0{return HISTORY_INVALID;}
         let books=le32(&summary,24);
         if books>1024 || cursor.scope>books+1{return HISTORY_INVALID;}
         // A small work list bounds stack usage; more scopes continue automatically.
-        let mut work=[(0u32,[0u8;32],u32::MAX);7];
         let mut next=cursor.scope;let mut count=0;
-        while next<=books && count<work.len(){
+        while next<=books && count<7{
             let mut doc=[0u8;32];let mut offset=u32::MAX;
             if next!=0{
                 let mut record=[0u8;20];
@@ -357,14 +371,19 @@ fn upload_history(pairing:&Pairing,server:&mut ServerOverall,body:&mut [u8],scra
                 if !(next==cursor.scope && cursor.day!=0) && (offset as u64)<cursor.completed{next+=1;continue;}
                 hist_hex(&record[..16],&mut doc);
             }
-            work[count]=(next,doc,offset);count+=1;next+=1;
+            let entry=&mut work[count*40..count*40+40];
+            entry[..4].copy_from_slice(&next.to_le_bytes());
+            entry[4..36].copy_from_slice(&doc);
+            entry[36..40].copy_from_slice(&offset.to_le_bytes());
+            count+=1;next+=1;
         }
         let mut candidate=cursor;
         let mut w=HistoryJson::new(body);
         w.raw(b"{\"v\":2");w.quoted(b"history_id",&id);w.raw(b",\"items\":[");
         let Some(mut used)=w.finish() else{return HISTORY_ERROR;};
         let mut sent=0;
-        for &(scope,doc,offset) in &work[..count]{
+        for entry in work[..count*40].chunks_exact(40){
+            let scope=le32(entry,0);let doc=&entry[4..36];let offset=le32(entry,36);
             if candidate.scope!=scope{
                 if candidate.day!=0 || candidate.scope>scope{return HISTORY_ERROR;}
                 candidate.scope=scope;
@@ -385,13 +404,13 @@ fn upload_history(pairing:&Pairing,server:&mut ServerOverall,body:&mut [u8],scra
         if sent!=0 {
             body[used..used+2].copy_from_slice(b"]}");
             let _=dsn_reading_stats_read(4,0,&mut []);
-            let size=match history_put(pairing,body,used+2){Ok(n)=>n,Err(e)=>return history_native_error(e)};
-            if !history_ack(&body[..size],&id,&work[..sent],cursor.target){return HISTORY_ERROR;}
+            let size=match history_put(pairing,body,used+2,scratch){Ok(n)=>n,Err(e)=>return history_native_error(e)};
+            if !history_ack(&body[..size],&id,&work[..sent*40],cursor.target){return HISTORY_ERROR;}
             if !candidate.save(){return HISTORY_ERROR;}
             cursor=candidate;
             *refreshed=Some(server.accept_overview(body,size));
         } else if count!=0 {return HISTORY_ERROR;}
-        if next>books && sent==count && (count==0 || cursor.scope>work[count-1].0){
+        if next>books && sent==count && (count==0 || cursor.scope>le32(work,(count-1)*40)){
             cursor.completed=cursor.target;cursor.completed_hash=cursor.target_hash;
             cursor.target=0;cursor.target_hash=0;cursor.scope=0;cursor.day=0;
             if !cursor.save(){return HISTORY_ERROR;}

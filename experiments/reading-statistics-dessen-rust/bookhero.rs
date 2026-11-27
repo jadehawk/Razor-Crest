@@ -2,7 +2,7 @@
 // its own typography or progress-bar spacing.
 impl Ui {
     fn footer_height(&self) -> i32 {
-        if self.touch || !self.buttons { 0 } else { self.native_hint_height }
+        if self.sleep_render || self.touch || !self.buttons { 0 } else { self.native_hint_height }
     }
 
     fn content_bottom(&self) -> i32 { self.h - self.footer_height() }
@@ -15,10 +15,10 @@ impl Ui {
         if self.footer_height() == 0 { return; }
         let book_controls = page == 0 && books > 1;
         let can_open = (page == 0 && books > 0) || page == 2 || page == 6;
-        let labels: [&[u8]; 4] = if modal { [b"Cancel", b"Confirm", b"", b""] } else if sync_controls { [b"Exit", b"Select", b"Up", b"Down"] } else { [
-            b"Exit", if page == 7 { b"Select" } else if page == 4 && paired {b"View"} else if can_open { b"Open" } else { b"" },
-            if page == 7 { b"Up" } else if page == 4 {b"Prev Month"} else if book_controls { b"Prev Book" } else { b"Prev Page" },
-            if page == 7 { b"Down" } else if page == 4 {b"Next Month"} else if book_controls { b"Next Book" } else { b"Next Page" },
+        let labels: [&[u8]; 4] = if modal { [b"Cancel", b"Confirm", b"", b""] } else if sync_controls { [b"Cancel", b"Select", b"Up", b"Down"] } else { [
+            if page==6 || page==8{b"Back"}else{b"Exit"}, if page == 7 { b"Select" } else if page == 4 && paired {b"View"} else if matches!(page,5|8) && self.rich_books {b"Select"} else if can_open { b"Open" } else { b"" },
+            if page == 7 || (matches!(page,5|8) && self.rich_books) { b"Up" } else if page == 4 {b"Prev Month"} else if book_controls { b"Prev Book" } else { b"Prev Page" },
+            if page == 7 || (matches!(page,5|8) && self.rich_books) { b"Down" } else if page == 4 {b"Next Month"} else if book_controls { b"Next Book" } else { b"Next Page" },
         ] };
         let mut encoded = [0u8; 131];
         let mut n = 0;

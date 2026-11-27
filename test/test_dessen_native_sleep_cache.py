@@ -76,16 +76,28 @@ class DessenNativeSleepCacheTests(unittest.TestCase):
         self.assertIn('const std::string tmp = dest + ".part";', src)
         self.assertIn("MAX_EVENT_DOWNLOAD", src)
 
-    def test_sleep_overview_reuses_the_guest_screenshot(self):
+    def test_sleep_uses_generic_guest_storage_operations(self):
         service = self.text("src/activities/plugins/CrosspointServices.cpp")
         sleep = self.text("src/activities/boot_sleep/SleepActivity.cpp")
-        sources = self.text("src/util/ReadingStatsSleepSource.cpp")
-        self.assertIn("ScreenshotUtil::saveFramebufferAsBmp(temp.c_str(), renderer)", service)
-        self.assertIn("Storage.replaceFile(temp.c_str(), destination.c_str())", service)
-        self.assertIn("renderCustomSleepBmp(path)", sleep)
-        self.assertIn("return {dir + kServerImage, dir + kDeviceImage};", sources)
-        self.assertIn("return {dir + kDeviceImage};", sources)
-        self.assertIn("readingstatssleep::kServerImage", self.text("src/util/PluginHttp.cpp"))
+        app = self.text("experiments/reading-statistics-dessen-rust/sleep.rs")
+        capture = service.split("int CrosspointServices::screenshot(",1)[1].split("int CrosspointServices::fsRename(",1)[0]
+        self.assertIn("permissions_.allows(path, DessenPermissions::Access::Write)",capture)
+        self.assertIn("permissions_.isSharedCredential(path)",capture)
+        self.assertIn("Storage.exists(path)",capture)
+        self.assertIn("ScreenshotUtil::saveFramebufferAsBmp(path, renderer)",capture)
+        move = service.split("int CrosspointServices::fsRename(",1)[1].split("return 0;",1)[0]
+        self.assertIn("permissions_.allows(source, DessenPermissions::Access::Read)",move)
+        self.assertIn("permissions_.allows(source, DessenPermissions::Access::Delete)",move)
+        self.assertIn("permissions_.allows(dest, DessenPermissions::Access::Write)",move)
+        self.assertIn("Storage.exists(dest)",move)
+        self.assertIn("Storage.rename(source, dest)",move)
+        self.assertIn('renderCustomSleepBmp("/sleep.bmp")',sleep)
+        self.assertNotIn("ReadingStatsSleepSource",sleep)
+        self.assertNotIn("sleep-server.bmp",sleep)
+        self.assertNotIn("sleep-device.bmp",sleep)
+        self.assertIn("dsn_screenshot(temp)",app)
+        self.assertIn("dsn_fs_rename(SLEEP_ROOT,SLEEP_BACKUP)",app)
+        self.assertIn("dsn_fs_rename(SLEEP_BACKUP,SLEEP_ROOT)",app)
 
     def test_token_change_invalidates_all_cached_accounts(self):
         src = self.text("src/util/PluginHttp.cpp")
@@ -109,7 +121,7 @@ class DessenNativeSleepCacheTests(unittest.TestCase):
 
     def test_x3_covers_reuse_existing_bounded_bitmap_cache(self):
         source = self.text("src/activities/plugins/CrosspointServices.cpp")
-        cached = source.split("static std::string cachedBookThumbnail(", 1)[1].split("#endif", 1)[0]
+        cached = source.split("static std::string cachedBookThumbnail(", 1)[1].split("int CrosspointServices::bookCover(", 1)[0]
         self.assertIn("getThumbBmpPath()", cached)
         self.assertIn('upstreamPrefix = "thumb_"', cached)
         self.assertIn("len <= prefixLength + suffix.size()", cached)
@@ -120,14 +132,15 @@ class DessenNativeSleepCacheTests(unittest.TestCase):
         self.assertIn("bmp->readRowGray(sourceY, gray, row)", cached)
         self.assertNotIn("generateThumbBmp", cached)
         device_path = source.split("int CrosspointServices::bookCover(", 1)[1].split("#else", 1)[0]
-        self.assertIn("packCachedBookCover(cachedBookThumbnail(path, height)", device_path)
+        self.assertIn("cachedBookThumbnail(full, height)", device_path)
+        self.assertIn("packCachedBookCover(cached, height", device_path)
 
     def test_month_taps_refresh_without_changing_page(self):
         ui = self.text("experiments/reading-statistics-dessen-rust/preview.rs")
         rust = self.text("experiments/reading-statistics-dessen-rust/readstats.rs")
         self.assertIn("fn overall_month_bounds(", ui)
         self.assertIn("let stale = server.stale(dsn_time())", ui)
-        self.assertIn("let show_icon = paired && (server.icon_revealed || stale);", ui)
+        self.assertIn("let show_icon = !self.sleep_render && paired && (server.icon_revealed || stale);", ui)
         self.assertIn("let (mx, my, mw, mh) = ui.overall_month_bounds();", rust)
         self.assertIn("confirm_month_sync = true;", rust)
         self.assertIn("if syncing_month {", rust)

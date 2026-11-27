@@ -96,25 +96,7 @@ impl Ui {
     // Confirmation replaces the Overall viewport but keeps its page index.
     // Touch zones and hardware Confirm/Back are both supported.
     fn overall_sync_confirmation(&self) {
-        dsn_clear();
-        self.header(0);
-        let x = G;
-        let w = self.w - 2 * G;
-        let y = 13 + self.ls + self.lt;
-        let h = (self.content_bottom() - y - 13).max(1);
-        self.panel(x, y, w, h);
-        let mid = y + h / 2;
-        text(x + 10, mid - 2 * self.lt - 18, w - 20, self.lt,
-             b"Sync with server?", TITLE, CENTER, BOLD);
-        text(x + 10, mid - self.ls - 8, w - 20, self.ls,
-             b"Download updated reading totals", SMALL, CENTER, 0);
-        let (yes_x, no_x, by, yes_w, no_w, bh) = self.overall_sync_confirmation_buttons(b"Sync now");
-        dsn_stroke(yes_x, by, yes_w, bh, BLACK, 2, 7, 15);
-        dsn_stroke(no_x, by, no_w, bh, BLACK, 1, 7, 15);
-        text(yes_x + 4, by + (bh - self.lb) / 2, yes_w - 8, self.lb,
-             b"Sync now", BODY, CENTER, BOLD);
-        text(no_x + 4, by + (bh - self.lb) / 2, no_w - 8, self.lb,
-             b"Cancel", BODY, CENTER, 0);
+        self.network_dialog(0,b"Sync with server?",b"Download updated reading totals",false,b"Sync now");
     }
 
     fn overall_sync_confirmation_buttons(&self, yes: &[u8]) -> (i32, i32, i32, i32, i32, i32) {
@@ -160,7 +142,7 @@ impl Ui {
 
         self.panel(x, y, w, hero_h);
         let stale = server.stale(dsn_time());
-        let show_icon = paired && (server.icon_revealed || stale);
+        let show_icon = !self.sleep_render && paired && (server.icon_revealed || stale);
         let half = w / 2;
         text(x + 8, y + 6, half - 16, self.ls, b"THIS MONTH", SMALL, CENTER, BOLD);
         text(x + half + 8, y + 6, half - if show_icon { 54 } else { 16 }, self.ls, b"ALL TIME", SMALL, CENTER, BOLD);
@@ -187,7 +169,6 @@ impl Ui {
                 dsn_line(ax, ay, ex, ey, 2, BLACK);
             }
         }
-        checkpoint(211);
         let metric = |value: S| {
             if server.available { value } else { label!(s(b"N/A")) }
         };
@@ -205,7 +186,6 @@ impl Ui {
         dsn_line(x + half, y + 6, x + half, y + hero_h * 56 / 100 - 4, 1, DARK);
         let line_y = y + hero_h * 56 / 100;
         dsn_line(x + 8, line_y, x + w - 8, line_y, 1, DARK);
-        checkpoint(212);
         let values = [
             metric(label!(n(server.current_streak))),
             metric(label!(n(server.month_active_days))),
@@ -222,8 +202,6 @@ impl Ui {
             text(cx - cw / 2, line_y + 9 + self.lt, cw, self.ls,
                 labels[i as usize], SMALL, CENTER, 0);
         }
-
-        checkpoint(213);
         let mw = (w - gap) / 2;
         let mh = (metrics_h - gap) / 2;
         self.metric(x, y + hero_h + gap, mw, mh, b"Sessions",
@@ -236,12 +214,10 @@ impl Ui {
             b"Best Day", best_label.get(), 3);
         self.metric(x + mw + gap, y + hero_h + gap + mh + gap, w - mw - gap, mh,
             b"Daily Avg.", avg_label.get(), 2);
-
-        checkpoint(214);
         self.panel(x, recent_y, w, recent_h);
-        let counter_w = if carousel.count > 1 { 56 } else { 0 };
+        let counter_w = if carousel.count > 1 && !self.sleep_render { 56 } else { 0 };
         text(x + 9, recent_y + 7, w - 18, self.lb, b"Continue Reading", BODY, CENTER, BOLD);
-        if carousel.count > 1 {
+        if carousel.count > 1 && !self.sleep_render {
             let indicator = label!(n((carousel.selected + 1) as u32), s(b"/"), n(carousel.count as u32));
             text(x + w - counter_w - 11, recent_y + 7, counter_w, self.lb,
                 indicator.get(), SMALL, RIGHT, 0);
@@ -249,7 +225,6 @@ impl Ui {
         dsn_line(x + 9, recent_y + self.lb + 11, x + w - 9, recent_y + self.lb + 11, 1, DARK);
         let cards_y = recent_y + self.lb + 16;
         let cards_h = (recent_h - self.lb - 23).max(1);
-        checkpoint(215);
         if let Some(book) = carousel.current(rec) {
             // The counter is in the header, leaving the full card height for
             // the portrait cover and two-line book metadata.
@@ -258,13 +233,10 @@ impl Ui {
             // The VM has a fixed 80 KiB budget; use the existing current-book
             // scratch buffer instead of another 4 KiB stack allocation.
             let cover = cover_scratch;
-            checkpoint(216);
             let mut bytes = dsn_book_cover(book.field(rec,0), cover_limit, cover);
             // PSRAM hosts may reject oversize images rather than rescale.
             if bytes == -3 { bytes = dsn_book_cover(book.field(rec,0), cover_limit.min(155), cover); }
-            checkpoint(217);
             let cover_len = if bytes > 4 { (bytes as usize).min(cover.len()) } else { 0 };
-            checkpoint(218);
             self.book_hero(x, cards_y, w, content_h, &cover[..cover_len],
                 book.field(rec,1), book.field(rec,2), book.field(rec,4), book.percent);
         } else {

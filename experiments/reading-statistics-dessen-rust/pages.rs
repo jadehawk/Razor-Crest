@@ -21,12 +21,12 @@ impl Ui {
         let y=13+self.ls+self.lt;
         let available=(self.content_bottom()-y-13).max(1);
         // Page capacity is independent of the bounded two-book read batches.
-        ((available-self.lb-self.ls-38)/self.book_row_height()).max(1) as u32
+        ((available-self.lb-self.ls-31)/self.book_row_height()).max(1) as u32
     }
 
     #[inline(never)]
     fn book_row_height(&self) -> i32 {
-        if self.rich_books { (self.lb * 2 + self.ls * 3 + 12).max(76) } else { self.lb + 12 }
+        if self.rich_books { (self.ls * 5 + 6).max(76) } else { self.lb + 12 }
     }
 
     #[inline(never)]
@@ -40,20 +40,24 @@ impl Ui {
         let old=u16::from_le_bytes([r[8],r[9]]) as i32;
         let live=if path.is_empty(){-1}else{dsn_book_progress(path)};
         let p=if live>=0 {live} else if old<=10000 {(old+50)/100} else {-1};
-        let ch=(h-8).min(72); let cw=ch*2/3;
+        let ch=(h-6).min(144).min(w*3/8); let cw=ch*2/3;
         let bytes=if path.is_empty(){0}else{dsn_book_cover(path,ch,cover)};
         if bytes>4 && bytes as usize<=cover.len() {
             let bw=u16::from_le_bytes([cover[0],cover[1]]) as i32;
             let bh=u16::from_le_bytes([cover[2],cover[3]]) as i32;
             if bw>0 && bh>0 && bw<=cw && bh<=ch && ((bw+7)/8*bh) as usize <= bytes as usize-4 {
-                dsn_bitmap(x+8+(cw-bw)/2,y+3,bw,bh,&cover[4..bytes as usize],bw,bh,1,0,BLACK,0);
-            } else {dsn_stroke(x+8,y+3,cw,ch,DARK,1,0,0);}
-        } else {dsn_stroke(x+8,y+3,cw,ch,DARK,1,0,0);}
-        let tx=x+cw+16; let tw=(w-cw-26).max(1);
-        dsn_text_box(tx,y+2,tw,self.lb*2,if title.is_empty(){b"Untitled"}else{title},BODY,LEFT,2,BOLD);
-        let sy=y+2+self.lb*2;
-        if !series.is_empty(){dsn_text_box(tx,sy,tw,self.ls*2,series,SMALL,LEFT,2,0);}
-        let ty=sy+if series.is_empty(){0}else{self.ls*2};
+                dsn_bitmap(x+8+(cw-bw)/2,y+(h-bh)/2,bw,bh,&cover[4..bytes as usize],bw,bh,1,0,BLACK,0);
+            } else {dsn_stroke(x+8,y+(h-ch)/2,cw,ch,DARK,1,0,0);}
+        } else {dsn_stroke(x+8,y+(h-ch)/2,cw,ch,DARK,1,0,0);}
+        let tx=x+cw+16; let tw=(w-cw-24).max(1);
+        let title=if title.is_empty(){b"Untitled".as_slice()}else{title};
+        let tl=if (dsn_measure_text(title,SMALL,BOLD)>>16) as i32>tw{2}else{1};
+        let sl=if series.is_empty(){0}else if (dsn_measure_text(series,SMALL,0)>>16) as i32>tw{2}else{1};
+        let top=y+(h-(tl+sl+1)*self.ls)/2;
+        dsn_text_box(tx,top,tw,self.ls*tl,title,SMALL,LEFT,tl,BOLD);
+        let sy=top+self.ls*tl;
+        if sl>0{dsn_text_box(tx,sy,tw,self.ls*sl,series,SMALL,LEFT,sl,0);}
+        let ty=sy+self.ls*sl;
         let minutes=native_u32(r,0)/60;
         let (hours,m)=(minutes/60,minutes%60);
         let time=label!(s(b"Time: "),s(if hours<10{b"0"}else{b""}),n(hours),s(b"h "),s(if m<10{b"0"}else{b""}),n(m),s(b"m"));
@@ -75,7 +79,7 @@ impl Ui {
         dsn_line(x+12,y+h-3,x+w-12,y+h-3,1,LIGHT);
     }
     #[inline(never)]
-    fn extra_page(&self, st: &Stats, page: i32, book_offset: u32, books_ready: bool, scratch: &mut [u8]) {
+    fn extra_page(&self, st: &Stats, page: i32, book_offset: u32, selected:u32, books_ready: bool, filter:&BookFilter, bits:&[u8], scratch: &mut [u8]) {
         let x = G;
         let w = self.w - G * 2;
         let y = 13 + self.ls + self.lt;
@@ -106,7 +110,8 @@ impl Ui {
             3 => {},
             4 => {
                 self.panel(x, y, w, available);
-                let title = label!(s(b"Books tracked: "), n(st.book_count), s(if st.books_limited { b"+" } else { b"" }));
+                let count=filter.count(st.book_count);
+                let title = label!(s(if filter.hidden{b"Hidden: "}else{b"Books tracked: "}), n(count), s(if st.books_limited { b"+" } else { b"" }));
                 text(x + 12, y + 8, w - 24, self.lb, title.get(), BODY, LEFT, BOLD);
                 dsn_line(x + 10, y + self.lb + 14, x + w - 10, y + self.lb + 14, 1, DARK);
                 let top = y + self.lb + 20;
@@ -115,9 +120,13 @@ impl Ui {
                 let mut shown = 0u32;
                 let mut failed = !books_ready;
                 if st.err != ERR_UNAVAILABLE && self.rich_books && st.native_stats {
-                    while shown < capacity && !failed {
-                        let n=self.detailed_book_row(x,top+shown as i32*row_h,w,row_h,book_offset+shown,scratch);
+                    while shown < capacity && !failed && book_offset+shown<count {
+                        let index=filter.index(book_offset+shown,st.book_count,bits);
+                        let n=self.detailed_book_row(x,top+shown as i32*row_h,w,row_h,index,scratch);
                         if n<=0 {failed=n<0;break;}
+                        if !self.touch && !self.sleep_render && book_offset+shown==selected{
+                            dsn_stroke(x+3,top+shown as i32*row_h,w-6,row_h-2,BLACK,2,5,15);
+                        }
                         shown+=1;
                     }
                 } else if st.err != ERR_UNAVAILABLE {
@@ -144,10 +153,10 @@ impl Ui {
                                   if failed { b"Reading history unavailable" } else { b"No more books to display" }, false);
                 }
                 // The headline already conveys the count when all books fit.
-                if st.book_count > capacity {
+                if count > capacity {
                     let first = book_offset + 1;
-                    let last = (book_offset + shown).min(st.book_count);
-                    let end = label!(s(b"Showing "), n(first), s(b"-"), n(last), s(b" of "), n(st.book_count), s(b" books"));
+                    let last = (book_offset + shown).min(count);
+                    let end = label!(s(b"Showing "), n(first), s(b"-"), n(last), s(b" of "), n(count), s(b" books"));
                     text(x + 12, y + available - self.ls - 5, w - 24, self.ls,
                          end.get(), SMALL, CENTER, 0);
                 }

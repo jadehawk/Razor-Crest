@@ -44,12 +44,12 @@ def main(host, app):
             os.environ.pop("DESSEN_TEST_X3",None)
         run(host,app,root,network,keys=b"b",installed=True)
         assert cache.read_bytes()==previous, "Automatic refresh must start disabled"
-        prompt=run(host,app,root,network,keys=b"uuc",installed=True)
+        prompt=run(host,app,root,network,keys=b"uc",installed=True)
         assert "Enable Auto Sync?" in prompt and "Wi-Fi" in prompt
         assert not preference.exists() and cache.read_bytes()==previous
-        cancelled=run(host,app,root,network,keys=b"uucb",installed=True)
+        cancelled=run(host,app,root,network,keys=b"ucb",installed=True)
         assert not preference.exists() and cache.read_bytes()==previous
-        trace=run(host,app,root,network,keys=b"uuccdd",installed=True)
+        trace=run(host,app,root,network,keys=b"uccdd",installed=True)
         assert preference.read_bytes()==b"\1"
         assert trace.index("Enable Auto Sync?") < trace.index("Syncing...")
         assert "Syncing..." in trace
@@ -58,7 +58,7 @@ def main(host, app):
         fresh=cache.read_bytes()
         preference.write_bytes(b"\0")
         fixture(network,"overview",overview(9999,now))
-        enabled=run(host,app,root,network,keys=b"uuccdd",installed=True)
+        enabled=run(host,app,root,network,keys=b"uccdd",installed=True)
         assert preference.read_bytes()==b"\1" and cache.read_bytes()==fresh
         assert "Enable Auto Sync?" in enabled and "Syncing..." not in enabled
         run(host,app,root,network,keys=b"b",installed=True)
@@ -79,21 +79,21 @@ def main(host, app):
         fixture(network,"overview",overview(10800,now))
         trace=run(host,app,root,network,keys=b"udub",installed=True)
         assert cache.read_bytes()==previous and "Syncing..." not in trace
-        prompt=run(host,app,root,network,keys=b"uunc",installed=True)
+        prompt=run(host,app,root,network,keys=b"unc",installed=True)
         assert "Sync with server?" in prompt and cache.read_bytes()==previous
-        run(host,app,root,network,keys=b"uuncb",installed=True)
+        run(host,app,root,network,keys=b"uncb",installed=True)
         assert cache.read_bytes()==previous
-        confirmed=run(host,app,root,network,keys=b"uuncc",installed=True)
+        confirmed=run(host,app,root,network,keys=b"uncc",installed=True)
         assert confirmed.index("Sync with server?") < confirmed.index("Syncing...")
         assert json.loads(cache.read_text())["month_seconds"]==10800
-        prompt=run(host,app,root,network,keys=b"uc",installed=True)
+        prompt=run(host,app,root,network,keys=b"unnc",installed=True)
         assert "Generate a web login?" in prompt
         assert not (directory/"web-login.json").exists()
-        confirmed=run(host,app,root,network,keys=b"ucc",installed=True)
+        confirmed=run(host,app,root,network,keys=b"unncc",installed=True)
         assert "Generating web login..." in confirmed and PAIR_CODE in confirmed
         saved=json.loads((directory/"web-login.json").read_text())
         assert saved["user_code"]==PAIR_CODE and saved["expires_at"]>now
-        offline=run(host,app,root,keys=b"u",installed=True)
+        offline=run(host,app,root,keys=b"unnc",installed=True)
         assert PAIR_CODE in offline, "Web PIN must survive application restart"
         assert TOKEN not in offline and json.loads(token.read_text())["token"]==TOKEN
     print("Generic refresh, failure cleanup, account cache and Web PIN persistence: PASS")

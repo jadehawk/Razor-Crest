@@ -95,8 +95,38 @@ and a historical fallback. Old hosts retain the original compact list.
 
 The size-optimized RV32IM build has been verified with Rust 1.100.0.
 It uses call relaxation without GP relaxation, machine outlining and omits
-unused panic source-location strings. These Rust compiler switches are
+unused panic source-location strings. App-local compact SDK wrappers and RV32IM save/restore helpers reduce code size while preserving the SDK ABI. These Rust compiler switches are
 unstable; re-run the full stack-gated suite after toolchain upgrades.
 The test package includes the app and its manifest/device metadata. The authoritative source is this worktree. Earlier versioned folders remain unchanged.
 
 Firmware compilation and hardware verification are performed by the user.
+
+## Sleep screen
+
+Select Custom in the firmware sleep-screen settings, with no active Razor-Crest
+wallpaper pack. In the app Settings, choose Sleep Screen and a statistics page.
+The app captures that page without status or navigation chrome using the generic
+screenshot service, stages it in the app directory, and publishes /sleep.bmp.
+An original root image is saved as /sleep-backup.bmp. Off restores it when the
+active image is still app-owned. Manual replacement and backup conflicts are
+reported instead of silently overwriting the user's files. After interruption,
+reopen the app to reconcile the journal. Older hosts without screenshot support
+hide the selector; the former plugin-local capture mode is not enabled automatically.
+
+Turn Sleep Screen off before uninstalling. Manual removal or external credential
+changes while the app is not running cannot trigger app cleanup; external
+account changes are reconciled on the next launch. If necessary, restore the
+original backup manually. A selected Razor-Crest wallpaper pack retains priority.
+No new server service is needed.
+
+## Book list preferences
+
+Open a book row to open it (with confirmation), delete it from the list until
+new reading activity or changed live progress is detected, or hide it until
+restored through Settings > Manage Hidden Books. These are device-local
+preferences, not changes to the EPUB, reading history or server totals.
+The bounded preference file supports up to 96 exclusions; the hidden list
+shows excluded books still present in the native history index.
+Sleep selection uses full titles in the picker and short names in Settings.
+Books Local is not a sleep page; an obsolete selection is disabled through
+the same wallpaper restoration procedure as Off.

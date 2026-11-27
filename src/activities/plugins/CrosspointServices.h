@@ -49,6 +49,8 @@ class CrosspointServices : public dessen::Services {
   // ---- storage ----
   int fsRead(const char* path, uint8_t* out, uint32_t cap) override;
   int fsReadAt(const char* path, uint32_t offset, uint8_t* out, uint32_t cap) override;
+  int screenshot(const char* path) override;
+  int fsRename(const char* source, const char* dest) override;
   int fsWrite(const char* path, const uint8_t* data, uint32_t n) override;
   int fsList(const char* path, char* out, uint32_t cap) override;
   int fsDelete(const char* path) override;
@@ -58,6 +60,7 @@ class CrosspointServices : public dessen::Services {
   int recents(char* out, uint32_t cap) override;
   int recentShelf(uint32_t first, uint32_t count, char* out, uint32_t cap) override;
   int bookProgress(const char* path) override;
+  int validateBookOpen(const char* path) override;
   int readingStatsStart(const uint8_t* book, uint32_t length, uint32_t anchorDay) override;
   int readingStatsRead(uint32_t kind, uint32_t first, uint8_t* out, uint32_t cap) override;
   int bookCover(const char* path, uint32_t height, uint8_t* out, uint32_t cap) override;

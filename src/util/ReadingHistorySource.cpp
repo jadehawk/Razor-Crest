@@ -45,7 +45,12 @@ int readSourceIdentity(const Provider& provider, uint32_t mode, uint8_t* out, ui
     put(out + 32, provider.verifiedSourceHash(), 8);
     return 40;
   }
-  if (owned || !s->bytes || !s->overall.sessions || cap != 0) return DSN_ERR_INVALID;
+  if (owned || !s->bytes || (!s->overall.sessions && !s->overall.seconds) || cap != 0) {
+    LOG_ERR("RHIST", "Cannot claim history: owned=%u bytes=%llu sessions=%llu seconds=%llu",
+            static_cast<unsigned>(owned), static_cast<unsigned long long>(s->bytes),
+            static_cast<unsigned long long>(s->overall.sessions), static_cast<unsigned long long>(s->overall.seconds));
+    return DSN_ERR_INVALID;
+  }
   DocumentId id{};
   esp_fill_random(id.data(), id.size());
   if (id == DocumentId{}) return DSN_ERR_IO;

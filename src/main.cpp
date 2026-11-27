@@ -407,11 +407,11 @@ static void emitSleepPluginEvents() {
 }
 
 // True when this sleep paints the custom source a plugin download can replace.
-// Covers, Quick Resume, wallpaper packs and the Reading Statistics dashboard
+// Covers, Quick Resume and selected wallpaper packs
 // never read /sleep.bmp, so a sleep-image download would be invisible.
 static bool showsPluginSleepImage(const bool quickResume) {
   if (quickResume) return false;
-  // A selected wallpaper pack or Reading Statistics replaces the /sleep.bmp +
+  // A selected wallpaper pack replaces the /sleep.bmp +
   // wallpaper-pool source, so plugin images are ignored.
   if (SETTINGS.wallpaperPackId[0] != '\0') return false;
   return sleepscreen::showsCustomSource(SETTINGS.sleepScreen, APP_STATE.lastSleepFromReader,

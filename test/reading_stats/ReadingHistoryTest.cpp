@@ -609,6 +609,19 @@ void sourceProvenance() {
   assert(readSourceIdentity(p, 1, nullptr, 0) < 0);
   p.cancel();
   Storage.files.clear();
+  // Migrated duration may be valid even when legacy session counts are zero.
+  const std::string total = R"({"type":"rc-baseline-total","v":1,"doc":null,"seconds":60,"sessions":0,"turns":0,"latest":0,"periods":[0,0,0,0]})" "\n";
+  uint32_t baselineHash = 2166136261u;
+  for (unsigned char b : total) baselineHash = (baselineHash ^ b) * 16777619u;
+  Storage.files[LOG] = R"({"type":"rc-baseline-begin","v":1,"records":1})" "\n" + total +
+                       "{\"type\":\"rc-baseline-end\",\"v\":1,\"hash\":" + std::to_string(baselineHash) + "}\n";
+  load();
+  assert(p.summary()->overall.seconds == 60 && !p.summary()->overall.sessions && p.summary()->baselineApplied);
+  assert(readSourceIdentity(p, 1, nullptr, 0) == 0);
+  load();
+  assert(readSourceIdentity(p, 0, identity, sizeof(identity)) == 40 && identity[4] == 1);
+  p.cancel();
+  Storage.files.clear();
   puts("PASS generic ownership, foreign source rejection and pinned snapshots");
 }
 

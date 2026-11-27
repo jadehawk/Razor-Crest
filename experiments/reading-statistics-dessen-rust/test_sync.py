@@ -84,25 +84,45 @@ def main(host, app):
         assert target.exists(), ("Completed pairing did not persist shared credential", trace[-3500:])
         assert json.loads(target.read_text())["token"] == TOKEN, "Saved token mismatch"
         assert "Server Statistics" in trace.split("\nrefresh\n")[-2], trace[-1800:]
-        # A capability file stands in for the firmware's virtual capture endpoint.
-        capture = sd / "app" / "sleep-frame.capture"
-        capture.write_bytes(b"\x01")
-        original_wallpaper = sd / "sleep.bmp"
+        # Generic capture and rename: the desktop fixture saves a small
+        # sentinel BMP; the draw trace checks what was rendered before capture.
+        os.environ["DESSEN_TEST_SCREENSHOT"]="1"
+        original_wallpaper=sd/"sleep.bmp"
+        backup=sd/"sleep-backup.bmp"
         original_wallpaper.write_bytes(b"user wallpaper")
-        preference = sd / "app" / "stats-on-sleep"
-        run(host, app, sd, keys=b"")
-        assert not preference.exists(), "Sleep stats must default to off"
-        enabled = run(host, app, sd, keys=b"uunc")
-        assert "Stats on Sleep" in enabled and preference.read_bytes() == b"\x01"
-        assert capture.read_bytes() == b"\x01", "Paired capture must publish the server page"
-        run(host, app, sd, keys=b"uuppc")
-        assert preference.read_bytes() == b"\x00"
-        assert original_wallpaper.read_bytes() == b"user wallpaper"
-        preference.write_bytes(b"\x01")
-        target.unlink()
-        run(host, app, sd, keys=b"")
-        assert capture.read_bytes() == b"\x00", "Unpaired capture must publish the device page"
-        capture.unlink()
+        preference=sd/"app"/"sleep-page"
+        try:
+            run(host,app,sd,keys=b"")
+            assert not preference.exists()
+            enabled=run(host,app,sd,keys=b"uncnc")
+            assert "Choose Sleep Screen" in enabled and preference.read_bytes()==b"\1"
+            assert "Auto-fetch server statistics" in enabled and "Sleep Screen (Server)" in enabled
+            picker=enabled.split("Choose Sleep Screen")[1].split("refresh")[0]
+            assert "Server Statistics" in picker and "Device Statistics" in picker and "Books" not in picker
+            assert backup.read_bytes()==b"user wallpaper"
+            assert original_wallpaper.read_bytes().startswith(b"BM-test-frame")
+            frame=enabled.split("screenshot ")[0].split("refresh")[-1]
+            assert "Server Statistics" in frame and "72%" not in frame
+            run(host,app,sd,keys=b"")
+            assert backup.read_bytes()==b"user wallpaper"
+            preference.write_bytes(b"\6")
+            run(host,app,sd,keys=b"")
+            assert preference.read_bytes()==b"\0" and not backup.exists()
+            assert original_wallpaper.read_bytes()==b"user wallpaper"
+            preference.write_bytes(b"\1")
+            target.unlink()
+            trace=run(host,app,sd,keys=b"")
+            assert "Device Statistics" in trace.split("screenshot ")[0].split("refresh")[-1]
+            original_wallpaper.write_bytes(b"new user wallpaper")
+            run(host,app,sd,keys=b"")
+            assert original_wallpaper.read_bytes()==b"new user wallpaper"
+            assert backup.read_bytes()==b"user wallpaper"
+            # Restore fixture files after the external-edit conflict.
+            original_wallpaper.unlink()
+            preference.write_bytes(b"\0")
+            backup.rename(original_wallpaper)
+        finally:
+            os.environ.pop("DESSEN_TEST_SCREENSHOT",None)
         target.write_text(json.dumps({"token": TOKEN}))
         # Firmware injects event 11 every five seconds while waiting; the app
         # must poll approval without another press of Confirm/touch.
@@ -113,31 +133,31 @@ def main(host, app):
         assert json.loads(target.read_text())["token"] == TOKEN, "Timed poll did not save token"
         # Picco touch UI must draw a real button, not a hardware-key instruction.
         target.unlink()
-        touch_trace = run(host, app, sd, network, keys=b"utYtbb", touch=True)
-        assert "Generate Code" in touch_trace, "Touch page missing Generate Code button: " + touch_trace[-2400:]
+        touch_trace = run(host, app, sd, network, keys=b"ucYtbb", touch=True)
+        assert "Generate a pairing code?" in touch_trace, "Touch page missing Generate Code button: " + touch_trace[-2400:]
         assert "Check Pairing" in touch_trace, "Touch tap did not generate pairing code"
         assert "Generating pairing code..." in touch_trace, "Touch button did not visibly acknowledge tap"
         assert "Open: Generate pairing code" not in touch_trace, "Hardware-key label leaked to touch UI"
         assert json.loads(target.read_text())["token"] == TOKEN
         target.unlink()
-        portrait_trace = run(host, app, sd, network, keys=b"utYtbb", touch=True, portrait=True)
+        portrait_trace = run(host, app, sd, network, keys=b"ucYtbb", touch=True, portrait=True)
         assert "Check Pairing" in portrait_trace, "Portrait touch button did not activate"
         assert json.loads(target.read_text())["token"] == TOKEN
 
         # Allow a card-level tap to compensate for touch/safe-area offsets.
         target.unlink()
-        card_trace = run(host, app, sd, network, keys=b"uxYtbb", touch=True)
+        card_trace = run(host, app, sd, network, keys=b"ucYtbb", touch=True)
         assert "Check Pairing" in card_trace, "Card-level touch tap was ignored"
         assert json.loads(target.read_text())["token"] == TOKEN
         paired_trace = run(host, app, sd, keys=b"ub", touch=True)
         assert "Generate Code" not in paired_trace and "Check Pairing" not in paired_trace, "Paired device still offers registration"
         assert "Open Web Stats" in paired_trace, "Paired device lacks web sign-in action"
-        web_trace = run(host, app, sd, network, keys=b"uccbb", touch=False)
+        web_trace = run(host, app, sd, network, keys=b"unnccbb", touch=False)
         assert "New Web PIN" in web_trace, "Button-reader cannot refresh login PIN"
         assert PAIR_CODE in web_trace, "Login PIN missing after authenticated request"
         assert "sync.techy-notes.com/signin" in web_trace
         assert json.loads(target.read_text())["token"] == TOKEN, "Web login must never replace pairing credential"
-        portrait_web = run(host, app, sd, network, keys=b"uccbb", touch=True, portrait=True)
+        portrait_web = run(host, app, sd, network, keys=b"unnccbb", touch=True, portrait=True)
         assert PAIR_CODE in portrait_web and "New Web PIN" in portrait_web
         assert "THIS MONTH" in portrait_web, "Paired Overall must use remote stats"
         assert "TAP TO REFRESH" not in portrait_web, "Clipped refresh instruction still present"
@@ -151,7 +171,7 @@ def main(host, app):
         assert json.loads(target.read_text())["token"] == TOKEN
 
         # A previously paired reader must not restart registration, even offline.
-        run(host, app, sd, None, keys=b"uccbb")
+        run(host, app, sd, None, keys=b"unnccbb")
         assert json.loads(target.read_text())["token"] == TOKEN
 
         target.unlink()

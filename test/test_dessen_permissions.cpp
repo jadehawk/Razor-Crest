@@ -164,6 +164,13 @@ int main(int argc, char** argv) {
     assert(installed.allowsLibrary() && installed.allowsHandoff());
     assert(installed.allowsDeviceIdentity("https://sync.techy-notes.com/api/device/code"));
     assert(installed.allowsHistoryIdentity());
+    for (const char* path : {"/sleep.bmp", "/sleep-backup.bmp"}) {
+      assert(installed.allows(path, Access::Read));
+      assert(installed.allows(path, Access::Write));
+      assert(installed.allows(path, Access::Delete));
+    }
+    assert(!installed.allows("/other.bmp", Access::Write));
+    assert(!installed.allows("/Books/novel.epub", Access::Delete));
     assert(!installed.allowsDeviceIdentity("https://other.example/api/device/code"));
   }
 }

@@ -33,7 +33,6 @@
 #include "images/MoonIcon.h"
 #include "images/RazorCrestLogoImage.h"
 #include "util/FirmwareIdentity.h"
-#include "util/ReadingStatsSleepSource.h"
 #include "util/SleepScreenSource.h"
 
 namespace {
@@ -774,8 +773,8 @@ bool SleepActivity::renderTimedSleepScreen() const {
                                       APP_STATE.lastSleepCoverFallback))
     return false;
 
-  // Reuse the last Dessen capture before checking the wallpaper pool.
-  if (readingstatssleep::enabled() && renderReadingStatisticsSleepScreen()) return true;
+  // A fixed root image is not a rotating wallpaper pool.
+  if (!SETTINGS.wallpaperPackId[0] && Storage.exists("/sleep.bmp")) return false;
   std::string selectedPath;
   if (SETTINGS.wallpaperPackId[0] &&
       !WallpaperPackRegistry::getInstance().selectImage(SETTINGS.wallpaperPackId, selectedPath))
@@ -810,13 +809,6 @@ bool SleepActivity::renderTimedSleepScreen() const {
   renderBitmapSleepScreen(bitmap);
   file.close();
   return true;
-}
-
-bool SleepActivity::renderReadingStatisticsSleepScreen() const {
-  for (const auto& path : readingstatssleep::imageCandidates()) {
-    if (Storage.exists(path.c_str()) && renderCustomSleepBmp(path)) return true;
-  }
-  return false;
 }
 
 bool SleepActivity::renderCustomSleepBmp(const std::string& path) const {
@@ -870,10 +862,6 @@ bool SleepActivity::renderCustomSleepBmp(const std::string& path) const {
 }
 
 void SleepActivity::renderCustomSleepScreen() const {
-  if (readingstatssleep::enabled()) {
-    if (renderReadingStatisticsSleepScreen()) return;
-    LOG_ERR("SLP", "Reading Statistics unavailable; falling back to custom wallpapers");
-  }
   std::string selectedPath;
   if (SETTINGS.wallpaperPackId[0] &&
       !WallpaperPackRegistry::getInstance().selectImage(SETTINGS.wallpaperPackId, selectedPath))

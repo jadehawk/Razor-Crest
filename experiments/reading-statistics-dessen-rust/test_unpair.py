@@ -26,7 +26,7 @@ def main(host, app):
             stats.write_bytes(b"local reading statistics")
             history=secret.parent/"reading_sessions.jsonl"
             history.write_bytes(b"local history")
-            prefix = b"uT" if touch else b"upc"
+            prefix = b"upc"
             prompt = run(host, app, root, keys=prefix, touch=touch, portrait=portrait)
             assert "Disconnect this reader?" in prompt
             assert secret.exists() and all(c.exists() for c in caches)
@@ -34,7 +34,7 @@ def main(host, app):
             assert secret.exists() and all(c.exists() for c in caches)
             confirmed = run(host, app, root, keys=prefix + (b"Y" if touch else b"c"), touch=touch, portrait=portrait)
             assert "Disconnecting reader..." in confirmed and "Please wait." in confirmed
-            assert confirmed.index("Disconnecting reader...") < confirmed.index("NOT PAIRED")
+            assert confirmed.index("Disconnecting reader...") < confirmed.index("Server: Not paired")
             assert not secret.exists() and not any(c.exists() for c in caches)
             assert stats.read_bytes() == b"local reading statistics"
             assert history.read_bytes()==b"local history"

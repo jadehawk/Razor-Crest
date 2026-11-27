@@ -5,27 +5,17 @@
   "version": "0.1.14",
   "permissions": {
     "filesystem": {
-      "app_directory": [
-        "read",
-        "write",
-        "delete",
-        "list"
-      ],
-      "read": [
-        "/.crosspoint/reading_sessions.jsonl",
-        "/Books/**"
-      ]
+      "app_directory": ["read", "write", "delete", "list"],
+      "read": ["/.crosspoint/reading_sessions.jsonl", "/Books/**", "/sleep.bmp", "/sleep-backup.bmp"],
+      "write": ["/sleep.bmp", "/sleep-backup.bmp"],
+      "delete": ["/sleep.bmp", "/sleep-backup.bmp"]
     },
     "library": true,
     "credentials": {
-      "shared": [
-        "/.crosspoint/reading-statistics-token.json"
-      ]
+      "shared": ["/.crosspoint/reading-statistics-token.json"]
     },
     "network": {
-      "origins": [
-        "https://sync.techy-notes.com"
-      ],
+      "origins": ["https://sync.techy-notes.com"],
       "handoff": true
     }
   },

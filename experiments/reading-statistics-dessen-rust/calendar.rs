@@ -1,6 +1,16 @@
 // Calendar visual parity with the native Razor-Crest Reading Statistics plugin.
 // The date grid is Monday-first, with a bounded four-level gray activity scale.
 impl Ui {
+    fn calendar_bounds(&self) -> (i32,i32,i32,i32) {
+        let y=13+self.ls+self.lt;
+        let available=(self.content_bottom()-y-13).max(1);
+        // Header, weekdays, six complete rows, legend and clearance.
+        let minimum=self.lb+9*self.ls+52;
+        let insights_min=3*self.lb+self.lt+2*self.ls+46;
+        let h=(available*68/100).max(minimum)
+            .min((available-insights_min).max(minimum)).min(available);
+        (G,y,self.w-2*G,h)
+    }
     #[inline(never)]
     fn calendar_page(&self, st: &Stats, year: u32, month: u32, today: u32, all:bool, data:&[u8],local_days:&[u8]) {
         let x = G;
@@ -14,9 +24,8 @@ impl Ui {
             return;
         }
         let gap = 9;
-        // Match the native dashboard's <=59% month-card budget and leave the
-        // bottom for two separate insights and a consistency progress card.
-        let cal_h = (available * 59 / 100).min(360).min(available - 160 - gap).max(180);
+        // Reserve the full six-week grid before distributing the remaining height.
+        let cal_h = self.calendar_bounds().3;
         let insights_y = y + cal_h + gap;
         let insights_h = (available - cal_h - gap).max(0);
         self.panel(x, y, w, cal_h);
@@ -29,14 +38,17 @@ impl Ui {
         let month_title = label!(s(MONTHS[month as usize - 1]), s(b" "), n(year));
         let heading_h = self.lb;
         // Reserve measured width for navigation on narrow calendar cards.
-        let nav_w = (((dsn_measure_text(b"Next >", SMALL, BOLD) >> 16) as i32) + 12)
+        let nav_w = if self.touch || self.sleep_render {0}else{
+            (((dsn_measure_text(b"Next >", SMALL, BOLD) >> 16) as i32) + 12)
             .max(((dsn_measure_text(b"< Prev", SMALL, BOLD) >> 16) as i32) + 12)
-            .min(w / 3);
+            .min(w / 3)
+        };
         text(x + nav_w + 8, y + 6, (w - 2 * nav_w - 16).max(1), heading_h,
             month_title.get(), BODY, CENTER, BOLD);
-        text(x + 8, y + 7, nav_w, heading_h, b"< Prev", SMALL, LEFT, BOLD);
-        text(x + w - nav_w - 8, y + 7, nav_w, heading_h,
-            b"Next >", SMALL, RIGHT, BOLD);
+        if !self.touch && !self.sleep_render {
+            text(x + 8, y + 7, nav_w, heading_h, b"< Prev", SMALL, LEFT, BOLD);
+            text(x + w - nav_w - 8, y + 7, nav_w, heading_h,b"Next >", SMALL, RIGHT, BOLD);
+        }
         let source: &[u8]=if !data.is_empty(){if calendar_owned(st,data){b"All Devices".as_slice()}else{b"All Devices (server only)"}}else if all{b"This Device (not synced)"}else{b"This Device"};
         text(x+8,y+heading_h+5,w-16,self.ls,source,SMALL,CENTER,0);
         let divider_y = y + heading_h + self.ls + 11;
@@ -51,8 +63,8 @@ impl Ui {
         let cell_w = ((w - 24 - 6 * cell_gap) / 7).max(1);
         let legend_y = y + cal_h - self.ls - 7;
         let grid_top = weekday_top + self.ls + 3;
-        let room = (legend_y - grid_top - 5 - (rows - 1) * cell_gap).max(rows * self.ls);
-        let cell_h = cell_w.min(room / rows).max(self.ls);
+        let room = (legend_y - grid_top - 8 - (rows - 1) * cell_gap).max(rows);
+        let cell_h = cell_w.min(room / rows).max(1);
         let grid_w = 7 * cell_w + 6 * cell_gap;
         let grid_x = x + (w - grid_w) / 2;
         static LABELS: [&[u8]; 7] = [b"Mo", b"Tu", b"We", b"Th", b"Fr", b"Sa", b"Su"];

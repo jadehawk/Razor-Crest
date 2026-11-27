@@ -21,7 +21,6 @@
 #include "network/ProtectedPaths.h"
 #include "network/WifiPowerSaveGuard.h"
 #include "util/PluginLocations.h"
-#include "util/ReadingStatsSleepSource.h"
 
 extern GfxRenderer renderer;
 
@@ -34,7 +33,7 @@ void invalidateStatsOverviewCache() {
   // cached totals or web login codes from a previous account.
   for (const char* root : PluginLocations::ROOTS) {
     const std::string directory = std::string(root) + "/reading-statistics";
-    for (const char* file : {"/server-overview.json", "/web-login.json", readingstatssleep::kServerImage}) {
+    for (const char* file : {"/server-overview.json", "/web-login.json"}) {
       const std::string cache = directory + file;
       Storage.remove(cache.c_str());
       Storage.remove((cache + ".bak").c_str());

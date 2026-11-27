@@ -27,13 +27,19 @@ def build_host(sdk, out):
     marker = "  using DesktopServices::DesktopServices;"
     assert source.count(marker) == 1
     source = source.replace(marker, marker + """
+  int validateBookOpen(const char* path) override { return std::string_view(path)=="/books/removed.epub"?DSN_ERR_UNAVAILABLE:0; }
   int bookCover(const char* path, uint32_t height, uint8_t* out, uint32_t cap) override {
-    if (std::string_view(path) != "/books/dune.epub" || height < 24 || cap < 52) return 0;
-    out[0]=16; out[1]=0; out[2]=24; out[3]=0;
-    for (unsigned i=4;i<52;++i) out[i]=0x55;
-    return 52;
+    if (std::string_view(path) != "/books/dune.epub" || height < 24) return 0;
+    const unsigned width=height*2/3, bytes=4+((width+7)/8)*height;
+    if (cap<bytes) return 0;
+    out[0]=width; out[1]=width>>8; out[2]=height; out[3]=height>>8;
+    for (unsigned i=4;i<bytes;++i) out[i]=0x55;
+    return bytes;
   }
 """)
+    source = source.replace("input.touchY = (c == 'L' || c == 'R') ? 380 : 150;",
+                            "input.touchY = (c == 'L' || c == 'R') ? screen.height-30 : 150;")
+    source = source.replace("c == 'm' ? 85", "c == 'm' ? 13+2*target.lineHeight(4)+target.lineHeight(5)+5+target.lineHeight(4)/2")
     src = out.parent / "fixture.cpp"
     src.write_text(source)
     subprocess.run(["c++","-std=c++17","-O2", "-I"+str(sdk/"vm"),
@@ -70,6 +76,8 @@ def main(sdk,app):
         (sd/"test-native-rich-books.bin").write_bytes(
             record("Dungeon Crawler Carl Book 1","/books/dune.epub","#1 - Dungeon Crawler Carl",11520,2200)+
             record("Standalone Book","/books/removed.epub","",3600,2200))
+        offsets=sd/"test-native-offsets.bin"
+        offsets.write_bytes(bytes.fromhex("aa"*16)+struct.pack("<I",0)+bytes.fromhex("bb"*16)+struct.pack("<I",30))
         os.environ["DESSEN_TEST_NATIVE_STATS"]="1"
         os.environ["DESSEN_TEST_HISTORY_UPLOAD"]="1"
         net=root/"network"
@@ -81,10 +89,40 @@ def main(sdk,app):
         trace=run(str(host),app,root,net,keys=b"ddddcdb",portrait=True,installed=True)
         assert (folder/"server-calendar.bin").read_bytes()[:2254]==payload
         assert "All Devices" in trace and "This Device" in trace
+        assert all("Reading Calendar" in f for f in trace.split("refresh") if "Reading Consistency" in f)
         assert "35m" in trace and "20m" in trace, trace[-8000:]
         assert "Dungeon Crawler Carl Book 1" in trace and "#1 - Dungeon Crawler Carl" in trace
         assert "Standalone Book" in trace and "Time: 03h 12m" in trace and "Time: 01h 00m" in trace
         assert "37%" in trace and "22%" in trace and "bitmap" in trace
+        for keys,expected,launch in (
+            (b"dddddc","Delete from List",False),
+            (b"dddddcb","Hide Book",False),
+            (b"dddddccc","Open Book?",True),
+            (b"dddddnccc","Book unavailable",False)):
+            opened=run(str(host),app,root,keys=keys,portrait=True,installed=True)
+            assert expected in opened,opened[-3000:]
+            assert ("launch reader /books/dune.epub" in opened)==launch,opened[-3000:]
+        def frame(trace):
+            return trace.split("refresh")[-2]
+        # Temporary deletion survives restart, then reappears on a new session.
+        run(str(host),app,root,keys=b"dddddcncb",portrait=True,installed=True)
+        listed=frame(run(str(host),app,root,keys=b"dddddb",portrait=True,installed=True))
+        assert "Standalone Book" in listed and "Dungeon Crawler Carl Book 1" not in listed,listed
+        assert (folder/"book-list.bin").read_bytes()[22]==1
+        offsets.write_bytes(bytes.fromhex("aa"*16)+struct.pack("<I",8)+bytes.fromhex("bb"*16)+struct.pack("<I",30))
+        listed=frame(run(str(host),app,root,keys=b"dddddb",portrait=True,installed=True))
+        assert "Dungeon Crawler Carl Book 1" in listed and "Standalone Book" in listed,listed
+        # Persistent hide survives changed session offset. Restore via Settings.
+        run(str(host),app,root,keys=b"dddddcnncb",portrait=True,installed=True)
+        offsets.write_bytes(bytes.fromhex("aa"*16)+struct.pack("<I",12)+bytes.fromhex("bb"*16)+struct.pack("<I",30))
+        listed=frame(run(str(host),app,root,keys=b"dddddb",portrait=True,installed=True))
+        assert "Dungeon Crawler Carl Book 1" not in listed and "Standalone Book" in listed,listed
+        assert (folder/"book-list.bin").read_bytes()[22]==2
+        hidden=run(str(host),app,root,keys=b"unnnnc",portrait=True,installed=True)
+        assert "Hidden Books" in hidden and "Dungeon Crawler Carl Book 1" in frame(hidden),hidden[-2000:]
+        restored=run(str(host),app,root,keys=b"unnnncccb",portrait=True,installed=True)
+        assert "Restore Book" in restored and (folder/"book-list.bin").read_bytes()==b"",restored[-2000:]
+        assert "Dungeon Crawler Carl Book 1" in frame(run(str(host),app,root,keys=b"dddddb",portrait=True,installed=True))
         # Read both views offline after reopening. No network fixture is supplied.
         trace=run(str(host),app,root,keys=b"ddddcb",portrait=True,installed=True)
         assert "35m" in trace and "20m" in trace
@@ -92,6 +130,39 @@ def main(sdk,app):
         trace=run(str(host),app,root,keys=b"ddddpnb",portrait=True,installed=True)
         last_month=date.today().replace(day=1)-timedelta(days=1)
         assert last_month.strftime("%B %Y") in trace and "Prev Month" in trace and "Next Month" in trace
+        # Exercise a six-row month on both X3-like metrics and portrait touch.
+        month=date.today().replace(day=1)
+        for months_back in range(12):
+            next_month=(month.replace(day=28)+timedelta(days=4)).replace(day=1)
+            if month.weekday()+(next_month-month).days>35:
+                break
+            month=(month-timedelta(days=1)).replace(day=1)
+        else:
+            raise AssertionError("No six-row month in previous year")
+        for x3 in (False,True):
+            if x3: os.environ["DESSEN_TEST_X3"]="1"
+            try:
+                trace=run(str(host),app,root,keys=b"dddd"+b"p"*months_back+b"b",
+                          portrait=True,installed=True)
+                frame=trace.split("refresh")[-2]
+                assert month.strftime("%B %Y") in frame
+                day=(next_month-month).days
+                # The last date cell's outline must end before the legend.
+                match=re.search(r"stroke (\d+),(\d+) (\d+)x(\d+) w[12]\ntext \d+,\d+ "+str(day)+r"\n",frame)
+                legend=re.search(r"text \d+,(\d+) None\n",frame)
+                assert match and legend and int(match[2])+int(match[4])+5<=int(legend[1]),frame
+                trace=run(str(host),app,root,keys=b"dddddb",portrait=True,installed=True)
+                frame=trace.split("refresh")[-2]
+                assert "Books • Local" in frame and "Standalone Book" in frame
+                cover=re.search(r"bitmap (\d+),(\d+) (\d+)x(\d+) src",frame)
+                assert cover and int(cover[4])>=76,frame
+                assert int(cover[3])*3<=int(cover[4])*2+2
+            finally:
+                os.environ.pop("DESSEN_TEST_X3",None)
+        touch=run(str(host),app,root,keys=b"ddddlrmrb",touch=True,portrait=True,installed=True)
+        assert last_month.strftime("%B %Y") in touch and date.today().strftime("%B %Y") in touch
+        assert "< Prev" not in touch and "Next >" not in touch
+        assert "This Device" in touch and "Books • Local" in touch,touch[-5000:]
         # A reader with no RTC and no dated sessions still has a server calendar.
         undated=bytearray(summary)
         struct.pack_into("<II",undated,8,0,0)

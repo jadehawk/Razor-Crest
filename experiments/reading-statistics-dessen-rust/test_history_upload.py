@@ -59,7 +59,7 @@ def main(host, app):
         fixture(net,"overview",overview(7200,1795700100))
         # Two side-previous presses enter Settings; Confirm immediately
         # selects upload. Front Previous/Next traverse displayed rows.
-        keys=b"uuc"
+        keys=b"uc"
         try:
             prompt=run(host,app,root,net,keys=keys,portrait=True,installed=True)
             assert "Upload this reader's history?" in prompt, prompt[-3000:]
@@ -69,26 +69,27 @@ def main(host, app):
             assert "history-request " not in cancelled and not cursor.exists() and cache.read_bytes()==before
             # Up goes to Auto-fetch when the sleep feature is absent;
             # Down goes to Refresh only, and wrapping follows visual order.
-            auto=run(host,app,root,net,keys=b"uupc",portrait=True,installed=True)
+            auto=run(host,app,root,net,keys=b"upc",portrait=True,installed=True)
             assert "Enable Auto Sync?" in auto and "history-request " not in auto
-            refresh=run(host,app,root,net,keys=b"uunc",portrait=True,installed=True)
+            refresh=run(host,app,root,net,keys=b"unc",portrait=True,installed=True)
             assert "Sync with server?" in refresh and "history-request " not in refresh
-            wrapped=run(host,app,root,net,keys=b"uunnc",portrait=True,installed=True)
+            wrapped=run(host,app,root,net,keys=b"unnnnc",portrait=True,installed=True)
             assert "Enable Auto Sync?" in wrapped
-            returned=run(host,app,root,net,keys=b"uunduc",portrait=True,installed=True)
+            returned=run(host,app,root,net,keys=b"unduc",portrait=True,installed=True)
             assert "Upload this reader's history?" in returned
             # With the sleep option present, both navigation directions
             # can select it and no visible row is skipped.
-            sleep=folder/"sleep-frame.capture"
-            sleep.write_bytes(b"\1")
-            selected=run(host,app,root,net,keys=b"uupc",portrait=True,installed=True)
-            assert (folder/"stats-on-sleep").read_bytes()==b"\1"
-            assert "history-request " not in selected
-            (folder/"stats-on-sleep").unlink()
-            sleep.write_bytes(b"\1")
-            auto=run(host,app,root,net,keys=b"uuppc",portrait=True,installed=True)
-            assert "Enable Auto Sync?" in auto
-            sleep.unlink()
+            os.environ["DESSEN_TEST_SCREENSHOT"]="1"
+            try:
+                selected=run(host,app,root,net,keys=b"upcnc",portrait=True,installed=True)
+                assert (folder/"sleep-page").read_bytes()==b"\1"
+                assert "Choose Sleep Screen" in selected and "history-request " not in selected
+                auto=run(host,app,root,net,keys=b"uppc",portrait=True,installed=True)
+                assert "Enable Auto Sync?" in auto
+                run(host,app,root,net,keys=b"upcpc",portrait=True,installed=True)
+                assert (folder/"sleep-page").read_bytes()==b"\0"
+            finally:
+                os.environ.pop("DESSEN_TEST_SCREENSHOT",None)
             assert not cursor.exists() and cache.read_bytes()==before
             ack(0,[None,DOC],target+1)
             trace=run(host,app,root,net,keys=keys+b"cb",portrait=True,installed=True)
@@ -130,7 +131,7 @@ def main(host, app):
             # The desktop HTTP fixture keeps a separate status sidecar.
             (net/"sync.techy-notes.com"/"api"/"device"/"overview.status").unlink()
             fixture(net,"overview",overview(18000,1795700400))
-            only=run(host,app,root,net,keys=b"uunccb",portrait=True,installed=True)
+            only=run(host,app,root,net,keys=b"unccb",portrait=True,installed=True)
             assert "history-request " not in only and cursor.read_bytes()==saved_cursor
             assert "Server Statistics" in only.split("\nrefresh\n")[-2], only[-1800:]
             assert json.loads(cache.read_text())["total_seconds"]==18000
@@ -223,6 +224,17 @@ def main(host, app):
             assert struct.unpack_from("<Q",cursor.read_bytes(),28)[0]==target
             assert json.loads(cache.read_text())["total_seconds"]==25200
             assert "Server Statistics" in pages.split("\nrefresh\n")[-2], pages[-1800:]
+            assert (sd/"reading_sessions.jsonl").read_bytes()==log
+            # X4Pro reproduction: valid zero-time migrated entries, no sessions,
+            # no owner marker. Refresh must not bind ownership or upload.
+            cursor.unlink()
+            (sd/"test-native-summary.bin").write_bytes(struct.pack("<8I20Q",1,0,DAY,0,0,0,2,0,target,0,*([0]*18)))
+            (sd/"test-native-source.bin").write_bytes(struct.pack("<2I16s2Q",1,0,bytes(16),target,digest(log)))
+            fixture(net,"overview",overview(30000,1795700400))
+            empty=run(host,app,root,net,keys=keys+b"cb",portrait=True,installed=True)
+            assert "history-request " not in empty and not cursor.exists(),empty[-2500:]
+            assert "Server Statistics" in empty.split("\nrefresh\n")[-2],empty[-2500:]
+            assert json.loads(cache.read_text())["total_seconds"]==30000
             assert (sd/"reading_sessions.jsonl").read_bytes()==log
         finally:
             os.environ.pop("DESSEN_TEST_NATIVE_STATS",None)

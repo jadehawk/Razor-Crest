@@ -113,7 +113,7 @@ impl Pairing {
     }
 
     #[inline(never)]
-    fn load_web_login(&mut self) {
+    fn load_web_login(&mut self, payload: &mut [u8]) {
         if self.phase != PairPhase::Paired { return; }
         let mut path = [0u8; 192];
         let suffix = b"/web-login.json";
@@ -121,8 +121,7 @@ impl Pairing {
         if n <= 0 || n as usize + suffix.len() > path.len() { return; }
         let n = n as usize;
         path[n..n + suffix.len()].copy_from_slice(suffix);
-        let mut payload = [0u8; 384];
-        let len = dsn_fs_read(&path[..n + suffix.len()], &mut payload);
+        let len = dsn_fs_read(&path[..n + suffix.len()], payload);
         if len > 0 && len as usize <= payload.len() {
             self.parse_web_login(&payload[..len as usize]);
         }
@@ -147,9 +146,8 @@ impl Pairing {
     }
 
     #[inline(never)]
-    fn request_web_login(&mut self) {
-        let mut response = [0u8; 512];
-        match self.authorized(LOGIN_HEAD, &mut response, true) {
+    fn request_web_login(&mut self, response: &mut [u8]) {
+        match self.authorized(LOGIN_HEAD, response, true) {
             Ok(n) => {
                 if self.parse_web_login(&response[..n]) {
                     let mut path = [0u8; 192];
@@ -174,9 +172,8 @@ impl Pairing {
     }
 
     #[inline(never)]
-    fn begin(&mut self) {
-        let mut response = [0u8; 768];
-        match Self::post(CODE_HEAD, b"", &mut response) {
+    fn begin(&mut self, response: &mut [u8]) {
+        match Self::post(CODE_HEAD, b"", response) {
             Ok(n) => {
                 let data = &response[..n];
                 if let (Some(device), Some(user)) =
@@ -201,7 +198,7 @@ impl Pairing {
     }
 
     #[inline(never)]
-    fn poll(&mut self) {
+    fn poll(&mut self, resp: &mut [u8]) {
         if self.phase != PairPhase::Code { return; }
         if dsn_time().wrapping_sub(self.started) >= 600 {
             self.phase = PairPhase::Expired;
@@ -216,8 +213,7 @@ impl Pairing {
         let suffix = b"\"}";
         let end = prefix.len()+64;
         body[end..end+suffix.len()].copy_from_slice(suffix);
-        let mut resp = [0u8; 512];
-        match Self::post(TOKEN_HEAD, &body[..end+suffix.len()], &mut resp) {
+        match Self::post(TOKEN_HEAD, &body[..end+suffix.len()], resp) {
             Ok(n) => {
                 if let Some(token) = json_string(&resp[..n], b"access_token") {
                     if valid_token(token) {
@@ -267,20 +263,7 @@ impl Pairing {
             self.message = b"Could not forget pairing. Retry.";
             return false;
         }
-        let mut path = [0u8; 192];
-        let n = dsn_fs_app_dir(&mut path);
-        if n > 0 {
-            let end = n as usize;
-            for suffix in [b"/server-overview.json".as_slice(), b"/web-login.json",
-                           b"/server-overview.json.bak", b"/web-login.json.bak",
-                           b"/server-overview.json.part", b"/web-login.json.part",
-                           b"/history-upload-v1", b"/history-upload-v1.bak", b"/history-upload-v1.part", CALENDAR_CACHE_FILE, b"/server-calendar.bin.bak", b"/server-calendar.bin.part"] {
-                if end + suffix.len() <= path.len() {
-                    path[end..end + suffix.len()].copy_from_slice(suffix);
-                    let _ = dsn_fs_delete(&path[..end + suffix.len()]);
-                }
-            }
-        }
+        clear_account_cache();
         *self = Self::new();
         true
     }
@@ -296,12 +279,12 @@ impl Pairing {
         };
     }
 
-    fn activate(&mut self) {
+    fn activate(&mut self, scratch: &mut [u8]) {
         self.pending = false;
         match self.phase {
-            PairPhase::Code => self.poll(),
-            PairPhase::Paired => self.request_web_login(), // login only; never overwrite pairing
-            _ => self.begin(),
+            PairPhase::Code => self.poll(scratch),
+            PairPhase::Paired => self.request_web_login(scratch), // login only; never overwrite pairing
+            _ => self.begin(scratch),
         }
     }
 }
@@ -314,37 +297,15 @@ impl Ui {
         ((self.w - width) / 2, self.content_bottom() - height - 28, width, height)
     }
 
-    fn sync_action_bounds(&self, action: u8, label: &[u8]) -> (i32, i32, i32, i32) {
-        let (_, y, _, h) = self.sync_button_bounds();
-        let width = ((dsn_measure_text(label, BODY, BOLD) >> 16) as i32 + 32)
-            .max(if self.touch { 100 } else { 72 }).min(self.w - 2 * G - 20);
-        let x = (self.w - width) / 2;
-        if self.touch {
-            let height = 62;
-            let bottom = self.content_bottom() - 18;
-            let rows_below = i32::from(action == 2);
-            return (x, bottom - height - rows_below * (height + 20), width, height);
-        }
-        (x, y - i32::from(2 - action) * (h + 8), width, h)
-    }
-
-    fn sync_action_label(pairing: &Pairing, action: u8) -> &'static [u8] {
-        match action {
-            0 => if pairing.web_login_available() { b"New Web PIN" } else { b"Open Web Stats" },
-            1 => b"Refresh Statistics",
-            _ => b"Disconnect Reader",
-        }
-    }
-
     #[inline(never)]
-    fn network_dialog(&self, page: i32, title: &[u8], message: &[u8], generating: bool) {
+    fn network_dialog(&self, page: i32, title: &[u8], message: &[u8], generating: bool, accept: &[u8]) {
         dsn_clear();
         self.header(page);
         let top = 13 + self.ls + self.lt;
         let width = self.w - 2 * G;
         let height = self.content_bottom() - top - 13;
         self.panel(G, top, width, height);
-        let (yes, no, y, yes_w, no_w, h) = self.overall_sync_confirmation_buttons(b"Continue");
+        let (yes, no, y, yes_w, no_w, h) = self.overall_sync_confirmation_buttons(accept);
         // Reserve the action row before laying out text. On physical-key
         // devices the native footer supplies Confirm/Cancel instead.
         let bottom = if generating || !self.touch { top + height - 12 } else { y - 16 };
@@ -356,7 +317,7 @@ impl Ui {
         dsn_text_box(G + 10, text_top, width - 20, title_h, title, TITLE, CENTER, 2, BOLD);
         dsn_text_box(G + 10, body_top, width - 20, body_h.min((bottom - body_top).max(0)), message, SMALL, CENTER, 3, 0);
         if generating || !self.touch { return; }
-        for (x, w, label) in [(yes, yes_w, b"Continue".as_slice()), (no, no_w, b"Cancel".as_slice())] {
+        for (x, w, label) in [(yes, yes_w, accept), (no, no_w, b"Cancel".as_slice())] {
             dsn_stroke(x, y, w, h, BLACK, 2, 7, 15);
             text(x + 4, y + (h - self.lb) / 2, w - 8, self.lb, label, BODY, CENTER, BOLD);
         }
@@ -364,33 +325,13 @@ impl Ui {
 
     #[inline(never)]
     fn sync_unpair_confirmation(&self, disconnecting: bool) {
-        dsn_clear();
-        self.header(6);
-        let x = G;
-        let w = self.w - 2 * G;
-        let y = 13 + self.ls + self.lt;
-        let h = (self.content_bottom() - y - 13).max(1);
-        self.panel(x, y, w, h);
-        if disconnecting {
-            let mid = y + h / 2;
-            text(x + 12, mid - self.lt - 12, w - 24, self.lt, b"Disconnecting reader...", TITLE, CENTER, BOLD);
-            text(x + 12, mid + 8, w - 24, self.lb, b"Please wait.", BODY, CENTER, 0);
-            return;
-        }
-        text(x + 12, y + 30, w - 24, self.lt, b"Disconnect this reader?", TITLE, CENTER, BOLD);
-        text(x + 12, y + self.lt + 60, w - 24, self.lb,
-             b"Saved pairing and server totals", SMALL, CENTER, 0);
-        text(x + 12, y + self.lt + self.lb + 80, w - 24, self.lb,
-             b"will be cleared. Device stats stay.", SMALL, CENTER, 0);
-        let (yes_x, no_x, by, yes_w, no_w, bh) = self.overall_sync_confirmation_buttons(b"Disconnect");
-        dsn_stroke(yes_x, by, yes_w, bh, BLACK, 2, 7, 15);
-        dsn_stroke(no_x, by, no_w, bh, BLACK, 1, 7, 15);
-        text(yes_x + 4, by + (bh - self.lb) / 2, yes_w - 8, self.lb, b"Disconnect", BODY, CENTER, BOLD);
-        text(no_x + 4, by + (bh - self.lb) / 2, no_w - 8, self.lb, b"Cancel", BODY, CENTER, 0);
+        self.network_dialog(7,if disconnecting{b"Disconnecting reader..."}else{b"Disconnect this reader?"},
+            if disconnecting{b"Please wait."}else{b"Saved pairing and server totals will be cleared. Device stats stay."},
+            disconnecting,b"Disconnect");
     }
 
     #[inline(never)]
-    fn sync_page(&self, pairing: &Pairing, focus: u8, disconnect_failed: bool) {
+    fn sync_page(&self, pairing: &Pairing) {
         dsn_clear();
         self.header(6);
         let x = G;
@@ -399,46 +340,20 @@ impl Ui {
         let h = (self.content_bottom() - y - 13).max(1);
         self.panel(x, y, w, h);
         if pairing.phase == PairPhase::Paired {
-            let tx = x + 12;
-            let tw = w - 24;
-            text(tx, y + 18, tw, self.lt, b"Techy-Notes Sync", TITLE, CENTER, BOLD);
-            if pairing.phase == PairPhase::Paired {
-                let actions_top = self.sync_action_bounds(if self.touch { 2 } else { 0 }, b"").1;
-                let url_y = y + self.lt + 25 + self.lb + 6;
-                let qr_y = url_y + self.lb + 14;
-                let qr_size = (actions_top - qr_y - 2 * self.lb - 12).clamp(0, 200);
-                text(tx, y + self.lt + 25, tw, self.lb, b"READER PAIRED", BODY, CENTER, BOLD);
-                text(tx, url_y, tw, self.lb, if pairing.web_login_available() { b"sync.techy-notes.com/signin" } else { b"sync.techy-notes.com" }, SMALL, CENTER, 0);
-                if disconnect_failed {
-                    text(tx, qr_y, tw, self.lb, b"Could not disconnect. Check Wi-Fi and retry.", SMALL, CENTER, 0);
-                } else if pairing.web_login_available() {
-                    let drawn = qr_size >= 90 && draw_pairing_qr(&pairing.web_code, true, (self.w - qr_size) / 2, qr_y, qr_size);
-                    let qr_size = if drawn { qr_size } else { 0 };
-                    text(tx, qr_y + qr_size, tw, self.lb, &pairing.web_code, BODY, CENTER, BOLD);
-                    text(tx, qr_y + qr_size + self.lb, tw, self.lb,
-                         b"Single use, up to 24 hours", SMALL, CENTER, 0);
-                }
-                if !disconnect_failed && !pairing.web_login_available() {
-                    text(tx, qr_y, tw, self.lb, pairing.message, SMALL, CENTER, 0);
-                }
-                for action in 0..3 {
-                    if self.touch && action == 1 { continue; }
-                    let label = Self::sync_action_label(pairing, action);
-                    let (bx, by, bw, bh) = self.sync_action_bounds(action, label);
-                    let selected = !self.touch && focus == action;
-                    dsn_stroke(bx, by, bw, bh, BLACK, if selected { 2 } else { 1 }, 8, 15);
-                    text(bx + 8, by + (bh - self.lb) / 2, bw - 16, self.lb,
-                         label, BODY, CENTER, if selected { BOLD } else { 0 });
-                }
-            } else {
-                text(tx, y + self.lt + 38, tw, self.lb, b"NOT PAIRED", BODY, CENTER, BOLD);
-                text(tx, y + self.lt + self.lb + 59, tw, self.lb, b"Connect using this Dessen app", SMALL, CENTER, 0);
-                if self.touch {
-                    let (bx, by, bw, bh) = self.sync_button_bounds();
-                    dsn_stroke(bx, by, bw, bh, BLACK, 2, 8, 15);
-                    text(bx + 8, by + (bh - self.lb) / 2, bw - 16, self.lb, b"Pair Reader", BODY, CENTER, BOLD);
-                }
-            }
+            let tx=x+12;let tw=w-24;
+            text(tx,y+18,tw,self.lt,b"READER PAIRED",TITLE,CENTER,BOLD);
+            let qy=y+self.lt+65;
+            let size=(self.sync_button_bounds().1-qy-2*self.ls-12).min(w-32).min(260);
+            text(tx,y+self.lt+32,tw,self.ls,b"sync.techy-notes.com/signin",SMALL,CENTER,0);
+            if pairing.web_login_available(){
+                let drawn=size>=90&&draw_pairing_qr(&pairing.web_code,true,(self.w-size)/2,qy,size);
+                let next=qy+if drawn{size}else{0};
+                text(tx,next,tw,self.lt,&pairing.web_code,TITLE,CENTER,BOLD);
+                text(tx,next+self.lt,tw,self.ls,b"Single use, up to 24 hours",SMALL,CENTER,0);
+            }else{text(tx,qy,tw,self.ls,pairing.message,SMALL,CENTER,0);}
+            let (bx,by,bw,bh)=self.sync_button_bounds();
+            dsn_stroke(bx,by,bw,bh,BLACK,2,7,15);
+            text(bx+4,by+(bh-self.lb)/2,bw-8,self.lb,if pairing.web_login_available(){b"New Web PIN"}else{b"Open Web Stats"},BODY,CENTER,BOLD);
             return;
         }
         let tx = x + 12;
@@ -501,4 +416,22 @@ impl Ui {
                  label, BODY, CENTER, BOLD);
         }
     }
+}
+
+#[inline(never)]
+fn clear_account_cache(){
+        let mut path = [0u8; 192];
+        let n = dsn_fs_app_dir(&mut path);
+        if n > 0 {
+            let end = n as usize;
+            for suffix in [b"/server-overview.json".as_slice(), b"/web-login.json",
+                           b"/server-overview.json.bak", b"/web-login.json.bak",
+                           b"/server-overview.json.part", b"/web-login.json.part",
+                           b"/history-upload-v1", b"/history-upload-v1.bak", b"/history-upload-v1.part", CALENDAR_CACHE_FILE, b"/server-calendar.bin.bak", b"/server-calendar.bin.part"] {
+                if end + suffix.len() <= path.len() {
+                    path[end..end + suffix.len()].copy_from_slice(suffix);
+                    let _ = dsn_fs_delete(&path[..end + suffix.len()]);
+                }
+            }
+        }
 }

@@ -31,7 +31,7 @@ macro_rules! label {
     }};
 }
 
-include!("../../dessen/sdk/dessen.rs");
+include!("build/dessen_compact.rs");
 include!("dashboard.rs"); // Device Statistics + Current Book.
 include!("preview.rs"); // Local preview of the future server-wide Overall Statistics.
 include!("bookhero.rs"); // Shared Current Book and Continue Reading hero card.
@@ -44,8 +44,8 @@ include!("session_history.rs");
 include!("native_history.rs");
 include!("history_upload.rs");
 include!("server.rs"); // Account-scoped server totals; local offline fallback.
-fn next_page(page: i32) -> i32 { match page { 5 => 7, 7 => 6, 6 => 0, _ => page + 1 } }
-fn prev_page(page: i32) -> i32 { match page { 0 => 6, 6 => 7, 7 => 5, _ => page - 1 } }
+fn next_page(page: i32) -> i32 { match page { 5 => 7, 7 => 0, 6 => 7, _ => page + 1 } }
+fn prev_page(page: i32) -> i32 { match page { 0 => 7, 6 => 7, 7 => 5, _ => page - 1 } }
 
 // sdk/dessen_abi.h
 const BLACK: i32 = 1;
@@ -291,19 +291,11 @@ struct Ui {
     buttons: bool,
     native_hint_height: i32,
     rich_books: bool,
+    sleep_render: bool,
 }
 
-#[inline(never)]
-fn sleep_capture(server_page: Option<bool>) -> bool {
-    let mut path = [0u8; 192];
-    let n = StatsSettings::path(&mut path, b"/sleep-frame.capture");
-    if n == 0 { return false; }
-    if let Some(server) = server_page {
-        return dsn_fs_write(&path[..n], &[u8::from(server)]) == 0;
-    }
-    let mut capability = [0u8; 1];
-    dsn_fs_read(&path[..n], &mut capability) == 1 && capability[0] == 1
-}
+include!("sleep.rs");
+include!("book_filters.rs");
 
 #[no_mangle]
 pub extern "C" fn main() -> i32 {
@@ -376,7 +368,7 @@ pub extern "C" fn main() -> i32 {
     let device_n = dsn_device(&mut device);
     let touch = device_n >= 20 && device[18] != 0;
     let buttons = device_n >= 20 && device[19] != 0;
-    let ui = Ui {
+    let mut ui = Ui {
         w: (scr >> 16) as i32,
         h: (scr & 0xffff) as i32,
         ls: dsn_line_height(SMALL),
@@ -386,6 +378,7 @@ pub extern "C" fn main() -> i32 {
         buttons,
         native_hint_height: (u16::from_le_bytes([device[22], device[23]]) as i32).min((scr & 0xffff) as i32),
         rich_books: dsn_reading_stats_read(9, 0, &mut []) == 1,
+        sleep_render:false,
     };
     // The cover buffer is shared by the two mutually exclusive hero pages.
     let mut current_cover_loaded = false;
@@ -400,24 +393,34 @@ pub extern "C" fn main() -> i32 {
     carousel.load(&mut home.rec);
     let mut carousel_record=true;
     let mut pairing = Pairing::new();
-    checkpoint(202);
-    pairing.load_web_login();
-    checkpoint(203);
+    pairing.load_web_login(&mut home.cover);
     let mut server = ServerOverall::new();
     if pairing.phase == PairPhase::Paired { server.load_cached(&mut home.cover); }
     let mut page = if pairing.phase == PairPhase::Paired { 0 } else { 1 };
-    let mut disconnect_failed = false;
-    checkpoint(204);
     let mut settings = StatsSettings::load();
     let upload_supported = history_supported();
     let mut confirm_history_upload = false;
     let mut uploading_history = false;
     let mut history_message: &[u8] = b"";
     let mut history_refresh = None;
-    checkpoint(205);
 
-    let sleep_capture_supported = sleep_capture(None);
-    let mut capture_sleep = sleep_capture_supported && settings.stats_on_sleep;
+    let sleep_capture_supported = dsn_screenshot(&[]) == 1;
+    let mut choose_sleep=false;
+    if settings.sleep_page>5 && sleep_capture_supported {
+        if sleep_publish(false,0,&mut home.cover){settings.save_sleep(0);}
+        else{settings.save_failed=true;}
+    }
+    let mut sleep_focus=settings.sleep_page.min(5);
+    let mut capture_sleep = sleep_capture_supported && (1..=5).contains(&settings.sleep_page);
+    if sleep_capture_supported && sleep_account_changed(if pairing.phase==PairPhase::Paired{hist_hash(&pairing.access_token)}else{0}){
+        // Root wallpaper has no app-aware firmware routing. Reconcile on launch
+        // before using a potentially stale account snapshot.
+        let restored=sleep_publish(false,0,&mut home.cover);
+        server=ServerOverall::new();
+        pairing.web_valid=false;
+        clear_account_cache();
+        if !restored{settings.save_failed=true;capture_sleep=false;}
+    }
 
     let mut confirm_month_sync = false;
     let mut confirm_web_login = false;
@@ -431,10 +434,15 @@ pub extern "C" fn main() -> i32 {
     let mut syncing_month = settings.auto_fetch &&
         pairing.phase == PairPhase::Paired && server.stale(dsn_time());
     let mut show_server_after_refresh = false;
-    let mut sync_focus = 0u8;
     let mut settings_focus = 0u8;
     let mut previous_page = -1;
     let mut book_offset = 0u32;
+    let mut book_selected=0u32;
+    let mut book_confirm=false;
+    let mut book_action=0u8;
+    let mut book_filter=BookFilter::new();
+    let manage_books=ui.rich_books && st.native_stats;
+    let mut book_error=false;
     let mut calendar_all = true;
     let mut calendar_offset = 0u32; // months before the current month
     loop {
@@ -451,36 +459,45 @@ pub extern "C" fn main() -> i32 {
         if page == 7 && previous_page != 7 {
             settings_focus = settings_default(paired, upload_supported);
         }
+        if page!=5 {if previous_page==5 && manage_books {carousel.select(carousel.selected,&mut home.rec);carousel_record=true;} book_filter.ready=false;}
         previous_page = page;
-        if capture_sleep && !syncing_month && !uploading_history && !confirm_history_upload {
-            let use_server = paired && server.available;
-            if use_server {
-                current_cover_loaded = false;
-                if !carousel_record {carousel.select(carousel.selected,&mut home.rec);carousel_record=true;}
-                ui.overall_preview(carousel, &home.rec, &server, true, false, &mut home.cover);
-            } else {
-                ui.dashboard_render(&st, &home, &detail, 0, month_day, have_clock);
-            }
-            sleep_capture(Some(use_server));
-            capture_sleep = false;
+        let capture = !book_error && !book_confirm && !confirm_disconnect && !confirm_pairing && !confirm_web_login && !confirm_auto_sync && !confirm_month_sync && capture_sleep && !syncing_month && !uploading_history && !confirm_history_upload &&
+            !choose_sleep;
+        let restore_page=page;
+        let restore_month=calendar_offset;
+        if capture {
+            ui.sleep_render=true;
+            page=i32::from(settings.sleep_page.saturating_sub(1));
+            if page==0 && (!paired || !server.available){page=1;}
+            calendar_offset=0;
+            current_cover_loaded=false;
         }
-        if disconnecting || (page == 6 && confirm_disconnect) {
+        if book_error {
+            ui.network_dialog(5,b"Book unavailable",b"Cannot open book or save book list.",false,b"Continue");
+        } else if book_confirm && book_action!=4 {
+            ui.book_actions(&home.cover,book_action,book_filter.hidden);
+        } else if book_confirm {
+            let n=home.cover[10].min(80) as usize;
+            ui.network_dialog(5,b"Open Book?",&home.cover[12..12+n],false,b"Continue");
+        } else if choose_sleep {
+            ui.sleep_picker(sleep_focus,paired);
+        } else if disconnecting || confirm_disconnect {
             ui.sync_unpair_confirmation(disconnecting);
         } else if confirm_history_upload || uploading_history {
             ui.network_dialog(7, if uploading_history {b"Uploading reading history..."} else {b"Upload this reader's history?"},
-                if uploading_history {b"Uploading and refreshing server statistics."} else {b"Upload only this reader's own history, never copied history. Server statistics will also refresh."}, uploading_history);
+                if uploading_history {b"Uploading and refreshing server statistics."} else {b"Upload only this reader's own history, never copied history. Server statistics will also refresh."}, uploading_history,b"Continue");
         } else if confirm_pairing || generating_pairing {
             ui.network_dialog(6, if generating_pairing { b"Generating pairing code..." } else { b"Generate a pairing code?" },
-                if generating_pairing { b"Connecting to Wi-Fi. Please wait." } else { b"The reader will connect to Wi-Fi." }, generating_pairing);
+                if generating_pairing { b"Connecting to Wi-Fi. Please wait." } else { b"The reader will connect to Wi-Fi." }, generating_pairing,b"Continue");
         } else if confirm_auto_sync {
-            ui.network_dialog(7, b"Enable Auto Sync?", b"The reader will use Wi-Fi when server statistics need updating.", false);
+            ui.network_dialog(7, b"Enable Auto Sync?", b"The reader will use Wi-Fi when server statistics need updating.", false,b"Continue");
         } else if confirm_web_login || generating_web_login {
             ui.network_dialog(6, if generating_web_login { b"Generating web login..." } else { b"Generate a web login?" },
-                if generating_web_login { b"Connecting to Wi-Fi. Please wait." } else { b"The reader will connect to Wi-Fi." }, generating_web_login);
+                if generating_web_login { b"Connecting to Wi-Fi. Please wait." } else { b"The reader will connect to Wi-Fi." }, generating_web_login,b"Continue");
         } else if confirm_month_sync {
             ui.overall_sync_confirmation();
         } else if syncing_month && page != 0 {
-            ui.network_dialog(page, b"Syncing...", b"Connecting to Wi-Fi. Please wait.", true);
+            ui.network_dialog(page, b"Syncing...", b"Connecting to Wi-Fi. Please wait.", true,b"Continue");
         } else if page == 0 {
             current_cover_loaded = false;
             checkpoint(206);
@@ -488,9 +505,9 @@ pub extern "C" fn main() -> i32 {
             ui.overall_preview(carousel, &home.rec, &server,
                                pairing.phase == PairPhase::Paired, syncing_month, &mut home.cover);
         } else if page == 7 {
-            ui.settings_page(&settings, &server, paired, settings_focus, sleep_capture_supported, upload_supported, history_message, history_refresh);
+            ui.settings_page(&settings, &server, paired, settings_focus, sleep_capture_supported, upload_supported, history_message, history_refresh,manage_books);
         } else if page == 6 {
-            ui.sync_page(&pairing, sync_focus, disconnect_failed);
+            ui.sync_page(&pairing);
         } else if page <= 2 {
             if page == 2 && !current_cover_loaded {
                 if carousel_record {home.reload();carousel_record=false;}
@@ -506,12 +523,18 @@ pub extern "C" fn main() -> i32 {
             ui.dashboard_render(&st, &home, &detail, page - 1, month_day, have_clock);
         } else {
             if page == 5 { current_cover_loaded = false; }
-            let books_ready = if page == 5 && st.native_stats {
+            let books_ready = if matches!(page,4|5) && st.native_stats {
                 current_cover_loaded = false;
                 native_ensure_books(st.end, &mut home.cover)
             } else { true };
+            if page==5 && manage_books && books_ready && !book_filter.ready{
+                if !book_filter.load(st.book_count,&mut home.cover,&mut home.rec[..128]){book_filter.excluded=0;book_error=true;continue;}
+                let count=book_filter.count(st.book_count);
+                book_selected=book_selected.min(count.saturating_sub(1));
+                book_offset=(book_selected/ui.books_capacity())*ui.books_capacity();
+            }
             dsn_clear();
-            ui.header(page);
+            ui.header(if page==5 && book_filter.hidden{8}else{page});
             // With no reliable RTC, the validated offline server snapshot can
             // supply the month for All Devices even if this reader has no dates.
             let mut calendar_base=if have_clock {st.end}else{0};
@@ -530,7 +553,7 @@ pub extern "C" fn main() -> i32 {
                     let first=days_from_civil(shown_year,shown_month,1);
                     let count=days_in_month(shown_year,shown_month);
                     if st.native_stats {
-                        if native_ensure_books(st.end,&mut home.cover) && first<=st.end {
+                        if books_ready && first<=st.end {
                             let low=first.max(st.end.saturating_sub(DAYS as u32-1));
                             let n=(first+count).min(st.end+1).saturating_sub(low) as usize;
                             if n>0 && dsn_reading_stats_read(2,low,&mut home.cover[..n*16])==(n*16) as i32 {
@@ -548,17 +571,24 @@ pub extern "C" fn main() -> i32 {
                 current_cover_loaded=false;
                 ui.calendar_page(&st,shown_year,shown_month,shown_day,paired && calendar_all,&home.cover[..size],&local_days);
             }else{
-                ui.extra_page(&st, page - 1, book_offset, books_ready, &mut home.cover);
+                ui.extra_page(&st, page - 1, book_offset,book_selected, books_ready,&book_filter,&home.rec[..128], &mut home.cover);
             }
+        }
+        if capture {
+            let ok=sleep_publish(true,if paired{hist_hash(&pairing.access_token)}else{0},&mut home.cover);
+            settings.save_failed=!ok;
+            ui.sleep_render=false;
+            page=restore_page;calendar_offset=restore_month;
+            current_cover_loaded=false;
+            capture_sleep=false;
+            continue;
         }
         checkpoint(207);
         if !disconnecting && !generating_web_login && !generating_pairing && !syncing_month && !uploading_history {
-            ui.draw_footer(page, carousel.count, paired, page == 6 && paired,
-                           confirm_disconnect || confirm_web_login || confirm_month_sync || confirm_pairing || confirm_auto_sync || confirm_history_upload);
+            ui.draw_footer(if page==5 && book_filter.hidden{8}else{page}, carousel.count, paired, choose_sleep || (book_confirm && book_action!=4),
+                           book_error || (book_confirm && book_action==4) || confirm_disconnect || confirm_web_login || confirm_month_sync || confirm_pairing || confirm_auto_sync || confirm_history_upload);
         }
-        checkpoint(208);
         dsn_refresh();
-        checkpoint(209);
         if uploading_history {
             uploading_history = false;
             current_cover_loaded = false;
@@ -575,29 +605,31 @@ pub extern "C" fn main() -> i32 {
                 (history_message == HISTORY_OK || history_message == HISTORY_ALREADY_UPLOADED) {
                 page = 0;
             }
-            capture_sleep = sleep_capture_supported && settings.stats_on_sleep;
+            capture_sleep = sleep_capture_supported && (1..=5).contains(&settings.sleep_page);
             continue;
         }
         if disconnecting {
             disconnecting = false;
             history_message = b"";
             history_refresh = None;
-            disconnect_failed = !pairing.disconnect();
+            if sleep_capture_supported && !sleep_publish(false,0,&mut home.cover){settings.save_failed=true;}
+            let disconnect_failed = !pairing.disconnect();
             if !disconnect_failed {
                 server = ServerOverall::new();
-                sync_focus = 0;
-                capture_sleep = sleep_capture_supported && settings.stats_on_sleep;
+                page=7;
+                capture_sleep = sleep_capture_supported && (1..=5).contains(&settings.sleep_page);
             }
+            if disconnect_failed{history_message=b"Could not disconnect. Retry.";}
             continue;
         }
         if generating_pairing {
             generating_pairing = false;
-            pairing.begin();
+            current_cover_loaded=false; pairing.begin(&mut home.cover);
             continue;
         }
         if generating_web_login {
             generating_web_login = false;
-            pairing.request_web_login();
+            current_cover_loaded=false; pairing.request_web_login(&mut home.cover);
             continue;
         }
         // The confirmation is painted first. Only after a second, explicit
@@ -616,7 +648,7 @@ pub extern "C" fn main() -> i32 {
                     history_refresh = None;
                 }
             }
-            capture_sleep = sleep_capture_supported && settings.stats_on_sleep;
+            capture_sleep = sleep_capture_supported && (1..=5).contains(&settings.sleep_page);
             continue;
         }
 
@@ -624,10 +656,75 @@ pub extern "C" fn main() -> i32 {
             // First repaint the "Requesting/Checking" state. Run the blocking
             // network syscall only after Dessen has queued that display update.
             if pairing.pending {
-                pairing.activate();
+                current_cover_loaded=false; pairing.activate(&mut home.cover);
                 break;
             }
             let e = dsn_wait_event();
+            if book_error {
+                if ui.modal_decision(e,b"Continue")==0{continue;}
+                book_error=false;break;
+            }
+            if book_confirm && book_action!=4{
+                let k=e&255;let count=if book_filter.hidden{2}else{4};
+                if k==2{book_confirm=false;break;}
+                if matches!(k,3|4|7|8){
+                    book_action=(book_action+if matches!(k,4|7){1}else{count-1})%count;
+                    break;
+                }
+                let mut apply=k==1;
+                if k==5{
+                    for i in 0..count{
+                        if hit(((e>>8)&0xfff) as i32,((e>>20)&0xfff) as i32,ui.book_option(i)){
+                            book_action=i;apply=true;break;
+                        }
+                    }
+                }
+                if !apply{continue;}
+                if book_action==0 && !book_filter.hidden{book_action=4;break;}
+                if (book_filter.hidden && book_action==0) || (!book_filter.hidden && matches!(book_action,1|2)){
+                    let mode=if book_filter.hidden{0}else{book_action};
+                    let index=book_filter.index(book_selected,st.book_count,&home.rec[..128]);
+                    if !book_filter.change(index,mode,&mut home.cover){book_error=true;}
+                }
+                book_confirm=false;break;
+            }
+            if book_confirm {
+                let decision=ui.modal_decision(e,b"Continue");
+                if decision==0{continue;}
+                if decision==1{
+                    let path=&home.cover[92..268];
+                    let n=path.iter().position(|&v|v==0).unwrap_or(path.len());
+                    if n==0 || dsn_open_book(&path[..n])<0{book_error=true;}
+                }
+                book_confirm=false;break;
+            }
+            if choose_sleep {
+                let k=e&255;
+                if k==2{choose_sleep=false;break;}
+                if matches!(k,3|4|7|8){
+                    loop{
+                        sleep_focus=(sleep_focus+if matches!(k,4|7){1}else{5})%6;
+                        if paired || sleep_focus!=1{break;}
+                    }
+                    break;
+                }
+                let mut apply=k==1;
+                if k==5{
+                    for i in 0..6{
+                        if (i!=1 || paired) && hit(((e>>8)&0xfff) as i32,((e>>20)&0xfff) as i32,ui.sleep_option(i)){
+                            sleep_focus=i;apply=true;break;
+                        }
+                    }
+                }
+                if apply {
+                    if sleep_focus!=0 || sleep_publish(false,0,&mut home.cover){
+                        settings.save_sleep(sleep_focus);
+                        capture_sleep=settings.sleep_page!=0;
+                    }else{settings.save_failed=true;}
+                    choose_sleep=false;break;
+                }
+                continue;
+            }
             if confirm_disconnect || confirm_history_upload || confirm_pairing ||
                 confirm_auto_sync || confirm_web_login || confirm_month_sync {
                 let label=if confirm_disconnect {b"Disconnect".as_slice()}
@@ -653,34 +750,58 @@ pub extern "C" fn main() -> i32 {
                 confirm_month_sync=false;
                 break;
             }
+            if page==7 && matches!(e&255,1|5){
+                let mut row=settings_focus;
+                if e&255==5{
+                    let x=((e>>8)&0xfff) as i32;let y=((e>>20)&0xfff) as i32;
+                    if x<G+55 && y<13+ui.ls+ui.lt{return 0;}
+                    row=255;
+                    for r in SETTINGS_ORDER{
+                        if settings_visible(r,sleep_capture_supported,upload_supported,paired,manage_books)&&
+                            hit(x,y,ui.settings_bounds(r,sleep_capture_supported,upload_supported,paired,manage_books)){
+                            row=r;break;
+                        }
+                    }
+                    if row==255{continue;}
+                }
+                match row{
+                    0=>if settings.auto_fetch{settings.toggle_flag(false);}else{confirm_auto_sync=true;},
+                    1=>{sleep_focus=if settings.sleep_page==1&&!paired{2}else{settings.sleep_page.min(5)};choose_sleep=true;},
+                    3=>confirm_history_upload=true,
+                    2=>if paired{confirm_month_sync=true;}else{page=6;confirm_pairing=true;},
+                    4=>{page=6;if !pairing.web_login_available(){confirm_web_login=true;}},
+                    5=>confirm_disconnect=true,
+                    6=>{page=5;book_filter.hidden=true;book_filter.ready=false;book_offset=0;book_selected=0;},
+                    _=>{}
+                }
+                break;
+            }
+            if page==5 && ui.rich_books && st.native_stats && matches!(e&255,1|5){
+                let mut selected=book_selected;
+                if e&255==5{
+                    let x=((e>>8)&0xfff) as i32;let y=((e>>20)&0xfff) as i32;
+                    if x<G+55&&y<13+ui.ls+ui.lt{if book_filter.hidden{page=7;book_filter.hidden=false;break;}return 0;}
+                    let top=13+ui.ls+ui.lt+ui.lb+20;
+                    if x<G || x>=ui.w-G || y<top || y>=top+ui.books_capacity() as i32*ui.book_row_height(){continue;}
+                    selected=book_offset+((y-top)/ui.book_row_height()) as u32;
+                }
+                let index=book_filter.index(selected,st.book_count,&home.rec[..128]);
+                if index<st.book_count && native_ensure_books(st.end,&mut home.cover) &&
+                    dsn_reading_stats_read(9,index,&mut home.cover[..364])==364 {
+                    book_selected=selected;book_action=0;book_confirm=true;
+                }
+                break;
+            }
             match e & 0xff {
                 1 if page == 4 && paired => {calendar_all=!calendar_all;calendar_offset=0;break;}
-                1 if page == 7 => {
-                    if settings_focus == 0 {
-                        if settings.auto_fetch { settings.toggle_flag(false); } else { confirm_auto_sync = true; }
-                    }
-                    else if settings_focus == 1 && sleep_capture_supported {
-                        settings.toggle_flag(true);
-                        capture_sleep = settings.stats_on_sleep;
-                    }
-                    else if settings_focus == 3 && upload_supported && paired { confirm_history_upload = true; }
-                    else if paired { confirm_month_sync = true; }
-                    else { page = 6; }
-                    break;
-                }
                 1 if page == 0 => {
                     if let Some(book) = carousel.current(&home.rec) { dsn_open_book(book.field(&home.rec,0)); }
                 }
                 1 if page == 2 && home.has_book() => { dsn_open_book(home.field(0)); }
                 1 if page == 6 => {
-                    if pairing.phase == PairPhase::Paired {
-                        match sync_focus {
-                            0 => confirm_web_login = true,
-                            1 => { confirm_month_sync = true; }
-                            _ => confirm_disconnect = true,
-                        }
-                    } else if pairing.phase == PairPhase::Code { pairing.schedule(); }
-                    else { confirm_pairing = true; }
+                    if paired {confirm_web_login=true;}
+                    else if pairing.phase==PairPhase::Code{pairing.schedule();}
+                    else{confirm_pairing=true;}
                     break;
                 }
                 11 if page == 6 && pairing.phase == PairPhase::Paired && pairing.web_valid => {
@@ -695,32 +816,41 @@ pub extern "C" fn main() -> i32 {
                     // two full e-ink refreshes per poll; repaint only when the
                     // visible status/phase actually changes.
                     let previous_message = pairing.message;
-                    pairing.poll();
+                    current_cover_loaded=false; pairing.poll(&mut home.cover);
                     if pairing.phase != PairPhase::Code || pairing.message != previous_message {
                         break;
                     }
                 }
+                2 if page==5 && book_filter.hidden => {page=7;book_filter.hidden=false;book_offset=0;book_selected=0;break;}
+                2 if page==6 => {page=7;break;}
                 2 => return 0,
                 3 | 4 | 7 | 8 | 9 | 10 => {
                     let kind = e & 0xff;
                     let forward = matches!(kind,4|7|9);
                     let front = matches!(kind,3|4) && e & SIDE_KEY == 0;
                     if front && page == 7 {
-                        settings_focus = settings_step(settings_focus, forward, sleep_capture_supported, upload_supported && paired);
-                    } else if front && page == 4 && (have_clock || (paired && calendar_all)) {
-                        calendar_offset=if forward{calendar_offset.saturating_sub(1)}else{(calendar_offset+1).min(11)};
-                    } else if front && page == 6 && paired {
-                        sync_focus = (sync_focus + if forward {1} else {2}) % 3;
+                        settings_focus = settings_step(settings_focus,forward,sleep_capture_supported,upload_supported,paired,manage_books);
+                    } else if page == 4 && (have_clock || (paired && calendar_all)) &&
+                        (front || (matches!(kind,9|10) && hit(((e>>8)&0xfff) as i32,((e>>20)&0xfff) as i32,ui.calendar_bounds()))) {
+                                                let newer=if front{forward}else{kind==10};
+                        if newer && calendar_offset==0 && !front{page=5;}
+                        else{calendar_offset=if newer{calendar_offset.saturating_sub(1)}else{(calendar_offset+1).min(11)};}
+                    } else if page==5 && front && ui.rich_books && st.native_stats && book_filter.count(st.book_count)>0 {
+                        book_selected=if forward{(book_selected+1).min(book_filter.count(st.book_count)-1)}else{book_selected.saturating_sub(1)};
+                        let cap=ui.books_capacity();
+                        book_offset=(book_selected/cap)*cap;
+                    } else if page==6 {page=7;
                     } else if page == 0 && carousel.count > 1 &&
                         (front || (matches!(kind,9|10) && ui.overall_carousel_contains(
                             ((e >> 8) & 0xfff) as i32, ((e >> 20) & 0xfff) as i32))) {
                         carousel.step(if forward {1} else {-1},&mut home.rec);
                     } else {
                         let cap = ui.books_capacity();
-                        if page == 5 && forward && book_offset + cap < st.book_count {book_offset += cap;}
-                        else if page == 5 && !forward && book_offset >= cap {book_offset -= cap;}
+                        if page == 5 && forward && book_offset + cap < book_filter.count(st.book_count) {book_offset += cap;book_selected=book_offset;}
+                        else if page == 5 && !forward && book_offset >= cap {book_offset -= cap;book_selected=book_offset;}
+                        else if page==5 && book_filter.hidden {page=7;book_filter.hidden=false;book_selected=0;book_offset=0;}
                         else if forward {page=next_page(page); if page==0 {page=first_page;}}
-                        else {page=prev_page(page); if page==0 && first_page==1 {page=6;}}
+                        else {page=prev_page(page); if page==0 && first_page==1 {page=7;}}
                     }
                     break;
                 }
@@ -730,6 +860,7 @@ pub extern "C" fn main() -> i32 {
                     let x = ((e >> 8) & 0xfff) as i32;
                     let y = ((e >> 20) & 0xfff) as i32;
                     if x < G + 55 && y < 13 + ui.ls + ui.lt {
+                        if page==6{page=7;break;}
                         return 0;
                     } else if page == 0 {
                         let (mx, my, mw, mh) = ui.overall_month_bounds();
@@ -749,65 +880,21 @@ pub extern "C" fn main() -> i32 {
                             page = 1;
                             break;
                         }
-                    } else if page == 4 && paired && y >= 13+ui.ls+ui.lt &&
-                              y < 13+ui.ls+ui.lt*2+20 && x>=ui.w/4 && x<=ui.w*3/4 {
-                        calendar_all=!calendar_all;calendar_offset=0;
-                        break;
-                    } else if page == 4 && (have_clock || (paired && calendar_all)) && y >= 13 + ui.ls + ui.lt &&
-                              y < 13 + ui.ls + ui.lt * 2 + 20 && x < ui.w / 4 {
-                        calendar_offset = (calendar_offset + 1).min(11);
-                        break;
-                    } else if page == 4 && (have_clock || (paired && calendar_all)) && y >= 13 + ui.ls + ui.lt &&
-                              y < 13 + ui.ls + ui.lt * 2 + 20 && x > ui.w * 3 / 4 {
-                        calendar_offset = calendar_offset.saturating_sub(1);
-                        break;
-                    } else if page == 7 {
-                        let (bx, by, bw, bh) = ui.settings_bounds(0);
-                        let (rx, ry, rw, rh) = ui.settings_bounds(2);
-                        let (sx, sy, sw, sh) = ui.settings_bounds(1);
-                        let (hx,hy,hw,hh) = ui.settings_bounds(3);
-                        if upload_supported && paired && x >= hx && x < hx+hw && y >= hy && y < hy+hh {
-                            confirm_history_upload = true;
+                    } else if page == 4 && hit(x,y,ui.calendar_bounds()) {
+                        let top=ui.calendar_bounds().1+ui.lb+5;
+                        if paired && y>=top && y<top+ui.ls {
+                            calendar_all=!calendar_all;calendar_offset=0;
+                            break;
                         }
-                        else if sleep_capture_supported && x >= sx && x < sx+sw && y >= sy && y < sy+sh {
-                            settings.toggle_flag(true);
-                            capture_sleep = settings.stats_on_sleep;
+                        continue;
+                    } else if page==6 {
+                        if hit(x,y,ui.sync_button_bounds()){
+                            if paired{confirm_web_login=true;}
+                            else if pairing.phase==PairPhase::Code{pairing.schedule();}
+                            else{confirm_pairing=true;}
+                            break;
                         }
-                        else if x >= bx && x < bx+bw && y >= by && y < by+bh {
-                            if settings.auto_fetch { settings.toggle_flag(false); } else { confirm_auto_sync = true; }
-                        }
-                        else if x >= rx && x < rx+rw && y >= ry && y < ry+rh {
-                            if pairing.phase == PairPhase::Paired { confirm_month_sync = true; } else { page = 6; }
-                        }
-                        break;
-                    } else if page == 6 {
-                        // This is a single-action page. Accept taps anywhere
-                        // in the content card: real devices may report a small
-                        // offset between FreeInk drawing and touch coordinates.
-                        if ui.touch && y >= 13 + ui.ls + ui.lt &&
-                            x >= G && x < ui.w - G &&
-                            y < ui.content_bottom() {
-                            if pairing.phase == PairPhase::Paired {
-                                for action in [0, 2] {
-                                    let (bx, by, bw, bh) = ui.sync_action_bounds(action, Ui::sync_action_label(&pairing, action));
-                                    if x >= bx && x < bx + bw && y >= by && y < by + bh {
-                                        if action == 0 { confirm_web_login = true; }
-                                        else { confirm_disconnect = true; }
-                                        break;
-                                    }
-                                }
-                                break;
-                            }
-                            let (bx, by, bw, bh) = ui.sync_button_bounds();
-                            // A scanned PIN must remain valid while viewing
-                            // the QR: only its action button regenerates it.
-                            if pairing.phase != PairPhase::Paired ||
-                                (x >= bx && x < bx + bw && y >= by && y < by + bh) {
-                                if pairing.phase == PairPhase::Code { pairing.schedule(); }
-                                else { confirm_pairing = true; }
-                                break;
-                            }
-                        }
+                        continue;
                     } else if page == 2 && home.has_book() && y < (13 + ui.ls + ui.lt) + (ui.content_bottom() - (13 + ui.ls + ui.lt) - 33) * 35 / 100 {
                         dsn_open_book(home.field(0));
                     } else {

@@ -155,6 +155,7 @@ impl Ui {
     #[inline(never)]
     fn header(&self, page: i32) {
         let g = G;
+        if !self.sleep_render {
         let mut c = [0u8; 8];
         if dsn_clock(&mut c) >= 0 && (c[0] | c[1]) != 0 {
             let hour = if c[4] % 12 == 0 { 12 } else { c[4] % 12 };
@@ -166,17 +167,19 @@ impl Ui {
             text(self.w - g - self.w / 4, 5, self.w / 4, self.ls,
                 label!(n(battery as u32 & 255), s(b"%")).get(), SMALL, RIGHT, 0);
         }
+        }
         let title: &[u8] = match page {
             0 => b"Server Statistics",
             1 => b"Device Statistics",
             2 => b"Current Book",
             3 => b"Your Week",
             4 => b"Reading Calendar",
-            5 => b"All Books",
+            5 => "Books • Local".as_bytes(),
             7 => b"Settings",
+            8 => b"Hidden Books",
             _ => b"Server Sync",
         };
-        if self.touch {
+        if self.touch && !self.sleep_render {
             let arrow_y = 5 + self.ls + self.lt / 2;
             dsn_line(g + 7, arrow_y, g + 29, arrow_y, 2, BLACK);
             dsn_line(g + 7, arrow_y, g + 17, arrow_y - 9, 2, BLACK);

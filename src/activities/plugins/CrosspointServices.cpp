@@ -54,7 +54,7 @@
 #include "util/PluginLocations.h"
 #include "util/ReadingHistoryMigration.h"
 #include "util/ReadingHistorySource.h"
-#include "util/ReadingStatsSleepSource.h"
+#include "util/BookCacheUtils.h"
 #include "util/ScreenshotUtil.h"
 
 extern GfxRenderer renderer;
@@ -337,15 +337,39 @@ int CrosspointServices::resolve(const char* path, uint32_t maxLen) {
   return 0;
 }
 
+int CrosspointServices::screenshot(const char* path) {
+  if (!path) return 1;
+  if (int e = resolve(path)) return e;
+  if (!permissions_.allows(path, DessenPermissions::Access::Write) ||
+      permissions_.isSharedCredential(path)) return DSN_ERR_DENIED;
+  // Never truncate an existing file. Apps stage a new image before publishing.
+  if (Storage.exists(path)) return DSN_ERR_IO;
+  if (!ScreenshotUtil::saveFramebufferAsBmp(path, renderer)) return DSN_ERR_IO;
+  sleepImageChanged(path);
+  return 0;
+}
+
+int CrosspointServices::fsRename(const char* source, const char* dest) {
+  if (int e = resolve(source)) return e;
+  if (int e = resolve(dest)) return e;
+  if (!permissions_.allows(source, DessenPermissions::Access::Read) ||
+      !permissions_.allows(source, DessenPermissions::Access::Delete) ||
+      !permissions_.allows(dest, DessenPermissions::Access::Write) ||
+      permissions_.isSharedCredential(source) || permissions_.isSharedCredential(dest))
+    return DSN_ERR_DENIED;
+  HalFile file;
+  if (Storage.exists(dest) || !Storage.openFileForRead("DSN", source, file) || file.isDirectory())
+    return DSN_ERR_IO;
+  file.close();
+  if (!Storage.rename(source, dest)) return DSN_ERR_IO;
+  sleepImageChanged(source);
+  sleepImageChanged(dest);
+  return 0;
+}
+
 int CrosspointServices::fsRead(const char* path, uint8_t* out, uint32_t cap) {
   if (int e = resolve(path)) return e;
   if (!permissions_.allows(path, DessenPermissions::Access::Read)) return DSN_ERR_UNAVAILABLE;
-  // The virtual app-local file exposes the optional capture operation without a new guest ABI.
-  if (appName_ == readingstatssleep::kId && path == appDir_ + readingstatssleep::kCaptureRequest) {
-    if (cap == 0 || PluginLocations::findPluginDir(readingstatssleep::kId) != appDir_) return DSN_ERR_UNAVAILABLE;
-    out[0] = 1;
-    return 1;
-  }
   HalFile f;
   if (!Storage.openFileForRead("DSN", path, f)) return DSN_ERR_IO;
   const size_t size = f.fileSize();
@@ -368,19 +392,6 @@ int CrosspointServices::fsReadAt(const char* path, uint32_t offset, uint8_t* out
 int CrosspointServices::fsWrite(const char* path, const uint8_t* data, uint32_t n) {
   if (int e = resolve(path)) return e;
   if (!permissions_.allows(path, DessenPermissions::Access::Write)) return DSN_ERR_DENIED;
-  if (appName_ == readingstatssleep::kId && path == appDir_ + readingstatssleep::kCaptureRequest) {
-    if (n != 1 || data[0] > 1 || PluginLocations::findPluginDir(readingstatssleep::kId) != appDir_ ||
-        !readingstatssleep::enabled(appDir_))
-      return DSN_ERR_UNAVAILABLE;
-    const std::string destination =
-        appDir_ + (data[0] ? readingstatssleep::kServerImage : readingstatssleep::kDeviceImage);
-    const std::string temp = destination + ".tmp";
-    if (ScreenshotUtil::saveFramebufferAsBmp(temp.c_str(), renderer) &&
-        Storage.replaceFile(temp.c_str(), destination.c_str()))
-      return 0;
-    Storage.remove(temp.c_str());
-    return DSN_ERR_IO;
-  }
   const bool credential = permissions_.isSharedCredential(path);
   if (credential && n > MAX_SHARED_CREDENTIAL_SIZE) return DSN_ERR_TOO_BIG;
   constexpr const char* temporary = "/.crosspoint/dsn-write.tmp";
@@ -392,6 +403,7 @@ int CrosspointServices::fsWrite(const char* path, const uint8_t* data, uint32_t 
     Storage.remove(temporary);
     return DSN_ERR_IO;
   }
+  sleepImageChanged(path);
   pluginhttp::notifyFileChanged(path);
   return 0;
 }
@@ -417,6 +429,7 @@ int CrosspointServices::fsDelete(const char* path) {
   if (int e = resolve(path)) return e;
   if (!permissions_.allows(path, DessenPermissions::Access::Delete)) return DSN_ERR_UNAVAILABLE;
   if (!Storage.remove(path)) return DSN_ERR_IO;
+  sleepImageChanged(path);
   pluginhttp::notifyFileChanged(path);
   return 0;
 }
@@ -710,6 +723,13 @@ int CrosspointServices::readingStatsRead(uint32_t kind, uint32_t first, uint8_t*
   return dessenReadingStats::read(readingStats_->provider, kind, first, out, cap);
 }
 
+int CrosspointServices::validateBookOpen(const char* path) {
+  if (int e = resolve(path, DSN_BOOK_PATH_MAX)) return e;
+  if (!permissions_.allowsBook(path)) return DSN_ERR_DENIED;
+  HalFile file;
+  return Storage.openFileForRead("DSN", path, file) && !file.isDirectory() ? 0 : DSN_ERR_UNAVAILABLE;
+}
+
 int CrosspointServices::bookProgress(const char* path) {
   if (resolve(path, DSN_BOOK_PATH_MAX) || !permissions_.allowsBook(path)) return -1;
   return loadBookProgress(path);
@@ -745,7 +765,6 @@ static int packPlaceholderCover(uint8_t* out, uint32_t cap, int w, int h) {
   return static_cast<int>(need);
 }
 
-#ifndef BOARD_HAS_PSRAM
 // Reuse a thumbnail already generated by Home. The requested Dessen height
 // may differ from the cached Home height, so choose the closest cached size.
 static std::string cachedBookThumbnail(const std::string& path, uint32_t height) {
@@ -770,7 +789,7 @@ static std::string cachedBookThumbnail(const std::string& path, uint32_t height)
   const std::string_view prefix(pattern.data() + slash + 1, marker - slash - 1);
   const std::string_view suffix(pattern.data() + marker + 8, pattern.size() - marker - 8);
   HalFile dir;
-  if (!Storage.openFileForRead("DSN", directory, dir) || !dir.isDirectory()) return {};
+  if (!Storage.exists(directory.c_str()) || !Storage.openFileForRead("DSN", directory, dir) || !dir.isDirectory()) return {};
   std::string best;
   uint32_t bestDistance = UINT32_MAX;
   for (HalFile entry = dir.openNextFile(); entry; entry = dir.openNextFile()) {
@@ -858,7 +877,6 @@ static int packCachedBookCover(const std::string& thumb, uint32_t height, uint8_
   }
   return static_cast<int>(need);
 }
-#endif
 
 // A book's cover as a dithered 1-bit bitmap scaled to `height`: writes
 // {u16 w, u16 h} then the packed MSB-first rows (the dsn_bitmap BW format).
@@ -866,17 +884,20 @@ static int packCachedBookCover(const std::string& thumb, uint32_t height, uint8_
 // cover image), so apps request one per redraw. A book with no usable cover
 // gets the firmware's placeholder on PSRAM devices. C3 only reads existing cached thumbnails.
 int CrosspointServices::bookCover(const char* path, uint32_t height, uint8_t* out, uint32_t cap) {
-#ifndef BOARD_HAS_PSRAM
   if (resolve(path, DSN_BOOK_PATH_MAX) || height < 16 || height > 512) return DSN_ERR_INVALID;
   if (!permissions_.allowsBook(path)) return DSN_ERR_UNAVAILABLE;
-  return packCachedBookCover(cachedBookThumbnail(path, height), height, out, cap);
-#else
-  if (resolve(path, DSN_BOOK_PATH_MAX)) return DSN_ERR_INVALID;
-  if (!permissions_.allowsBook(path)) return DSN_ERR_UNAVAILABLE;
   const std::string full(path);
-  if (height < 16 || height > 512) return DSN_ERR_INVALID;
+  const auto cached = cachedBookThumbnail(full, height);
+  if (!cached.empty()) {
+    const int result = packCachedBookCover(cached, height, out, cap);
+    if (result > 0) return result;
+  }
+#ifndef BOARD_HAS_PSRAM
+  return DSN_ERR_UNAVAILABLE;
+#else
   const int ph = static_cast<int>(height), pw = ph * 2 / 3;  // placeholder size (book aspect)
-  if (!FsHelpers::hasReflowableBookExtension(full)) return packPlaceholderCover(out, cap, pw, ph);
+  if (!FsHelpers::hasReflowableBookExtension(full) || !Storage.exists(full.c_str()))
+    return packPlaceholderCover(out, cap, pw, ph);
   Epub epub(full, "/.crosspoint");
   const std::string thumb = epub.getThumbBmpPath(static_cast<int>(height));
   if (!Storage.exists(thumb.c_str())) {  // decode + cache on first use (slow)

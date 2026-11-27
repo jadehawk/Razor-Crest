@@ -51,10 +51,10 @@ def main(host,app):
         unpaired = run(host, app, root, b"dddddddd")
         assert unpaired.index("Device Statistics") < unpaired.index("Current Book")
         assert "Server Statistics" not in unpaired
-        assert "Server Sync" in unpaired and "Settings" in unpaired
+        assert "Server Sync" not in unpaired and "Settings" in unpaired
         backwards = run(host, app, root, b"uuuuuuuu")
         assert "Server Statistics" not in backwards
-        assert "Server Sync" in backwards and "Settings" in backwards
+        assert "Server Sync" not in backwards and "Settings" in backwards
 
         token = root / ".crosspoint" / "reading-statistics-token.json"
         token.parent.mkdir()
@@ -129,11 +129,11 @@ def main(host,app):
         side_next = run(host, app, root, b"db", touch=False)
         assert "Device Statistics" in side_next, "Side Next must switch statistics pages"
         side_prev = run(host, app, root, b"ub", touch=False)
-        assert "Server Sync" in side_prev, "Side Previous must switch statistics pages"
+        assert "Settings" in side_prev, "Side Previous must switch statistics pages"
         single = run(host, app, root, b"nb", touch=False, one_book=True)
         assert "Device Statistics" in single, "With one book, front Next must page"
         single_prev = run(host, app, root, b"pb", touch=False, one_book=True)
-        assert "Server Sync" in single_prev, "With one book, front Prev must page"
+        assert "Settings" in single_prev, "With one book, front Prev must page"
         single_home = run(host, app, root, b"b", touch=False, one_book=True)
         assert "Prev Book" not in single_home and "Next Book" not in single_home
         assert "Prev Page" in single_home and "Next Page" in single_home
@@ -183,9 +183,9 @@ def main(host,app):
             os.environ.pop("DESSEN_TEST_NARROW",None)
             os.environ.pop("DESSEN_TEST_WRAP",None)
         offline_pages=run(host,app,root,b"dddddbb")
-        for value in ("Your Week", "Reading Calendar", "All Books", "Last Read Day",
+        for value in ("Your Week", "Reading Calendar", "Books • Local", "Last Read Day",
                       "Best Day", "Daily Average", "Reading Consistency",
-                      "None", "<15m", "15-44m", "45m+", "Books tracked: 2", "Dune", "Next >"):
+                      "None", "<15m", "15-44m", "45m+", "Books tracked: 2", "Dune"):
             assert value in offline_pages, f"Missing offline page content {value}:\\n{offline_pages[-5000:]}"
         for value in ["Device Statistics","Current Book","THIS MONTH","12","12m","Session Start Periods",
                       "Morning","Afternoon","Evening","Night","Latest 7 Days",
@@ -215,7 +215,7 @@ def main(host,app):
         empty=run(host,app,root,b"b")
         assert "No reading sessions yet" in empty and "12m" not in empty
         os.environ.pop("DESSEN_NATIVE_STATS",None)
-        print("PASS: six offline pages plus Server Sync; paired availability; JSONL totals; book data; period bars; calendar; reading time and average session; read-only; no BIN fallback")
+        print("PASS: six offline pages with consolidated Settings; paired availability; JSONL totals; book data; period bars; calendar; reading time and average session; read-only; no BIN fallback")
 
 if __name__=="__main__":
     main(*sys.argv[1:3])
