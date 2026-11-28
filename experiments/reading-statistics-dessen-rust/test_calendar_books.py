@@ -159,8 +159,25 @@ def main(sdk,app):
                 assert int(cover[3])*3<=int(cover[4])*2+2
             finally:
                 os.environ.pop("DESSEN_TEST_X3",None)
-        touch=run(str(host),app,root,keys=b"ddddlrmrb",touch=True,portrait=True,installed=True)
-        assert last_month.strftime("%B %Y") in touch and date.today().strftime("%B %Y") in touch
+        # Inside the calendar: right goes older, left goes newer, and a
+        # further left swipe at the current month advances to All Books.
+        touch=run(str(host),app,root,keys=b"ddddrlmlb",touch=True,portrait=True,installed=True)
+        months=[f for f in touch.split("refresh") if "Reading Consistency" in f]
+        assert len(months)==4, touch[-8000:]
+        for frame_text, expected in zip(months, (date.today(),last_month,date.today(),date.today())):
+            assert expected.strftime("%B %Y") in frame_text, frame_text
+        assert "Books" in touch.split("refresh")[-2], touch[-5000:]
+        # A left swipe at the current month advances immediately, including
+        # after changing the calendar scope; outside swipes still page normally.
+        for keys,expected in ((b"ddddlb","Books"),(b"ddddLb","Books"),
+                              (b"ddddRb","Your Week"),(b"ddddpnb",date.today().strftime("%B %Y"))):
+            result=run(str(host),app,root,keys=keys,touch=True,portrait=True,installed=True)
+            assert expected in result.split("refresh")[-2], result[-5000:]
+        oldest=date.today().replace(day=1)
+        for _ in range(11):
+            oldest=(oldest-timedelta(days=1)).replace(day=1)
+        result=run(str(host),app,root,keys=b"dddd"+b"r"*12+b"b",touch=True,portrait=True,installed=True)
+        assert oldest.strftime("%B %Y") in result.split("refresh")[-2], result[-5000:]
         assert "< Prev" not in touch and "Next >" not in touch
         assert "This Device" in touch and "Books • Local" in touch,touch[-5000:]
         # A reader with no RTC and no dated sessions still has a server calendar.

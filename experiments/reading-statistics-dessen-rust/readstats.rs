@@ -832,7 +832,7 @@ pub extern "C" fn main() -> i32 {
                         settings_focus = settings_step(settings_focus,forward,sleep_capture_supported,upload_supported,paired,manage_books);
                     } else if page == 4 && (have_clock || (paired && calendar_all)) &&
                         (front || (matches!(kind,9|10) && hit(((e>>8)&0xfff) as i32,((e>>20)&0xfff) as i32,ui.calendar_bounds()))) {
-                                                let newer=if front{forward}else{kind==10};
+                        let newer=forward; // Left swipe and physical Next advance toward the current month.
                         if newer && calendar_offset==0 && !front{page=5;}
                         else{calendar_offset=if newer{calendar_offset.saturating_sub(1)}else{(calendar_offset+1).min(11)};}
                     } else if page==5 && front && ui.rich_books && st.native_stats && book_filter.count(st.book_count)>0 {

@@ -1,4 +1,4 @@
-# Reading Statistics 0.1.14
+# Reading Statistics 0.1.15
 
 Full Rust Dessen application: Overall, Device Statistics, Current Book, Your Week,
 Reading Calendar, All Books, Server Sync and Settings.
