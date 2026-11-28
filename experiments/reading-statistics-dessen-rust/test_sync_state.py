@@ -30,6 +30,29 @@ def main(host, app):
         previous=cache.read_bytes()
         # Reopen paired on the X3-shaped screen without Web Login data or input.
         import os
+        # Refresh ages must fit the 24-byte label on both touch and X3 screens.
+        for x3 in (False, True):
+            if x3: os.environ["DESSEN_TEST_X3"]="1"
+            try:
+                for age, expected in ((0, "Just now"), (330, "5m ago"),
+                                      (3630, "1h ago"), (7230, "2h ago"),
+                                      (86430, "1d ago"), (8640030, "100d ago")):
+                    cache.write_text(json.dumps(overview(3600,int(time.time())-age)))
+                    trace=run(host,app,root,keys=b"ub",touch=not x3,portrait=True,installed=True)
+                    assert "Last refresh: "+expected in trace, trace[-5000:]
+                cache.write_text(json.dumps(overview(3600,0)))
+                trace=run(host,app,root,keys=b"ub",touch=not x3,portrait=True,installed=True)
+                assert "Last refresh: Never" in trace, trace[-5000:]
+                cache.write_text(previous.decode())
+                os.environ["DESSEN_TEST_NO_TIME"]="1"
+                try:
+                    trace=run(host,app,root,keys=b"ub",touch=not x3,portrait=True,installed=True)
+                    assert "Last refresh: No clock" in trace, trace[-5000:]
+                finally:
+                    os.environ.pop("DESSEN_TEST_NO_TIME",None)
+            finally:
+                os.environ.pop("DESSEN_TEST_X3",None)
+        cache.write_bytes(previous)
         os.environ["DESSEN_TEST_X3"]="1"
         try:
             for _ in range(3):

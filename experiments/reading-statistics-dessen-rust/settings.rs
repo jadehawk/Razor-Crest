@@ -67,10 +67,16 @@ impl Ui {
         text(G+12,top+6,w-24,self.ls,b"Server synchronization",SMALL,LEFT,BOLD);
         text(G+12,top+self.ls+9,w-24,self.ls,if paired{b"Server: Paired"}else{b"Server: Not paired"},SMALL,LEFT,BOLD);
         let now=dsn_time();let age=now.saturating_sub(server.last_synced);
+        // Keep the entire status within the shared 24-byte label buffer.
         let last=if server.last_synced==0{label!(s(b"Last refresh: Never"))}
-            else if now<946_684_800{label!(s(b"Last refresh: Time unavailable"))}
-            else if age<3600{label!(s(b"Last refresh: "),n(age/60),s(b" min ago"))}
-            else{label!(s(b"Last refresh: "),n(age/3600),s(b" hours ago"))};
+            else if now<946_684_800{label!(s(b"Last refresh: No clock"))}
+            else if age<60{label!(s(b"Last refresh: Just now"))}
+            else{
+                let (value,unit)=if age<3600{(age/60,b"m ago")}
+                    else if age<86400{(age/3600,b"h ago")}
+                    else{(age/86400,b"d ago")};
+                label!(s(b"Last refresh: "),n(value),s(unit))
+            };
         text(G+12,top+2*self.ls+12,w-24,self.ls,last.get(),SMALL,LEFT,0);
         for row in SETTINGS_ORDER{
             if !settings_visible(row,sleep,upload,paired,manage){continue;}
